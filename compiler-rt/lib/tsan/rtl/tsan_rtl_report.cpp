@@ -659,7 +659,7 @@ bool OutputReport(ThreadState *thr, const ScopedReport &srep) {
       return false;
     }
   }
-  PrintReport(rep);
+  // PrintReport(rep);
   __tsan_on_report(rep);
   ctx->nreported++;
   if (flags()->halt_on_error)

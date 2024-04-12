@@ -23,6 +23,8 @@ class VectorClock {
 
   Epoch Get(Sid sid) const;
   void Set(Sid sid, Epoch v);
+  u32 GetVersion() const;
+  void SetVersion(u32 version);
 
   void Reset();
   void Acquire(const VectorClock* src);
@@ -35,6 +37,7 @@ class VectorClock {
 
  private:
   Epoch clk_[kThreadSlotCount] VECTOR_ALIGNED;
+  u32 version_;
 };
 
 ALWAYS_INLINE Epoch VectorClock::Get(Sid sid) const {
@@ -44,6 +47,14 @@ ALWAYS_INLINE Epoch VectorClock::Get(Sid sid) const {
 ALWAYS_INLINE void VectorClock::Set(Sid sid, Epoch v) {
   DCHECK_GE(v, clk_[static_cast<u8>(sid)]);
   clk_[static_cast<u8>(sid)] = v;
+}
+
+ALWAYS_INLINE u32 VectorClock::GetVersion() const {
+  return version_;
+}
+
+ALWAYS_INLINE void VectorClock::SetVersion(u32 version) {
+  version_ = version;
 }
 
 }  // namespace __tsan

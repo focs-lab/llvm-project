@@ -18,6 +18,9 @@ namespace __tsan {
 ALWAYS_INLINE USED bool TryTraceMemoryAccess(ThreadState* thr, uptr pc,
                                              uptr addr, uptr size,
                                              AccessType typ) {
+#if SANITIZER_SAMPLING_NO_ACCESS
+  return true;
+#endif
   DCHECK(size == 1 || size == 2 || size == 4 || size == 8);
   if (!kCollectHistory)
     return true;
@@ -56,6 +59,9 @@ ALWAYS_INLINE USED bool TryTraceMemoryAccess(ThreadState* thr, uptr pc,
 ALWAYS_INLINE
 bool TryTraceMemoryAccessRange(ThreadState* thr, uptr pc, uptr addr, uptr size,
                                AccessType typ) {
+#if SANITIZER_SAMPLING_NO_ACCESS
+  return true;
+#endif
   if (!kCollectHistory)
     return true;
   EventAccessRange* ev;
@@ -77,6 +83,9 @@ bool TryTraceMemoryAccessRange(ThreadState* thr, uptr pc, uptr addr, uptr size,
 
 void TraceMemoryAccessRange(ThreadState* thr, uptr pc, uptr addr, uptr size,
                             AccessType typ) {
+#if SANITIZER_SAMPLING_NO_ACCESS
+  return;
+#endif
   if (LIKELY(TryTraceMemoryAccessRange(thr, pc, addr, size, typ)))
     return;
   TraceSwitchPart(thr);
@@ -85,6 +94,9 @@ void TraceMemoryAccessRange(ThreadState* thr, uptr pc, uptr addr, uptr size,
 }
 
 void TraceFunc(ThreadState* thr, uptr pc) {
+#if SANITIZER_SAMPLING_NO_ACCESS
+  return;
+#endif
   if (LIKELY(TryTraceFunc(thr, pc)))
     return;
   TraceSwitchPart(thr);
@@ -93,17 +105,26 @@ void TraceFunc(ThreadState* thr, uptr pc) {
 }
 
 NOINLINE void TraceRestartFuncEntry(ThreadState* thr, uptr pc) {
+#if SANITIZER_SAMPLING_NO_ACCESS
+  return;
+#endif
   TraceSwitchPart(thr);
   FuncEntry(thr, pc);
 }
 
 NOINLINE void TraceRestartFuncExit(ThreadState* thr) {
+#if SANITIZER_SAMPLING_NO_ACCESS
+  return;
+#endif
   TraceSwitchPart(thr);
   FuncExit(thr);
 }
 
 void TraceMutexLock(ThreadState* thr, EventType type, uptr pc, uptr addr,
                     StackID stk) {
+#if SANITIZER_SAMPLING_NO_ACCESS
+  return;
+#endif
   DCHECK(type == EventType::kLock || type == EventType::kRLock);
   if (!kCollectHistory)
     return;
@@ -120,6 +141,9 @@ void TraceMutexLock(ThreadState* thr, EventType type, uptr pc, uptr addr,
 }
 
 void TraceMutexUnlock(ThreadState* thr, uptr addr) {
+#if SANITIZER_SAMPLING_NO_ACCESS
+  return;
+#endif
   if (!kCollectHistory)
     return;
   EventUnlock ev;
@@ -132,6 +156,9 @@ void TraceMutexUnlock(ThreadState* thr, uptr addr) {
 }
 
 void TraceTime(ThreadState* thr) {
+#if SANITIZER_SAMPLING_NO_ACCESS
+  return;
+#endif
   if (!kCollectHistory)
     return;
   FastState fast_state = thr->fast_state;
@@ -148,6 +175,9 @@ void TraceTime(ThreadState* thr) {
 NOINLINE void DoReportRace(ThreadState* thr, RawShadow* shadow_mem, Shadow cur,
                            Shadow old,
                            AccessType typ) SANITIZER_NO_THREAD_SAFETY_ANALYSIS {
+#if SANITIZER_SAMPLING_NO_ACCESS
+  return;
+#endif
   // For the free shadow markers the first element (that contains kFreeSid)
   // triggers the race, but the second element contains info about the freeing
   // thread, take it.
@@ -172,6 +202,9 @@ NOINLINE void DoReportRace(ThreadState* thr, RawShadow* shadow_mem, Shadow cur,
 ALWAYS_INLINE
 bool ContainsSameAccess(RawShadow* s, Shadow cur, int unused0, int unused1,
                         AccessType typ) {
+#if SANITIZER_SAMPLING_NO_ACCESS
+  return true;
+#endif
   for (uptr i = 0; i < kShadowCnt; i++) {
     auto old = LoadShadow(&s[i]);
     if (!(typ & kAccessRead)) {
@@ -194,6 +227,12 @@ bool ContainsSameAccess(RawShadow* s, Shadow cur, int unused0, int unused1,
 ALWAYS_INLINE
 bool CheckRaces(ThreadState* thr, RawShadow* shadow_mem, Shadow cur,
                 int unused0, int unused1, AccessType typ) {
+#if SANITIZER_SAMPLING_NO_ACCESS
+  return false;
+#endif
+#if SANITIZER_SAMPLING
+  // u32 sampling_version = atomic_load_relaxed(&ctx->sampling_version);
+#endif
   bool stored = false;
   for (uptr idx = 0; idx < kShadowCnt; idx++) {
     RawShadow* sp = &shadow_mem[idx];
@@ -238,6 +277,9 @@ bool CheckRaces(ThreadState* thr, RawShadow* shadow_mem, Shadow cur,
 ALWAYS_INLINE
 bool ContainsSameAccess(RawShadow* unused0, Shadow unused1, m128 shadow,
                         m128 access, AccessType typ) {
+#if SANITIZER_SAMPLING_NO_ACCESS
+  return true;
+#endif
   // Note: we could check if there is a larger access of the same type,
   // e.g. we just allocated/memset-ed a block (so it contains 8 byte writes)
   // and now do smaller reads/writes, these can also be considered as "same
@@ -273,6 +315,9 @@ bool ContainsSameAccess(RawShadow* unused0, Shadow unused1, m128 shadow,
 
 NOINLINE void DoReportRaceV(ThreadState* thr, RawShadow* shadow_mem, Shadow cur,
                             u32 race_mask, m128 shadow, AccessType typ) {
+#if SANITIZER_SAMPLING_NO_ACCESS
+  return;
+#endif
   // race_mask points which of the shadow elements raced with the current
   // access. Extract that element.
   CHECK_NE(race_mask, 0);
@@ -304,6 +349,12 @@ NOINLINE void DoReportRaceV(ThreadState* thr, RawShadow* shadow_mem, Shadow cur,
 ALWAYS_INLINE
 bool CheckRaces(ThreadState* thr, RawShadow* shadow_mem, Shadow cur,
                 m128 shadow, m128 access, AccessType typ) {
+#if SANITIZER_SAMPLING_NO_SHADOW
+  if (LIKELY(!CheckAndUpdateSamplingCounter(thr))) return false;
+#endif
+#if SANITIZER_SAMPLING_NO_ACCESS
+  return false;
+#endif
   // Note: empty/zero slots don't intersect with any access.
   const m128 zero = _mm_setzero_si128();
   const m128 mask_access = _mm_set1_epi32(0x000000ff);
@@ -413,12 +464,21 @@ char* DumpShadow(char* buf, RawShadow raw) {
 // no frame setup, etc).
 NOINLINE void TraceRestartMemoryAccess(ThreadState* thr, uptr pc, uptr addr,
                                        uptr size, AccessType typ) {
+#if SANITIZER_SAMPLING_NO_ACCESS
+  return;
+#endif
   TraceSwitchPart(thr);
   MemoryAccess(thr, pc, addr, size, typ);
 }
 
 ALWAYS_INLINE USED void MemoryAccess(ThreadState* thr, uptr pc, uptr addr,
                                      uptr size, AccessType typ) {
+#if SANITIZER_SAMPLING_NO_ACCESS
+  return;
+#endif
+#if SANITIZER_SAMPLING
+  // if (UNLIKELY(!CheckAndUpdateSamplingCounter(thr))) return;
+#endif
   RawShadow* shadow_mem = MemToShadow(addr);
   UNUSED char memBuf[4][64];
   DPrintf2("#%d: Access: %d@%d %p/%zd typ=0x%x {%s, %s, %s, %s}\n", thr->tid,
@@ -447,12 +507,21 @@ void MemoryAccess16(ThreadState* thr, uptr pc, uptr addr, AccessType typ);
 NOINLINE
 void RestartMemoryAccess16(ThreadState* thr, uptr pc, uptr addr,
                            AccessType typ) {
+#if SANITIZER_SAMPLING_NO_ACCESS
+  return;
+#endif
   TraceSwitchPart(thr);
   MemoryAccess16(thr, pc, addr, typ);
 }
 
 ALWAYS_INLINE USED void MemoryAccess16(ThreadState* thr, uptr pc, uptr addr,
                                        AccessType typ) {
+#if SANITIZER_SAMPLING_NO_ACCESS
+  return;
+#endif
+#if SANITIZER_SAMPLING
+  // if (UNLIKELY(!CheckAndUpdateSamplingCounter(thr))) return;
+#endif
   const uptr size = 16;
   FastState fast_state = thr->fast_state;
   if (UNLIKELY(fast_state.GetIgnoreBit()))
@@ -483,6 +552,9 @@ SECOND:
 NOINLINE
 void RestartUnalignedMemoryAccess(ThreadState* thr, uptr pc, uptr addr,
                                   uptr size, AccessType typ) {
+#if SANITIZER_SAMPLING_NO_ACCESS
+  return;
+#endif
   TraceSwitchPart(thr);
   UnalignedMemoryAccess(thr, pc, addr, size, typ);
 }
@@ -490,6 +562,12 @@ void RestartUnalignedMemoryAccess(ThreadState* thr, uptr pc, uptr addr,
 ALWAYS_INLINE USED void UnalignedMemoryAccess(ThreadState* thr, uptr pc,
                                               uptr addr, uptr size,
                                               AccessType typ) {
+#if SANITIZER_SAMPLING_NO_ACCESS
+  return;
+#endif
+#if SANITIZER_SAMPLING
+  // if (UNLIKELY(!CheckAndUpdateSamplingCounter(thr))) return;
+#endif
   DCHECK_LE(size, 8);
   FastState fast_state = thr->fast_state;
   if (UNLIKELY(fast_state.GetIgnoreBit()))
@@ -523,6 +601,9 @@ SECOND:
 }
 
 void ShadowSet(RawShadow* p, RawShadow* end, RawShadow v) {
+#if SANITIZER_SAMPLING_NO_ACCESS
+  return;
+#endif
   DCHECK_LE(p, end);
   DCHECK(IsShadowMem(p));
   DCHECK(IsShadowMem(end));
@@ -545,6 +626,9 @@ void ShadowSet(RawShadow* p, RawShadow* end, RawShadow v) {
 }
 
 static void MemoryRangeSet(uptr addr, uptr size, RawShadow val) {
+#if SANITIZER_SAMPLING_NO_ACCESS
+  return;
+#endif
   if (size == 0)
     return;
   DCHECK_EQ(addr % kShadowCell, 0);
@@ -581,12 +665,19 @@ static void MemoryRangeSet(uptr addr, uptr size, RawShadow val) {
 }
 
 void MemoryResetRange(ThreadState* thr, uptr pc, uptr addr, uptr size) {
+#if SANITIZER_SAMPLING_NO_SHADOW
+  // if (LIKELY(!CheckAndUpdateSamplingCounter(thr))) return;
+  // return;
+#endif
   uptr addr1 = RoundDown(addr, kShadowCell);
   uptr size1 = RoundUp(size + addr - addr1, kShadowCell);
   MemoryRangeSet(addr1, size1, Shadow::kEmpty);
 }
 
 void MemoryRangeFreed(ThreadState* thr, uptr pc, uptr addr, uptr size) {
+#if SANITIZER_SAMPLING
+  // if (!CheckAndUpdateSamplingCounter(thr)) return;
+#endif
   // Callers must lock the slot to ensure synchronization with the reset.
   // The problem with "freed" memory is that it's not "monotonic"
   // with respect to bug detection: freed memory is bad to access,
@@ -616,6 +707,9 @@ void MemoryRangeFreed(ThreadState* thr, uptr pc, uptr addr, uptr size) {
     const m128 shadow = _mm_load_si128((m128*)shadow_mem);
     if (UNLIKELY(CheckRaces(thr, shadow_mem, cur, shadow, access, typ)))
       return;
+// #if SANITIZER_SAMPLING_NO_SHADOW
+//   if (UNLIKELY(CheckAndUpdateSamplingCounter(thr)))
+// #endif
     _mm_store_si128((m128*)shadow_mem, freed);
   }
 #else
@@ -631,6 +725,10 @@ void MemoryRangeFreed(ThreadState* thr, uptr pc, uptr addr, uptr size) {
 }
 
 void MemoryRangeImitateWrite(ThreadState* thr, uptr pc, uptr addr, uptr size) {
+#if SANITIZER_SAMPLING_NO_SHADOW
+  // if (LIKELY(!CheckAndUpdateSamplingCounter(thr))) return;
+  // return;
+#endif
   DCHECK_EQ(addr % kShadowCell, 0);
   size = RoundUp(size, kShadowCell);
   TraceMemoryAccessRange(thr, pc, addr, size, kAccessWrite);
@@ -640,6 +738,9 @@ void MemoryRangeImitateWrite(ThreadState* thr, uptr pc, uptr addr, uptr size) {
 
 void MemoryRangeImitateWriteOrResetRange(ThreadState* thr, uptr pc, uptr addr,
                                          uptr size) {
+// #if SANITIZER_SAMPLING_NO_SHADOW
+//   if (UNLIKELY(!CheckAndUpdateSamplingCounter(thr))) return;
+// #endif
   if (thr->ignore_reads_and_writes == 0)
     MemoryRangeImitateWrite(thr, pc, addr, size);
   else
@@ -649,6 +750,9 @@ void MemoryRangeImitateWriteOrResetRange(ThreadState* thr, uptr pc, uptr addr,
 ALWAYS_INLINE
 bool MemoryAccessRangeOne(ThreadState* thr, RawShadow* shadow_mem, Shadow cur,
                           AccessType typ) {
+#if SANITIZER_SAMPLING_NO_ACCESS
+  return false;
+#endif
   LOAD_CURRENT_SHADOW(cur, shadow_mem);
   if (LIKELY(ContainsSameAccess(shadow_mem, cur, shadow, access, typ)))
     return false;
@@ -664,6 +768,9 @@ NOINLINE void RestartMemoryAccessRange(ThreadState* thr, uptr pc, uptr addr,
 
 template <bool is_read>
 void MemoryAccessRangeT(ThreadState* thr, uptr pc, uptr addr, uptr size) {
+#if SANITIZER_SAMPLING_NO_ACCESS
+  return;
+#endif
   const AccessType typ =
       (is_read ? kAccessRead : kAccessWrite) | kAccessNoRodata;
   RawShadow* shadow_mem = MemToShadow(addr);

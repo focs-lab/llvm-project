@@ -23,6 +23,7 @@ const uptr kVectorClockSize = kThreadSlotCount * sizeof(Epoch) / sizeof(m128);
 VectorClock::VectorClock() { Reset(); }
 
 void VectorClock::Reset() {
+version_ = 0;
 #if !TSAN_VECTORIZE
   for (uptr i = 0; i < kThreadSlotCount; i++)
     clk_[i] = kEpochZero;

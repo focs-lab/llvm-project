@@ -18,8 +18,18 @@
 #include "sanitizer_common/sanitizer_mutex.h"
 #include "ubsan/ubsan_platform.h"
 
+#define SANITIZER_SAMPLING 1
+#define SANITIZER_SAMPLING_NO_MUTEX 0
+#define SANITIZER_SAMPLING_NO_ACCESS 0
+#define SANITIZER_SAMPLING_NO_SHADOW 1
+#define SANITIZER_SAMPLING_EPSILON 0.01
+#define SANITIZER_SAMPLING_DELTA 0.1
+#define SANITIZER_SAMPLING_1_OVER_EPSILON 100
+#define SANITIZER_SAMPLING_R 1727   // 15 * ln(1/delta) / (2 * eps)
+#define SANITIZER_SAMPLING_INITIAL_M  32
+
 #ifndef TSAN_VECTORIZE
-#  define TSAN_VECTORIZE __SSE4_2__
+#  define TSAN_VECTORIZE 1 // __SSE4_2__
 #endif
 
 #if TSAN_VECTORIZE

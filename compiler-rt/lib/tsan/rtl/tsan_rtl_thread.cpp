@@ -129,6 +129,11 @@ Tid ThreadCreate(ThreadState *thr, uptr pc, uptr uid, bool detached) {
   }
   Tid tid = ctx->thread_registry.CreateThread(uid, detached, parent, &arg);
   DPrintf("#%d: ThreadCreate tid=%d uid=%zu\n", parent, tid, uid);
+
+#if SANITIZER_SAMPLING
+  // atomic_fetch_add(&ctx->alive_threads, 1, memory_order_relaxed);
+#endif
+
   return tid;
 }
 
@@ -247,6 +252,12 @@ void ThreadFinish(ThreadState *thr) {
     ctx->dd->DestroyLogicalThread(thr->dd_lt);
   SlotDetach(thr);
   ctx->thread_registry.FinishThread(thr->tid);
+
+#if SANITIZER_SAMPLING
+  // Printf("### Thread #%d Max Locks Held: %lu\n", thr->tid, thr->max_locks_held);
+  // atomic_fetch_sub(&ctx->alive_threads, 1, memory_order_relaxed);
+#endif
+
   thr->~ThreadState();
 }
 

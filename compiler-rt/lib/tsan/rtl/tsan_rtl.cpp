@@ -398,6 +398,17 @@ Context::Context()
     slot_queue.PushBack(slot);
   }
   global_epoch = 1;
+
+#if SANITIZER_SAMPLING
+  uptr seed = 0;
+  seed = (uptr) &seed;
+  seed = (seed >> 12) & 0xfff;
+  if (seed == 0) seed = 0x1234;   // lfsr start state cannot be 0
+  // Printf("Seed: %lu\n", seed);
+  atomic_store_relaxed(&sampling_counter, 0);
+  atomic_store_relaxed(&sampling_version, 0);
+  atomic_store_relaxed(&max_locks_held, 0);
+#endif
 }
 
 TidSlot::TidSlot() : mtx(MutexTypeSlot) {}
@@ -408,7 +419,8 @@ ThreadState::ThreadState(Tid tid)
     // they may be accessed before the ctor.
     // ignore_reads_and_writes()
     // ignore_interceptors()
-    : tid(tid) {
+    : tid(tid)
+  {
   CHECK_EQ(reinterpret_cast<uptr>(this) % SANITIZER_CACHE_LINE_SIZE, 0);
 #if !SANITIZER_GO
   // C/C++ uses fixed size shadow stack.
@@ -424,6 +436,10 @@ ThreadState::ThreadState(Tid tid)
 #endif
   shadow_stack_pos = shadow_stack;
   shadow_stack_end = shadow_stack + kInitStackSize;
+
+#if SANITIZER_SAMPLING
+  sampling_counter = 0;
+#endif
 }
 
 #if !SANITIZER_GO
@@ -800,8 +816,111 @@ int Finalize(ThreadState *thr) {
 
   failed = OnFinalize(failed);
 
+#if SANITIZER_SAMPLING
+  // uptr nthreads = ctx->thread_registry.GetMaxAliveThreads();
+  // uptr nthreads = atomic_load_relaxed(&ctx->alive_threads);
+  // u32 nlocks = atomic_load_relaxed(&ctx->max_locks_held);
+  // Printf("# Max running threads: %lu\n", nthreads);
+  // Printf("# Max locks held: %u\n", nlocks);
+  // Printf("# m = %lu\n", 4*nthreads + 2*nlocks);
+#endif
+
   return failed ? common_flags()->exitcode : 0;
 }
+
+#if SANITIZER_SAMPLING
+// Checks the sampling counter and returns true if this event should be sampled.
+// Might not want to inline this because it slows down the target compilation time by a lot.
+// ALWAYS_INLINE USED bool CheckAndUpdateSamplingCounter(ThreadState *thr) {
+  // atomic_uint32_t* sampling_counter = (atomic_uint32_t*) Mapping48AddressSpace::kShadowAdd;
+  // atomic_uint32_t* sampled_counter = (atomic_uint32_t*) Mapping48AddressSpace::kShadowAdd+16;
+  // atomic_uint32_t* sampling_counter = &ctx->sampling_counter;
+  // u32 counter = atomic_load_relaxed(sampling_counter);
+  // if (thr->fast_state.sid() == static_cast<Sid>(0))
+    // atomic_store_relaxed(sampling_counter, counter+1);
+  // u32 counter = *sampling_counter_shadow;
+  // *sampling_counter_shadow = counter+1;
+  // u32 rand = 0;
+  // rand = (u64)(&rand) >> 16 & 0xff;
+  // if (rand < 32) atomic_fetch_add(sampled_counter, 1, memory_order_relaxed);
+  // u32 counter = atomic_fetch_add(sampling_counter, 1, memory_order_relaxed);
+  // u32 counter = thr->sampling_counter++;
+  // return ((u8)(counter & 0xff)) > 0xe0;
+  // return true;
+
+  // u32 sampling_version = atomic_load_relaxed(&ctx->sampling_version);
+  // u32 sampling_counter;
+  // thr->rng_state++;
+
+  // bool should_sample = false;
+
+  // // State 1: Non-sampling period (sampling version is even)
+  // // Most of the time should be non-sampling in the case of O(1) samples
+  // if (LIKELY((sampling_version & 1) == 0)) {
+  //   // update rng
+  //   // https://en.wikipedia.org/wiki/Linear-feedback_shift_register#Galois_LFSRs
+  //   // https://users.ece.cmu.edu/~koopman/lfsr/32.txt
+  //   // u32 rng_state = thr->rng_state;
+  //   // u8 lsb = rng_state & 1u;
+  //   // rng_state >>= 1;
+  //   // if (lsb) rng_state ^= 0x80000057u;
+  //   // thr->rng_state = rng_state;
+
+  //   // r/(2^32) chance of starting a new subtrace
+  //   // State 1a: Transition to sampling period
+  //   // Have to synchronize with CAS, so that only 1 transition happens
+  //   if (UNLIKELY(thr->rng_state % 100 < 5)) {
+  //     atomic_store_relaxed(&ctx->sampling_version, sampling_version+1);
+
+  //     // update sampling version to next one
+  //     if (atomic_compare_exchange_strong(&ctx->sampling_version, &sampling_version, sampling_version+1, memory_order_relaxed)) {
+  //       // if true, means that this was the thread that performed the transition
+  //       // more than 1 threads could be trying to transition at the same time
+  //       // but only allow 1 to do it
+  //       // this thread is responsible for updating the sampling_counter
+  //       // determine sampling_counter for countdown in sampling period
+  //       u32 nthreads = atomic_load_relaxed(&ctx->alive_threads);
+  //       u32 nlocks = atomic_load_relaxed(&ctx->max_locks_held);
+  //       u32 m = 4*nthreads + 2*nlocks;
+  //       sampling_counter = 10; // 4*m*SANITIZER_SAMPLING_1_OVER_EPSILON;     // k = 4m/e
+  //       atomic_store_relaxed(&ctx->sampling_counter, sampling_counter);
+  //     }
+
+  //     // transition has been performed by another thread
+  //     should_sample = true;
+  //   }
+
+  //   // State 1b: No transition, don't need to do anything
+  //   should_sample = false;
+  // }
+  // // State 2: Sampling period (sampling version is odd)
+  // else if (sampling_version & 1) {
+  //   u32 sampling_counter = atomic_load_relaxed(&ctx->sampling_counter);
+  //   sampling_counter--;
+
+  //   // State 2a: Transition to non-sampling period
+  //   // Have to synchronize with CAS so that only 1 transition happens
+  //   if (UNLIKELY(sampling_counter == 0)) {
+  //     should_sample = false;
+  //     sampling_version++;
+      
+  //     // don't have to check whether succeeded or failed
+  //     // if it failed, it means that another thread has transitioned, and this thread does not need to worry about it
+  //     atomic_compare_exchange_strong(&ctx->sampling_version, &sampling_version, sampling_version+1, memory_order_relaxed);
+  //     // atomic_store_relaxed(&ctx->sampling_version, sampling_version+1);
+
+  //     // don't care about updating sampling counter since it is not used in non-sampling period anyway
+  //   }
+  //   // State 2b: No transition, just decrement sampling counter
+  //   else {
+  //     atomic_store_relaxed(&ctx->sampling_counter, sampling_counter);
+  //     should_sample = true;
+  //   }
+  // }
+
+  // return should_sample;
+// }
+#endif
 
 #if !SANITIZER_GO
 void ForkBefore(ThreadState* thr, uptr pc) SANITIZER_NO_THREAD_SAFETY_ANALYSIS {

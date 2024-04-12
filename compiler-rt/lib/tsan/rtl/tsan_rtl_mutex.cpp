@@ -42,6 +42,9 @@ struct Callback final : public DDCallback {
 };
 
 void DDMutexInit(ThreadState *thr, uptr pc, SyncVar *s) {
+#if SANITIZER_SAMPLING_NO_MUTEX
+  return;
+#endif
   Callback cb(thr, pc);
   ctx->dd->MutexInit(&cb, &s->dd);
   s->dd.ctx = s->addr;
@@ -49,6 +52,9 @@ void DDMutexInit(ThreadState *thr, uptr pc, SyncVar *s) {
 
 static void ReportMutexMisuse(ThreadState *thr, uptr pc, ReportType typ,
                               uptr addr, StackID creation_stack_id) {
+#if SANITIZER_SAMPLING_NO_MUTEX
+  return;
+#endif
   // In Go, these misuses are either impossible, or detected by std lib,
   // or false positives (e.g. unlock in a different thread).
   if (SANITIZER_GO)
@@ -67,6 +73,9 @@ static void ReportMutexMisuse(ThreadState *thr, uptr pc, ReportType typ,
 
 static void RecordMutexLock(ThreadState *thr, uptr pc, uptr addr,
                             StackID stack_id, bool write) {
+#if SANITIZER_SAMPLING_NO_MUTEX
+  return;
+#endif
   auto typ = write ? EventType::kLock : EventType::kRLock;
   // Note: it's important to trace before modifying mutex set
   // because tracing can switch trace part and we write the current
@@ -78,12 +87,18 @@ static void RecordMutexLock(ThreadState *thr, uptr pc, uptr addr,
 }
 
 static void RecordMutexUnlock(ThreadState *thr, uptr addr) {
+#if SANITIZER_SAMPLING_NO_MUTEX
+  return;
+#endif
   // See the comment in RecordMutexLock re order of operations.
   TraceMutexUnlock(thr, addr);
   thr->mset.DelAddr(addr);
 }
 
 void MutexCreate(ThreadState *thr, uptr pc, uptr addr, u32 flagz) {
+#if SANITIZER_SAMPLING_NO_MUTEX
+  return;
+#endif
   DPrintf("#%d: MutexCreate %zx flagz=0x%x\n", thr->tid, addr, flagz);
   if (!(flagz & MutexFlagLinkerInit) && pc && IsAppMem(addr))
     MemoryAccess(thr, pc, addr, 1, kAccessWrite);
@@ -96,6 +111,9 @@ void MutexCreate(ThreadState *thr, uptr pc, uptr addr, u32 flagz) {
 }
 
 void MutexDestroy(ThreadState *thr, uptr pc, uptr addr, u32 flagz) {
+#if SANITIZER_SAMPLING_NO_MUTEX
+  return;
+#endif
   DPrintf("#%d: MutexDestroy %zx\n", thr->tid, addr);
   bool unlock_locked = false;
   StackID creation_stack_id;
@@ -138,7 +156,14 @@ void MutexDestroy(ThreadState *thr, uptr pc, uptr addr, u32 flagz) {
 }
 
 void MutexPreLock(ThreadState *thr, uptr pc, uptr addr, u32 flagz) {
+#if SANITIZER_SAMPLING_NO_MUTEX
+  return;
+#endif
   DPrintf("#%d: MutexPreLock %zx flagz=0x%x\n", thr->tid, addr, flagz);
+#if SANITIZER_SAMPLING
+  // if (!CheckAndUpdateSamplingCounter(thr)) return;
+#endif
+
   if (flagz & MutexFlagTryLock)
     return;
   if (!common_flags()->detect_deadlocks)
@@ -156,8 +181,24 @@ void MutexPreLock(ThreadState *thr, uptr pc, uptr addr, u32 flagz) {
 }
 
 void MutexPostLock(ThreadState *thr, uptr pc, uptr addr, u32 flagz, int rec) {
+#if SANITIZER_SAMPLING_NO_MUTEX
+  return;
+#endif
   DPrintf("#%d: MutexPostLock %zx flag=0x%x rec=%d\n",
       thr->tid, addr, flagz, rec);
+#if SANITIZER_SAMPLING
+  // update lock stats
+  // thr->locks_held++;
+  // thr->max_locks_held = max(thr->max_locks_held, thr->locks_held);
+  // u32 max_locks_ctx = atomic_load_relaxed(&ctx->max_locks_held);
+  // u32 new_max_locks_held;
+  // do {
+  //   new_max_locks_held = max(thr->max_locks_held, max_locks_ctx);
+  // } while(!atomic_compare_exchange_weak(&ctx->max_locks_held, &max_locks_ctx, new_max_locks_held, memory_order_relaxed));
+
+  // if (!CheckAndUpdateSamplingCounter(thr)) return;
+#endif
+
   if (flagz & MutexFlagRecursiveLock)
     CHECK_GT(rec, 0);
   else
@@ -190,8 +231,26 @@ void MutexPostLock(ThreadState *thr, uptr pc, uptr addr, u32 flagz, int rec) {
       s->recursion += rec;
       if (first) {
         if (!thr->ignore_sync) {
+// #if SANITIZER_SAMPLING
+//           // only acquire clocks that are of the current version
+//           // as version may have changed after the several operations above
+//           u32 sampling_version = atomic_load_relaxed(&ctx->sampling_version);
+//           if (sampling_version & 1) {      // only care when in sampling period
+//             if (thr->clock.GetVersion() != sampling_version) {
+//               thr->clock.Reset();
+//               thr->clock.SetVersion(sampling_version);
+//             }
+//             if (sampling_version == s->clock->GetVersion()) {
+//               thr->clock.Acquire(s->clock);
+//             }
+//             if (sampling_version == s->read_clock->GetVersion()) {
+//               thr->clock.Acquire(s->read_clock);
+//             }
+//           }
+// #else
           thr->clock.Acquire(s->clock);
           thr->clock.Acquire(s->read_clock);
+// #endif
         }
       }
       if (first && common_flags()->detect_deadlocks) {
@@ -214,7 +273,15 @@ void MutexPostLock(ThreadState *thr, uptr pc, uptr addr, u32 flagz, int rec) {
 }
 
 int MutexUnlock(ThreadState *thr, uptr pc, uptr addr, u32 flagz) {
+#if SANITIZER_SAMPLING_NO_MUTEX
+  return 0;
+#endif
   DPrintf("#%d: MutexUnlock %zx flagz=0x%x\n", thr->tid, addr, flagz);
+#if SANITIZER_SAMPLING
+  // thr->locks_held--;
+  // CHECK_GE(thr->locks_held, 0);
+  // if (!CheckAndUpdateSamplingCounter(thr)) return 0;
+#endif
   if (pc && IsAppMem(addr))
     MemoryAccess(thr, pc, addr, 1, kAccessRead | kAccessAtomic);
   StackID creation_stack_id;
@@ -239,7 +306,17 @@ int MutexUnlock(ThreadState *thr, uptr pc, uptr addr, u32 flagz) {
         if (s->recursion == 0) {
           s->owner_tid = kInvalidTid;
           if (!thr->ignore_sync) {
+// #if SANITIZER_SAMPLING
+//             u32 sampling_version = atomic_load_relaxed(&ctx->sampling_version);
+//             if (sampling_version & 1) {      // only care when in sampling period
+//               if (thr->clock.GetVersion() == sampling_version) {
+//                 thr->clock.ReleaseStore(&s->clock);
+//                 s->clock->SetVersion(sampling_version);
+//               }
+//             }
+// #else
             thr->clock.ReleaseStore(&s->clock);
+// #endif
             released = true;
           }
         }
@@ -264,6 +341,9 @@ int MutexUnlock(ThreadState *thr, uptr pc, uptr addr, u32 flagz) {
 }
 
 void MutexPreReadLock(ThreadState *thr, uptr pc, uptr addr, u32 flagz) {
+#if SANITIZER_SAMPLING_NO_MUTEX
+  return;
+#endif
   DPrintf("#%d: MutexPreReadLock %zx flagz=0x%x\n", thr->tid, addr, flagz);
   if ((flagz & MutexFlagTryLock) || !common_flags()->detect_deadlocks)
     return;
@@ -279,6 +359,9 @@ void MutexPreReadLock(ThreadState *thr, uptr pc, uptr addr, u32 flagz) {
 }
 
 void MutexPostReadLock(ThreadState *thr, uptr pc, uptr addr, u32 flagz) {
+#if SANITIZER_SAMPLING_NO_MUTEX
+  return;
+#endif
   DPrintf("#%d: MutexPostReadLock %zx flagz=0x%x\n", thr->tid, addr, flagz);
   if (pc && IsAppMem(addr))
     MemoryAccess(thr, pc, addr, 1, kAccessRead | kAccessAtomic);
@@ -322,6 +405,9 @@ void MutexPostReadLock(ThreadState *thr, uptr pc, uptr addr, u32 flagz) {
 }
 
 void MutexReadUnlock(ThreadState *thr, uptr pc, uptr addr) {
+#if SANITIZER_SAMPLING_NO_MUTEX
+  return;
+#endif
   DPrintf("#%d: MutexReadUnlock %zx\n", thr->tid, addr);
   if (pc && IsAppMem(addr))
     MemoryAccess(thr, pc, addr, 1, kAccessRead | kAccessAtomic);
@@ -363,6 +449,9 @@ void MutexReadUnlock(ThreadState *thr, uptr pc, uptr addr) {
 }
 
 void MutexReadOrWriteUnlock(ThreadState *thr, uptr pc, uptr addr) {
+#if SANITIZER_SAMPLING_NO_MUTEX
+  return;
+#endif
   DPrintf("#%d: MutexReadOrWriteUnlock %zx\n", thr->tid, addr);
   if (pc && IsAppMem(addr))
     MemoryAccess(thr, pc, addr, 1, kAccessRead | kAccessAtomic);
@@ -417,6 +506,9 @@ void MutexReadOrWriteUnlock(ThreadState *thr, uptr pc, uptr addr) {
 }
 
 void MutexRepair(ThreadState *thr, uptr pc, uptr addr) {
+#if SANITIZER_SAMPLING_NO_MUTEX
+  return;
+#endif
   DPrintf("#%d: MutexRepair %zx\n", thr->tid, addr);
   SlotLocker locker(thr);
   auto s = ctx->metamap.GetSyncOrCreate(thr, pc, addr, true);
@@ -426,6 +518,9 @@ void MutexRepair(ThreadState *thr, uptr pc, uptr addr) {
 }
 
 void MutexInvalidAccess(ThreadState *thr, uptr pc, uptr addr) {
+#if SANITIZER_SAMPLING_NO_MUTEX
+  return;
+#endif
   DPrintf("#%d: MutexInvalidAccess %zx\n", thr->tid, addr);
   StackID creation_stack_id = kInvalidStackID;
   {
@@ -439,6 +534,9 @@ void MutexInvalidAccess(ThreadState *thr, uptr pc, uptr addr) {
 }
 
 void Acquire(ThreadState *thr, uptr pc, uptr addr) {
+#if SANITIZER_SAMPLING_NO_MUTEX
+  return;
+#endif
   DPrintf("#%d: Acquire %zx\n", thr->tid, addr);
   if (thr->ignore_sync)
     return;
@@ -453,6 +551,9 @@ void Acquire(ThreadState *thr, uptr pc, uptr addr) {
 }
 
 void AcquireGlobal(ThreadState *thr) {
+#if SANITIZER_SAMPLING_NO_MUTEX
+  return;
+#endif
   DPrintf("#%d: AcquireGlobal\n", thr->tid);
   if (thr->ignore_sync)
     return;
@@ -461,6 +562,9 @@ void AcquireGlobal(ThreadState *thr) {
 }
 
 void Release(ThreadState *thr, uptr pc, uptr addr) {
+#if SANITIZER_SAMPLING_NO_MUTEX
+  return;
+#endif
   DPrintf("#%d: Release %zx\n", thr->tid, addr);
   if (thr->ignore_sync)
     return;
@@ -474,6 +578,9 @@ void Release(ThreadState *thr, uptr pc, uptr addr) {
 }
 
 void ReleaseStore(ThreadState *thr, uptr pc, uptr addr) {
+#if SANITIZER_SAMPLING_NO_MUTEX
+  return;
+#endif
   DPrintf("#%d: ReleaseStore %zx\n", thr->tid, addr);
   if (thr->ignore_sync)
     return;
@@ -487,6 +594,9 @@ void ReleaseStore(ThreadState *thr, uptr pc, uptr addr) {
 }
 
 void ReleaseStoreAcquire(ThreadState *thr, uptr pc, uptr addr) {
+#if SANITIZER_SAMPLING_NO_MUTEX
+  return;
+#endif
   DPrintf("#%d: ReleaseStoreAcquire %zx\n", thr->tid, addr);
   if (thr->ignore_sync)
     return;
@@ -500,6 +610,9 @@ void ReleaseStoreAcquire(ThreadState *thr, uptr pc, uptr addr) {
 }
 
 void IncrementEpoch(ThreadState *thr) {
+#if SANITIZER_SAMPLING_NO_MUTEX
+  return;
+#endif
   DCHECK(!thr->ignore_sync);
   DCHECK(thr->slot_locked);
   Epoch epoch = EpochInc(thr->fast_state.epoch());
@@ -526,6 +639,9 @@ void AfterSleep(ThreadState *thr, uptr pc) {
 #endif
 
 void ReportDeadlock(ThreadState *thr, uptr pc, DDReport *r) {
+#if SANITIZER_SAMPLING_NO_MUTEX
+  return;
+#endif
   if (r == 0 || !ShouldReport(thr, ReportTypeDeadlock))
     return;
   ThreadRegistryLock l(&ctx->thread_registry);
@@ -553,6 +669,9 @@ void ReportDeadlock(ThreadState *thr, uptr pc, DDReport *r) {
 
 void ReportDestroyLocked(ThreadState *thr, uptr pc, uptr addr,
                          FastState last_lock, StackID creation_stack_id) {
+#if SANITIZER_SAMPLING_NO_MUTEX
+  return;
+#endif
   // We need to lock the slot during RestoreStack because it protects
   // the slot journal.
   Lock slot_lock(&ctx->slots[static_cast<uptr>(last_lock.sid())].mtx);

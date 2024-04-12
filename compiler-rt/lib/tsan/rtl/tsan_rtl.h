@@ -53,6 +53,8 @@
 #endif
 
 namespace __tsan {
+  
+// static atomic_uint32_t sampling_counter;
 
 #if !SANITIZER_GO
 struct MapUnmapCallback;
@@ -174,6 +176,13 @@ struct ThreadState {
   ThreadState* current;
 
   atomic_sint32_t pending_signals;
+
+#if SANITIZER_SAMPLING
+  // u32 locks_held;
+  // u32 max_locks_held;
+  // u32 rng_state;
+  u32 sampling_counter;
+#endif
 
   VectorClock clock;
 
@@ -315,6 +324,13 @@ struct Context {
   atomic_uint32_t stop_background_thread;
 
   ThreadRegistry thread_registry;
+#if SANITIZER_SAMPLING
+  // high 32-bits is version, low 32-bits is counter
+  atomic_uint32_t sampling_version;
+  atomic_uint32_t max_locks_held;
+  atomic_uint32_t alive_threads;
+  atomic_uint32_t sampling_counter;
+#endif
 
   // This is used to prevent a very unlikely but very pathological behavior.
   // Since memory access handling is not synchronized with DoReset,
@@ -524,6 +540,28 @@ int Finalize(ThreadState *thr);
 void OnUserAlloc(ThreadState *thr, uptr pc, uptr p, uptr sz, bool write);
 void OnUserFree(ThreadState *thr, uptr pc, uptr p, bool write);
 
+#if SANITIZER_SAMPLING
+ALWAYS_INLINE bool CheckAndUpdateSamplingCounter(ThreadState *thr) {
+  // atomic_uint32_t* sampling_counter = (atomic_uint32_t*) Mapping48AddressSpace::kShadowAdd;
+  // atomic_uint32_t* sampled_counter = (atomic_uint32_t*) Mapping48AddressSpace::kShadowAdd+16;
+  // atomic_uint32_t* sampling_counter = &ctx->sampling_counter;
+  // u32 counter = atomic_load_relaxed(sampling_counter);
+  // if (thr->fast_state.sid() == static_cast<Sid>(0))
+    // atomic_store_relaxed(sampling_counter, counter+1);
+  // u32 counter = *sampling_counter_shadow;
+  // *sampling_counter_shadow = counter+1;
+  // u32 rand = 0;
+  // rand = (u64)(&rand) >> 16 & 0xff;
+  // if (rand < 32) atomic_fetch_add(sampled_counter, 1, memory_order_relaxed);
+  // u32 counter = atomic_fetch_add(sampling_counter, 1, memory_order_relaxed);
+  u32 counter = thr->sampling_counter++;
+  // return ((u8)(counter & 0xff)) < 32;
+  return ((counter & 0xff)) < 0x20;
+  // return false;
+  // return rand < 32;
+}
+#endif
+
 void MemoryAccess(ThreadState *thr, uptr pc, uptr addr, uptr size,
                   AccessType typ);
 void UnalignedMemoryAccess(ThreadState *thr, uptr pc, uptr addr, uptr size,
@@ -535,6 +573,9 @@ void MemoryAccessRangeT(ThreadState *thr, uptr pc, uptr addr, uptr size);
 ALWAYS_INLINE
 void MemoryAccessRange(ThreadState *thr, uptr pc, uptr addr, uptr size,
                        bool is_write) {
+#if SANITIZER_SAMPLING
+  // return;
+#endif
   if (size == 0)
     return;
   if (is_write)
@@ -745,6 +786,9 @@ void TraceEvent(ThreadState *thr, EventT ev) {
 
 ALWAYS_INLINE WARN_UNUSED_RESULT bool TryTraceFunc(ThreadState *thr,
                                                    uptr pc = 0) {
+#if SANITIZER_SAMPLING
+  // return true;
+#endif
   if (!kCollectHistory)
     return true;
   EventFunc *ev;
