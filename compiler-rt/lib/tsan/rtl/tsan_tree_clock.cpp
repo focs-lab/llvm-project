@@ -72,8 +72,9 @@ ALWAYS_INLINE void TreeClock::DetachNode(Sid sid) {
 
 ALWAYS_INLINE void TreeClock::PushChild(Sid parent, Sid child) {
   // Printf("%u: PushChild %u -> %u\n", root_sid_, parent, child);
+  DCHECK_NE(parent, child);
 
-  Node parent_node = GetNode(parent);
+  Node& parent_node = GetNode(parent);
   Sid parent_first_child = parent_node.first_child;
 
   // if the parent has existing children, make the new child the left sibling of the current first child
@@ -84,16 +85,17 @@ ALWAYS_INLINE void TreeClock::PushChild(Sid parent, Sid child) {
   // update the links for the new child
   Node& new_node = GetNode(child);
   new_node.prev = kFreeSid;
+
   new_node.next = parent_first_child;
   new_node.parent = parent;
 
   // update the parent's first child to be the new child
-  GetNode(parent).first_child = child;
+  parent_node.first_child = child;
   // Printf("           %u -> %u\n", parent, GetNode(parent).first_child);
 }
 
 ALWAYS_INLINE void TreeClock::GetUpdatedNodesJoin(const TreeClock* src, Sid parent, Epoch parent_clk) {
-  // Printf("%u: GetUpdatedNodesJoin %u %u %u\n", root_sid_, src->root_sid_, parent, parent_clk);
+  // Printf("%u: GetUpdatedNodesJoin %u\n", root_sid_, parent);
   Node parent_node = src->GetNode(parent);
   Sid cur_node_sid = parent_node.first_child;
 
@@ -152,13 +154,14 @@ void TreeClock::Acquire(const TreeClock* src) {
   Epoch this_src_root_clk = Get(src_root_sid);       // the epoch of the root sid in this clock
 
   if (src_src_root_clk <= this_src_root_clk) return;      // return if the src clock is older or same
-  if (src_root_sid != root_sid_ && !IsNodeNull(src_root_sid)) DetachNode(src_root_sid);
+  if (!IsNodeNull(src_root_sid) && src_root_sid != root_sid_) DetachNode(src_root_sid);
 
   // clock assignments
   Set(src_root_sid, src_src_root_clk);               // update epoch
   SetAclk(src_root_sid, Get(root_sid_));        // to indicate that the root sid was updated at this epoch
 
-  PushChild(root_sid_, src_root_sid);
+  // only push child if it is not the root node
+  if (root_sid_ != src_root_sid) PushChild(root_sid_, src_root_sid);
   GetUpdatedNodesJoin(src, src_root_sid, this_src_root_clk);
 
   // only update the clocks that matter
@@ -213,6 +216,22 @@ void TreeClock::ReleaseStore(TreeClock** dstp) const {
   *dst = *this;
 }
 
+ALWAYS_INLINE void TreeClock::GetUpdatedNodesCopy(const TreeClock& other, Sid parent, Epoch parent_clk) {
+  // Printf("%u: GetUpdatedNodesCopy %u\n", root_sid_, parent);
+  Node parent_node = other.GetNode(parent);
+  Sid cur_node_sid = parent_node.first_child;
+
+  while (cur_node_sid != kFreeSid) {
+    Epoch src_clk = other.Get(cur_node_sid);
+    Epoch this_clk = Get(cur_node_sid);
+    if (this_clk < src_clk) stack_[++stack_pos_] = cur_node_sid;
+    else if (cur_node_sid == root_sid_) stack_[++stack_pos_] = cur_node_sid;
+    else if (other.GetAclk(cur_node_sid) <= parent_clk) break;
+
+    cur_node_sid = other.GetNode(cur_node_sid).next;
+  }
+}
+
 TreeClock& TreeClock::operator=(const TreeClock& other) {
   // Printf("%u: Copy %u @ %p - %p\n", root_sid_, other.root_sid_, this, &other);
 #if TSAN_COLLECT_STATS
@@ -225,41 +244,58 @@ TreeClock& TreeClock::operator=(const TreeClock& other) {
   for (uptr i = 0; i < kThreadSlotCount; i++)
     clk_[i] = other.clk_[i];
 #else
-  m128* __restrict vdst = reinterpret_cast<m128*>(clk_);
-  m128 const* __restrict vsrc = reinterpret_cast<m128 const*>(other.clk_);
-  m128* __restrict vadst = reinterpret_cast<m128*>(aclk_);
-  m128 const* __restrict vasrc = reinterpret_cast<m128 const*>(other.aclk_);
-  for (uptr i = 0; i < kTreeClockSize; i++) {
-    m128 s1 = _mm_load_si128(&vsrc[i]);
-    m128 s2 = _mm_load_si128(&vasrc[i]);
-    _mm_store_si128(&vdst[i], s1);
-    _mm_store_si128(&vadst[i], s2);
-  }
+  // m128* __restrict vdst = reinterpret_cast<m128*>(clk_);
+  // m128 const* __restrict vsrc = reinterpret_cast<m128 const*>(other.clk_);
+  // m128* __restrict vadst = reinterpret_cast<m128*>(aclk_);
+  // m128 const* __restrict vasrc = reinterpret_cast<m128 const*>(other.aclk_);
+  // for (uptr i = 0; i < kTreeClockSize; i++) {
+  //   m128 s1 = _mm_load_si128(&vsrc[i]);
+  //   m128 s2 = _mm_load_si128(&vasrc[i]);
+  //   _mm_store_si128(&vdst[i], s1);
+  //   _mm_store_si128(&vadst[i], s2);
+  // }
 
-  m128* __restrict vndst = reinterpret_cast<m128*>(nodes_);
-  m128 const* __restrict vnsrc = reinterpret_cast<m128 const*>(other.nodes_);
-  for (uptr i = 0; i < kTreeClockSize2; i++) {
-    m128 s = _mm_load_si128(&vnsrc[i]);
-    _mm_store_si128(&vndst[i], s);
+  // m128* __restrict vndst = reinterpret_cast<m128*>(nodes_);
+  // m128 const* __restrict vnsrc = reinterpret_cast<m128 const*>(other.nodes_);
+  // for (uptr i = 0; i < kTreeClockSize2; i++) {
+  //   m128 s = _mm_load_si128(&vnsrc[i]);
+  //   _mm_store_si128(&vndst[i], s);
+  // }
+
+  // root_sid_ = other.root_sid_;
+
+  Sid other_root_sid = other.root_sid_;            // the root sid of the src clock
+  if (!IsNodeNull(other_root_sid) && other_root_sid != root_sid_)
+    DetachNode(other_root_sid);
+
+  Epoch this_other_root_clk = Get(other_root_sid);
+
+  Set(other_root_sid, other.Get(other_root_sid));
+  SetAclk(other_root_sid, other.GetAclk(other_root_sid));
+
+  Node& node = GetNode(other_root_sid);
+  node.parent = kFreeSid;
+  node.prev = kFreeSid;
+  node.next = kFreeSid;
+
+  GetUpdatedNodesCopy(other, other_root_sid, this_other_root_clk);
+
+  while (stack_pos_ >= 0) {
+    Sid cur_node_sid = stack_[stack_pos_--];
+    // Printf("%u ", cur_node_sid);
+    Epoch cur_node_clock = Get(cur_node_sid);
+
+    // need to reorder this node in the tree
+    if (!IsNodeNull(cur_node_sid) && cur_node_sid != root_sid_) DetachNode(cur_node_sid);
+
+    Set(cur_node_sid, other.Get(cur_node_sid));
+    SetAclk(cur_node_sid, other.GetAclk(cur_node_sid));
+
+    PushChild(other.GetNode(cur_node_sid).parent, cur_node_sid);
+    GetUpdatedNodesCopy(other, cur_node_sid, cur_node_clock);
   }
 
   root_sid_ = other.root_sid_;
-
-  // Sid src_root_sid = other.root_sid_;            // the root sid of the src clock
-  // if (!IsNodeNull(src_root_sid) && src_root_sid != root_sid_)
-  //   DetachNode(src_root_sid);
-
-  // Epoch clk = Get(src_root_sid);
-
-  // Set(src_root_sid, other.Get(src_root_sid));
-  // SetAclk(src_root_sid, other.GetAclk(src_root_sid));
-
-  // Node node = GetNode(src_root_sid);
-  // node.parent = kFreeSid;
-  // node.prev = kFreeSid;
-  // node.next = kFreeSid;
-
-  // GetUpdatedNodesJoin(other, src_root_sid, )
 
 #endif
   return *this;
@@ -268,7 +304,7 @@ TreeClock& TreeClock::operator=(const TreeClock& other) {
 void TreeClock::ReleaseStoreAcquire(TreeClock** dstp) {
   // Printf("Num relstoreacq\n");
   TreeClock* dst = AllocClock(dstp);
-  // Printf("%u: ReleaseStoreAcquire %u\n", root_sid_, dst->root_sid_);
+  Printf("%u: ReleaseStoreAcquire %u\n", root_sid_, dst->root_sid_);
 #if !TSAN_VECTORIZE
   for (uptr i = 0; i < kThreadSlotCount; i++) {
     Epoch tmp = dst->clk_[i];
@@ -295,7 +331,7 @@ void TreeClock::ReleaseAcquire(TreeClock** dstp) {
 #endif
 
   TreeClock* dst = AllocClock(dstp);
-  // Printf("%u: ReleaseAcquire %u\n", root_sid_, dst->root_sid_);
+  Printf("%u: ReleaseAcquire %u\n", root_sid_, dst->root_sid_);
 #if !TSAN_VECTORIZE
   for (uptr i = 0; i < kThreadSlotCount; i++) {
     dst->clk_[i] = max(dst->clk_[i], clk_[i]);

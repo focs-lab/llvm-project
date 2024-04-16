@@ -69,6 +69,7 @@ struct Node {
   void DetachNode(Sid sid);
   void PushChild(Sid parent, Sid child);
   void GetUpdatedNodesJoin(const TreeClock* src, Sid parent, Epoch clk);
+  void GetUpdatedNodesCopy(const TreeClock& src, Sid parent, Epoch clk);
 
   template <bool UpdateSrc> void Join(const TreeClock* src);
 };
