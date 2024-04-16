@@ -71,6 +71,7 @@ ALWAYS_INLINE void TreeClock::DetachNode(Sid sid) {
 }
 
 ALWAYS_INLINE void TreeClock::PushChild(Sid parent, Sid child) {
+  // Printf("%u: PushChild %u -> %u\n", root_sid_, parent, child);
   Node parent_node = GetNode(parent);
   Sid parent_first_child = parent_node.first_child;
 
@@ -87,10 +88,11 @@ ALWAYS_INLINE void TreeClock::PushChild(Sid parent, Sid child) {
 
   // update the parent's first child to be the new child
   GetNode(parent).first_child = child;
+  // Printf("           %u -> %u\n", parent, GetNode(parent).first_child);
 }
 
 ALWAYS_INLINE void TreeClock::GetUpdatedNodesJoin(const TreeClock* src, Sid parent, Epoch parent_clk) {
-  Node parent_node = GetNode(parent);
+  Node parent_node = src->GetNode(parent);
   Sid cur_node_sid = parent_node.first_child;
 
   while (cur_node_sid != kFreeSid) {
@@ -112,13 +114,15 @@ ALWAYS_INLINE void TreeClock::Join(const TreeClock* src) {
 void TreeClock::Acquire(const TreeClock* src) {
   if (!src)
     return;
-  Printf("%u: Acquire %u @ %p - %p\n", static_cast<u8>(root_sid_), src->root_sid_, this, src);
-  Printf("this:       %u %u %u\n",    clk_[1]
-                                    , clk_[2]
-                                    , clk_[3]);
-  Printf("src:        %u %u %u\n",    src->clk_[1]
-                                    , src->clk_[2]
-                                    , src->clk_[3]);
+  // Printf("%u: Acquire %u @ %p - %p\n", static_cast<u8>(root_sid_), src->root_sid_, this, src);
+  // Printf("this:       [%u] %u (%u) %u (%u) %u (%u)\n", root_sid_
+  //                                   , clk_[1], aclk_[1]
+  //                                   , clk_[2], aclk_[2]
+  //                                   , clk_[3], aclk_[3]);
+  // Printf("src:        [%u] %u (%u) %u (%u) %u (%u)\n", src->root_sid_
+  //                                   , src->clk_[1], src->aclk_[1]
+  //                                   , src->clk_[2], src->aclk_[1]
+  //                                   , src->clk_[3], src->aclk_[1]);
 #if !TSAN_VECTORIZE
   for (uptr i = 0; i < kThreadSlotCount; i++)
     clk_[i] = max(clk_[i], src->clk_[i]);
@@ -155,8 +159,10 @@ void TreeClock::Acquire(const TreeClock* src) {
   GetUpdatedNodesJoin(src, src_root_sid, this_src_root_clk);
 
   // only update the clocks that matter
+  // Printf("stack: ");
   while (stack_pos_ >= 0) {
     Sid cur_node_sid = stack_[stack_pos_--];
+    // Printf("%u ", cur_node_sid);
     Epoch cur_node_clock = Get(cur_node_sid);
 
     // need to reorder this node in the tree
@@ -168,6 +174,12 @@ void TreeClock::Acquire(const TreeClock* src) {
     PushChild(src->GetNode(cur_node_sid).parent, cur_node_sid);
     GetUpdatedNodesJoin(src, cur_node_sid, cur_node_clock);
   }
+  // Printf("\n");
+
+  // Printf("res:       [%u] %u (%u) %u (%u) %u (%u)\n", root_sid_
+  //                                   , clk_[1], aclk_[1]
+  //                                   , clk_[2], aclk_[2]
+  //                                   , clk_[3], aclk_[3]);
   
 #endif
 }
@@ -180,24 +192,26 @@ static TreeClock* AllocClock(TreeClock** dstp) {
 
 void TreeClock::Release(TreeClock** dstp) const {
   TreeClock* dst = AllocClock(dstp);
-  Printf("%u: Release %u @ %p\n", static_cast<u8>(root_sid_), dst->root_sid_, this);
+  // Printf("%u: Release %u @ %p\n", static_cast<u8>(root_sid_), dst->root_sid_, this);
   dst->Acquire(this);
 }
 
 void TreeClock::ReleaseStore(TreeClock** dstp) const {
   TreeClock* dst = AllocClock(dstp);
-  Printf("%u: ReleaseStore %u @ %p - %p\n", static_cast<u8>(root_sid_), dst->root_sid_, this, dst);
-  Printf("this:       %u %u %u\n",    clk_[1]
-                                    , clk_[2]
-                                    , clk_[3]);
-  Printf("dst:        %u %u %u\n",    dst->clk_[1]
-                                    , dst->clk_[2]
-                                    , dst->clk_[3]);
+  // Printf("%u: ReleaseStore %u @ %p - %p\n", static_cast<u8>(root_sid_), dst->root_sid_, this, dst);
+  // Printf("this:       [%u] %u (%u) %u (%u) %u (%u)\n", root_sid_
+  //                                   , clk_[1], aclk_[1]
+  //                                   , clk_[2], aclk_[2]
+  //                                   , clk_[3], aclk_[3]);
+  // Printf("dst:        [%u] %u (%u) %u (%u) %u (%u)\n", dst->root_sid_
+  //                                   , dst->clk_[1], dst->aclk_[1]
+  //                                   , dst->clk_[2], dst->aclk_[1]
+  //                                   , dst->clk_[3], dst->aclk_[1]);
   *dst = *this;
 }
 
 TreeClock& TreeClock::operator=(const TreeClock& other) {
-  Printf("%u: Copy %u @ %p - %p\n", root_sid_, other.root_sid_, this, &other);
+  // Printf("%u: Copy %u @ %p - %p\n", root_sid_, other.root_sid_, this, &other);
 #if TSAN_COLLECT_STATS
   atomic_fetch_add(&ctx->num_copies, 1, memory_order_relaxed);
   if (root_sid_ != kFreeSid)
@@ -249,9 +263,9 @@ TreeClock& TreeClock::operator=(const TreeClock& other) {
 }
 
 void TreeClock::ReleaseStoreAcquire(TreeClock** dstp) {
-  Printf("Num relstoreacq\n");
+  // Printf("Num relstoreacq\n");
   TreeClock* dst = AllocClock(dstp);
-  Printf("%u: ReleaseStoreAcquire %u\n", root_sid_, dst->root_sid_);
+  // Printf("%u: ReleaseStoreAcquire %u\n", root_sid_, dst->root_sid_);
 #if !TSAN_VECTORIZE
   for (uptr i = 0; i < kThreadSlotCount; i++) {
     Epoch tmp = dst->clk_[i];
@@ -278,7 +292,7 @@ void TreeClock::ReleaseAcquire(TreeClock** dstp) {
 #endif
 
   TreeClock* dst = AllocClock(dstp);
-  Printf("%u: ReleaseAcquire %u\n", root_sid_, dst->root_sid_);
+  // Printf("%u: ReleaseAcquire %u\n", root_sid_, dst->root_sid_);
 #if !TSAN_VECTORIZE
   for (uptr i = 0; i < kThreadSlotCount; i++) {
     dst->clk_[i] = max(dst->clk_[i], clk_[i]);

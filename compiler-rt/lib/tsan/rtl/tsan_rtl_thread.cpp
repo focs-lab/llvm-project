@@ -158,7 +158,7 @@ void ThreadStart(ThreadState *thr, Tid tid, tid_t os_id,
   ctx->thread_registry.StartThread(tid, os_id, thread_type, thr);
   if (!thr->ignore_sync) {
     SlotAttachAndLock(thr);
-    Printf("ThreadStart: %d\n", static_cast<int>(thr->fast_state.sid()));
+    // Printf("ThreadStart: %d\n", static_cast<int>(thr->fast_state.sid()));
     if (thr->tctx->sync_epoch == ctx->global_epoch)
       thr->clock.Acquire(thr->tctx->sync);
     SlotUnlock(thr);

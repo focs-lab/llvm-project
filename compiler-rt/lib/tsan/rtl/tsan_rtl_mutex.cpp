@@ -96,7 +96,7 @@ void MutexCreate(ThreadState *thr, uptr pc, uptr addr, u32 flagz) {
 }
 
 void MutexDestroy(ThreadState *thr, uptr pc, uptr addr, u32 flagz) {
-  Printf("#%d: MutexDestroy %zx\n", thr->fast_state.sid(), addr);
+  DPrintf("#%d: MutexDestroy %zx\n", thr->fast_state.sid(), addr);
   bool unlock_locked = false;
   StackID creation_stack_id;
   FastState last_lock;
@@ -159,7 +159,7 @@ void MutexPostLock(ThreadState *thr, uptr pc, uptr addr, u32 flagz, int rec) {
 #if TSAN_COLLECT_STATS
   atomic_fetch_add(&ctx->num_locks, 1, memory_order_relaxed);
 #endif
-  Printf("#%d: MutexPostLock %zx flag=0x%x rec=%d\n",
+  DPrintf("#%d: MutexPostLock %zx flag=0x%x rec=%d\n",
       thr->fast_state.sid(), addr, flagz, rec);
   if (flagz & MutexFlagRecursiveLock)
     CHECK_GT(rec, 0);
@@ -217,7 +217,7 @@ void MutexPostLock(ThreadState *thr, uptr pc, uptr addr, u32 flagz, int rec) {
 }
 
 int MutexUnlock(ThreadState *thr, uptr pc, uptr addr, u32 flagz) {
-  Printf("#%d: MutexUnlock %zx flagz=0x%x\n", thr->fast_state.sid(), addr, flagz);
+  DPrintf("#%d: MutexUnlock %zx flagz=0x%x\n", thr->fast_state.sid(), addr, flagz);
   if (pc && IsAppMem(addr))
     MemoryAccess(thr, pc, addr, 1, kAccessRead | kAccessAtomic);
   StackID creation_stack_id;
@@ -456,7 +456,7 @@ void Acquire(ThreadState *thr, uptr pc, uptr addr) {
 }
 
 void AcquireGlobal(ThreadState *thr) {
-  Printf("#%d: AcquireGlobal\n", thr->tid);
+  DPrintf("#%d: AcquireGlobal\n", thr->tid);
   if (thr->ignore_sync)
     return;
   SlotLocker locker(thr);
@@ -517,7 +517,7 @@ void IncrementEpoch(ThreadState *thr) {
 
 #if !SANITIZER_GO
 void AfterSleep(ThreadState *thr, uptr pc) {
-  Printf("#%d: AfterSleep\n", thr->tid);
+  DPrintf("#%d: AfterSleep\n", thr->tid);
   if (thr->ignore_sync)
     return;
   thr->last_sleep_stack_id = CurrentStackId(thr, pc);

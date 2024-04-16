@@ -74,13 +74,12 @@ struct Node {
 };
 
 ALWAYS_INLINE Epoch TreeClock::Get(Sid sid) const {
-  Epoch v = clk_[static_cast<u8>(sid)];
-  Printf("%u: Get %u = %u @ %p\n", root_sid_, sid, v, this);
-  return v;
+  return clk_[static_cast<u8>(sid)];
+  // Printf("%u: Get %u = %u @ %p\n", root_sid_, sid, v, this);
 }
 
 ALWAYS_INLINE void TreeClock::Set(Sid sid, Epoch v) {
-  Printf("%u: Set %u = %u @ %p\n", root_sid_, sid, v, this);
+  // Printf("%u: Set %u = %u @ %p\n", root_sid_, sid, v, this);
   DCHECK_GE(v, clk_[static_cast<u8>(sid)]);
   clk_[static_cast<u8>(sid)] = v;
 }

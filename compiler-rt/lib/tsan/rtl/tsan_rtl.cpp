@@ -293,7 +293,7 @@ static TidSlot* FindSlotAndLock(ThreadState* thr)
 }
 
 void SlotAttachAndLock(ThreadState* thr) {
-  Printf("SlotAttachAndLock\n");
+  // Printf("SlotAttachAndLock\n");
   TidSlot* slot = FindSlotAndLock(thr);
   DPrintf("#%d: SlotAttach: slot=%u\n", thr->tid, static_cast<int>(slot->sid));
   CHECK(!slot->thr);
@@ -322,7 +322,7 @@ void SlotAttachAndLock(ThreadState* thr) {
 }
 
 static void SlotDetachImpl(ThreadState* thr, bool exiting) {
-  Printf("SlotDetach\n");
+  // Printf("SlotDetach\n");
   TidSlot* slot = thr->slot;
   thr->slot = nullptr;
   if (thr != slot->thr) {
@@ -865,7 +865,7 @@ static void ForkAfter(ThreadState* thr) SANITIZER_NO_THREAD_SAFETY_ANALYSIS {
   ctx->thread_registry.Unlock();
   for (auto& slot : ctx->slots) slot.mtx.Unlock();
   SlotAttachAndLock(thr);
-  Printf("ForkAfter: %d\n", static_cast<int>(thr->fast_state.sid()));
+  // Printf("ForkAfter: %d\n", static_cast<int>(thr->fast_state.sid()));
   SlotUnlock(thr);
   GlobalProcessorUnlock();
 }

@@ -366,7 +366,6 @@ SHARED:
   // indexes must be constants.
 #  define LOAD_EPOCH(idx)                                                     \
     if (LIKELY(race_mask & (1 << (idx * 4)))) {                               \
-      Printf("LOAD_EPOCH %d\n" , idx);                                                       \
       u8 sid = _mm_extract_epi8(shadow, idx * 4 + 1);                         \
       u16 epoch = static_cast<u16>(thr->clock.Get(static_cast<Sid>(sid)));    \
       thread_epochs = _mm_insert_epi32(thread_epochs, u32(epoch) << 16, idx); \
@@ -384,14 +383,14 @@ SHARED:
     goto STORE;
 
 
-  Printf("thread epochs: %x %x %x %x\n", _mm_extract_epi32(thread_epochs, 0),
-                                      _mm_extract_epi32(thread_epochs, 1),
-                                      _mm_extract_epi32(thread_epochs, 2),
-                                      _mm_extract_epi32(thread_epochs, 3));
-  Printf("shadow epochs: %x %x %x %x\n", _mm_extract_epi32(shadow_epochs, 0),
-                                      _mm_extract_epi32(shadow_epochs, 1),
-                                      _mm_extract_epi32(shadow_epochs, 2),
-                                      _mm_extract_epi32(shadow_epochs, 3));
+  // Printf("thread epochs: %x %x %x %x\n", _mm_extract_epi32(thread_epochs, 0),
+  //                                     _mm_extract_epi32(thread_epochs, 1),
+  //                                     _mm_extract_epi32(thread_epochs, 2),
+  //                                     _mm_extract_epi32(thread_epochs, 3));
+  // Printf("shadow epochs: %x %x %x %x\n", _mm_extract_epi32(shadow_epochs, 0),
+  //                                     _mm_extract_epi32(shadow_epochs, 1),
+  //                                     _mm_extract_epi32(shadow_epochs, 2),
+  //                                     _mm_extract_epi32(shadow_epochs, 3));
 
   DoReportRaceV(thr, shadow_mem, cur, concurrent_mask, shadow, typ);
   return true;
