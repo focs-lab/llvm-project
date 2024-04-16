@@ -49,6 +49,7 @@ set(TSAN_SOURCES
   tsan_symbolize.cpp
   tsan_sync.cpp
   tsan_vector_clock.cpp
+  tsan_tree_clock.cpp
   )
 
 set(TSAN_CXX_SOURCES
@@ -106,6 +107,7 @@ set(TSAN_HEADERS
   tsan_sync.h
   tsan_trace.h
   tsan_vector_clock.h
+  tsan_tree_clock.h
   )
 
 set(TSAN_RUNTIME_LIBRARIES)

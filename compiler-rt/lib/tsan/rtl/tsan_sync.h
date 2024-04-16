@@ -18,7 +18,11 @@
 #include "tsan_defs.h"
 #include "tsan_dense_alloc.h"
 #include "tsan_shadow.h"
+#if TSAN_TREE_CLOCKS
+#include "tsan_tree_clock.h"
+#else
 #include "tsan_vector_clock.h"
+#endif
 
 namespace __tsan {
 
@@ -61,8 +65,13 @@ struct SyncVar {
   atomic_uint32_t flags;
   u32 next;  // in MetaMap
   DDMutex dd;
+#if TSAN_TREE_CLOCKS
+  TreeClock *read_clock;
+  TreeClock *clock;
+#else
   VectorClock *read_clock;  // Used for rw mutexes only.
   VectorClock *clock;
+#endif
 
   void Init(ThreadState *thr, uptr pc, uptr addr, bool save_stack);
   void Reset();

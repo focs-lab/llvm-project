@@ -108,7 +108,11 @@ int ThreadCount(ThreadState *thr) {
 }
 
 struct OnCreatedArgs {
+#if TSAN_TREE_CLOCKS
+  TreeClock *sync;
+#else
   VectorClock *sync;
+#endif
   uptr sync_epoch;
   StackID stack;
 };
@@ -154,6 +158,7 @@ void ThreadStart(ThreadState *thr, Tid tid, tid_t os_id,
   ctx->thread_registry.StartThread(tid, os_id, thread_type, thr);
   if (!thr->ignore_sync) {
     SlotAttachAndLock(thr);
+    Printf("ThreadStart: %d\n", static_cast<int>(thr->fast_state.sid()));
     if (thr->tctx->sync_epoch == ctx->global_epoch)
       thr->clock.Acquire(thr->tctx->sync);
     SlotUnlock(thr);
@@ -286,7 +291,11 @@ Tid ThreadConsumeTid(ThreadState *thr, uptr pc, uptr uid) {
 }
 
 struct JoinArg {
+#if TSAN_TREE_CLOCKS
+  TreeClock *sync;
+#else
   VectorClock *sync;
+#endif
   uptr sync_epoch;
 };
 

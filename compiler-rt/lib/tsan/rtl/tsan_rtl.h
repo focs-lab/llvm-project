@@ -46,7 +46,11 @@
 #include "tsan_stack_trace.h"
 #include "tsan_sync.h"
 #include "tsan_trace.h"
+#if TSAN_TREE_CLOCKS
+#include "tsan_tree_clock.h"
+#else
 #include "tsan_vector_clock.h"
+#endif
 
 #if SANITIZER_WORDSIZE != 64
 # error "ThreadSanitizer is supported only on 64-bit platforms"
@@ -175,7 +179,11 @@ struct ThreadState {
 
   atomic_sint32_t pending_signals;
 
+#if TSAN_TREE_CLOCKS
+  TreeClock clock;
+#else
   VectorClock clock;
+#endif
 
   // This is a slow path flag. On fast path, fast_state.GetIgnoreBit() is read.
   // We do not distinguish beteween ignoring reads and writes
@@ -224,7 +232,11 @@ struct ThreadState {
 
 #if !SANITIZER_GO
   StackID last_sleep_stack_id;
+#if TSAN_TREE_CLOCKS
+  TreeClock last_sleep_clock;
+#else
   VectorClock last_sleep_clock;
+#endif
 #endif
 
   // Set in regions of runtime that must be signal-safe and fork-safe.
@@ -267,7 +279,11 @@ class ThreadContext final : public ThreadContextBase {
   ~ThreadContext();
   ThreadState *thr;
   StackID creation_stack_id;
+#if TSAN_TREE_CLOCKS
+  TreeClock *sync;
+#else
   VectorClock *sync;
+#endif
   uptr sync_epoch;
   Trace trace;
 
@@ -303,6 +319,14 @@ struct Context {
   bool initialized;
 #if !SANITIZER_GO
   bool after_multithreaded_fork;
+#endif
+
+#if TSAN_COLLECT_STATS
+  atomic_uint32_t num_locks;
+  atomic_uint32_t num_accesses;
+  atomic_uint32_t num_copies;
+  atomic_uint32_t num_monocopies;
+  atomic_uint32_t num_rel_acq;
 #endif
 
   MetaMap metamap;

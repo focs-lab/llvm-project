@@ -293,6 +293,7 @@ static TidSlot* FindSlotAndLock(ThreadState* thr)
 }
 
 void SlotAttachAndLock(ThreadState* thr) {
+  Printf("SlotAttachAndLock\n");
   TidSlot* slot = FindSlotAndLock(thr);
   DPrintf("#%d: SlotAttach: slot=%u\n", thr->tid, static_cast<int>(slot->sid));
   CHECK(!slot->thr);
@@ -312,11 +313,16 @@ void SlotAttachAndLock(ThreadState* thr) {
     thr->last_sleep_clock.Reset();
 #endif
   }
+#if TSAN_TREE_CLOCKS
+    thr->clock.SetRootSid(slot->sid);
+    // thr->last_sleep_clock.SetRootSid(slot->sid);
+#endif
   thr->clock.Set(slot->sid, epoch);
   slot->journal.PushBack({thr->tid, epoch});
 }
 
 static void SlotDetachImpl(ThreadState* thr, bool exiting) {
+  Printf("SlotDetach\n");
   TidSlot* slot = thr->slot;
   thr->slot = nullptr;
   if (thr != slot->thr) {
@@ -371,6 +377,7 @@ void SlotLock(ThreadState* thr) SANITIZER_NO_THREAD_SAFETY_ANALYSIS {
   thr->slot_locked = false;
   slot->mtx.Unlock();
   SlotAttachAndLock(thr);
+  Printf("SlotLock: %d\n", static_cast<int>(thr->fast_state.sid()));
 }
 
 void SlotUnlock(ThreadState* thr) {
@@ -398,6 +405,14 @@ Context::Context()
     slot_queue.PushBack(slot);
   }
   global_epoch = 1;
+
+#if TSAN_COLLECT_STATS
+  atomic_store_relaxed(&num_locks, 0);
+  atomic_store_relaxed(&num_accesses, 0);
+  atomic_store_relaxed(&num_copies, 0);
+  atomic_store_relaxed(&num_monocopies, 0);
+  atomic_store_relaxed(&num_rel_acq, 0);
+#endif
 }
 
 TidSlot::TidSlot() : mtx(MutexTypeSlot) {}
@@ -408,7 +423,8 @@ ThreadState::ThreadState(Tid tid)
     // they may be accessed before the ctor.
     // ignore_reads_and_writes()
     // ignore_interceptors()
-    : tid(tid) {
+    : tid(tid)
+    {
   CHECK_EQ(reinterpret_cast<uptr>(this) % SANITIZER_CACHE_LINE_SIZE, 0);
 #if !SANITIZER_GO
   // C/C++ uses fixed size shadow stack.
@@ -795,6 +811,14 @@ int Finalize(ThreadState *thr) {
 #endif
   }
 
+#if TSAN_COLLECT_STATS
+  Printf("Num Locks: %u\n", atomic_load_relaxed(&ctx->num_locks));
+  Printf("Num Accesses: %u\n", atomic_load_relaxed(&ctx->num_accesses));
+  Printf("Num Copies: %u\n", atomic_load_relaxed(&ctx->num_copies));
+  Printf("Num MonoCopies: %u\n", atomic_load_relaxed(&ctx->num_monocopies));
+  Printf("Num relacq: %u\n", atomic_load_relaxed(&ctx->num_rel_acq));
+#endif
+
   if (common_flags()->print_suppressions)
     PrintMatchedSuppressions();
 
@@ -841,6 +865,7 @@ static void ForkAfter(ThreadState* thr) SANITIZER_NO_THREAD_SAFETY_ANALYSIS {
   ctx->thread_registry.Unlock();
   for (auto& slot : ctx->slots) slot.mtx.Unlock();
   SlotAttachAndLock(thr);
+  Printf("ForkAfter: %d\n", static_cast<int>(thr->fast_state.sid()));
   SlotUnlock(thr);
   GlobalProcessorUnlock();
 }

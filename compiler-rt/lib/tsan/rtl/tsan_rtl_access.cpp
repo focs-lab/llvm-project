@@ -304,6 +304,11 @@ NOINLINE void DoReportRaceV(ThreadState* thr, RawShadow* shadow_mem, Shadow cur,
 ALWAYS_INLINE
 bool CheckRaces(ThreadState* thr, RawShadow* shadow_mem, Shadow cur,
                 m128 shadow, m128 access, AccessType typ) {
+#if TSAN_COLLECT_STATS
+  atomic_fetch_add(&ctx->num_accesses, 1, memory_order_relaxed);
+  // if (LIKELY((atomic_fetch_add(&ctx->num_accesses, 1, memory_order_relaxed) & 0xff) > 0x20)) return false;
+#endif
+
   // Note: empty/zero slots don't intersect with any access.
   const m128 zero = _mm_setzero_si128();
   const m128 mask_access = _mm_set1_epi32(0x000000ff);
@@ -361,6 +366,7 @@ SHARED:
   // indexes must be constants.
 #  define LOAD_EPOCH(idx)                                                     \
     if (LIKELY(race_mask & (1 << (idx * 4)))) {                               \
+      Printf("LOAD_EPOCH %d\n" , idx);                                                       \
       u8 sid = _mm_extract_epi8(shadow, idx * 4 + 1);                         \
       u16 epoch = static_cast<u16>(thr->clock.Get(static_cast<Sid>(sid)));    \
       thread_epochs = _mm_insert_epi32(thread_epochs, u32(epoch) << 16, idx); \
@@ -376,6 +382,16 @@ SHARED:
   const int concurrent_mask = _mm_movemask_epi8(concurrent);
   if (LIKELY(concurrent_mask == 0))
     goto STORE;
+
+
+  Printf("thread epochs: %x %x %x %x\n", _mm_extract_epi32(thread_epochs, 0),
+                                      _mm_extract_epi32(thread_epochs, 1),
+                                      _mm_extract_epi32(thread_epochs, 2),
+                                      _mm_extract_epi32(thread_epochs, 3));
+  Printf("shadow epochs: %x %x %x %x\n", _mm_extract_epi32(shadow_epochs, 0),
+                                      _mm_extract_epi32(shadow_epochs, 1),
+                                      _mm_extract_epi32(shadow_epochs, 2),
+                                      _mm_extract_epi32(shadow_epochs, 3));
 
   DoReportRaceV(thr, shadow_mem, cur, concurrent_mask, shadow, typ);
   return true;
