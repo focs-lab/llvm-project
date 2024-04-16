@@ -55,7 +55,7 @@ ALWAYS_INLINE bool TreeClock::IsNodeNull(Sid sid) const {
 
 ALWAYS_INLINE void TreeClock::DetachNode(Sid sid) {
   Node node = GetNode(sid);
-  Node parent_node = GetNode(node.parent);
+  Node& parent_node = GetNode(node.parent);     // get reference because may update the first child
 
   // if it's the first child, detach from the parent
   if (parent_node.first_child == sid)
@@ -72,6 +72,7 @@ ALWAYS_INLINE void TreeClock::DetachNode(Sid sid) {
 
 ALWAYS_INLINE void TreeClock::PushChild(Sid parent, Sid child) {
   // Printf("%u: PushChild %u -> %u\n", root_sid_, parent, child);
+
   Node parent_node = GetNode(parent);
   Sid parent_first_child = parent_node.first_child;
 
@@ -92,6 +93,7 @@ ALWAYS_INLINE void TreeClock::PushChild(Sid parent, Sid child) {
 }
 
 ALWAYS_INLINE void TreeClock::GetUpdatedNodesJoin(const TreeClock* src, Sid parent, Epoch parent_clk) {
+  // Printf("%u: GetUpdatedNodesJoin %u %u %u\n", root_sid_, src->root_sid_, parent, parent_clk);
   Node parent_node = src->GetNode(parent);
   Sid cur_node_sid = parent_node.first_child;
 
@@ -115,6 +117,7 @@ void TreeClock::Acquire(const TreeClock* src) {
   if (!src)
     return;
   // Printf("%u: Acquire %u @ %p - %p\n", static_cast<u8>(root_sid_), src->root_sid_, this, src);
+  // Printf("    %x\n", nodes_[0]);
   // Printf("this:       [%u] %u (%u) %u (%u) %u (%u)\n", root_sid_
   //                                   , clk_[1], aclk_[1]
   //                                   , clk_[2], aclk_[2]
