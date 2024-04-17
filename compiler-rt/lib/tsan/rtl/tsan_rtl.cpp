@@ -377,7 +377,7 @@ void SlotLock(ThreadState* thr) SANITIZER_NO_THREAD_SAFETY_ANALYSIS {
   thr->slot_locked = false;
   slot->mtx.Unlock();
   SlotAttachAndLock(thr);
-  Printf("SlotLock: %d\n", static_cast<int>(thr->fast_state.sid()));
+  // Printf("SlotLock: %d\n", static_cast<int>(thr->fast_state.sid()));
 }
 
 void SlotUnlock(ThreadState* thr) {

@@ -38,11 +38,11 @@ void TreeClock::Reset() {
   m128* vaclk = reinterpret_cast<m128*>(aclk_);
   for (uptr i = 0; i < kTreeClockSize; i++) _mm_store_si128(&vaclk[i], z);
 
-  // m128 ff = _mm_set1_epi8(0xff);
-  // m128* vnode = reinterpret_cast<m128*>(nodes_);
-  // for (uptr i = 0; i < kTreeClockSize2; i++) _mm_store_si128(&vnode[i], ff);
+  m128 ff = _mm_set1_epi8(0xff);
+  m128* vnode = reinterpret_cast<m128*>(nodes_);
+  for (uptr i = 0; i < kTreeClockSize2; i++) _mm_store_si128(&vnode[i], ff);
 
-  for (uptr i = 0; i < kThreadSlotCount; ++i) raw_nodes_[i] = 0xffffffff;
+  // for (uptr i = 0; i < kThreadSlotCount; ++i) raw_nodes_[i] = 0xffffffff;
 
   root_sid_ = kFreeSid;
   stack_pos_ = -1;
@@ -304,7 +304,7 @@ TreeClock& TreeClock::operator=(const TreeClock& other) {
 void TreeClock::ReleaseStoreAcquire(TreeClock** dstp) {
   // Printf("Num relstoreacq\n");
   TreeClock* dst = AllocClock(dstp);
-  Printf("%u: ReleaseStoreAcquire %u\n", root_sid_, dst->root_sid_);
+  // Printf("%u: ReleaseStoreAcquire %u\n", root_sid_, dst->root_sid_);
 #if !TSAN_VECTORIZE
   for (uptr i = 0; i < kThreadSlotCount; i++) {
     Epoch tmp = dst->clk_[i];
@@ -327,26 +327,29 @@ void TreeClock::ReleaseStoreAcquire(TreeClock** dstp) {
 void TreeClock::ReleaseAcquire(TreeClock** dstp) {
 #if TSAN_COLLECT_STATS
   u32 num = atomic_fetch_add(&ctx->num_rel_acq, 1, memory_order_relaxed);
-  Printf("Num relacq: %u\n", num);
+  // Printf("Num relacq: %u\n", num);
 #endif
 
   TreeClock* dst = AllocClock(dstp);
-  Printf("%u: ReleaseAcquire %u\n", root_sid_, dst->root_sid_);
+  // Printf("%u: ReleaseAcquire %u\n", root_sid_, dst->root_sid_);
 #if !TSAN_VECTORIZE
   for (uptr i = 0; i < kThreadSlotCount; i++) {
     dst->clk_[i] = max(dst->clk_[i], clk_[i]);
     clk_[i] = dst->clk_[i];
   }
 #else
-  m128* __restrict vdst = reinterpret_cast<m128*>(dst->clk_);
-  m128* __restrict vclk = reinterpret_cast<m128*>(clk_);
-  for (uptr i = 0; i < kTreeClockSize; i++) {
-    m128 c = _mm_load_si128(&vclk[i]);
-    m128 d = _mm_load_si128(&vdst[i]);
-    m128 m = _mm_max_epu16(c, d);
-    _mm_store_si128(&vdst[i], m);
-    _mm_store_si128(&vclk[i], m);
-  }
+  // m128* __restrict vdst = reinterpret_cast<m128*>(dst->clk_);
+  // m128* __restrict vclk = reinterpret_cast<m128*>(clk_);
+  // for (uptr i = 0; i < kTreeClockSize; i++) {
+  //   m128 c = _mm_load_si128(&vclk[i]);
+  //   m128 d = _mm_load_si128(&vdst[i]);
+  //   m128 m = _mm_max_epu16(c, d);
+  //   _mm_store_si128(&vdst[i], m);
+  //   _mm_store_si128(&vclk[i], m);
+  // }
+
+  Acquire(dst);
+  *dst = *this;
 #endif
 }
 

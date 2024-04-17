@@ -18,7 +18,8 @@
 #include "sanitizer_common/sanitizer_mutex.h"
 #include "ubsan/ubsan_platform.h"
 
-#define TSAN_COLLECT_STATS 1
+#define TSAN_COLLECT_LOCK_STATS 0
+#define TSAN_COLLECT_ACCESS_STATS 0
 #define TSAN_TREE_CLOCKS 1
 
 #ifndef TSAN_VECTORIZE

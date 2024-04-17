@@ -304,9 +304,13 @@ NOINLINE void DoReportRaceV(ThreadState* thr, RawShadow* shadow_mem, Shadow cur,
 ALWAYS_INLINE
 bool CheckRaces(ThreadState* thr, RawShadow* shadow_mem, Shadow cur,
                 m128 shadow, m128 access, AccessType typ) {
-#if TSAN_COLLECT_STATS
+#if TSAN_COLLECT_ACCESS_STATS
   atomic_fetch_add(&ctx->num_accesses, 1, memory_order_relaxed);
+  return;
   // if (LIKELY((atomic_fetch_add(&ctx->num_accesses, 1, memory_order_relaxed) & 0xff) > 0x20)) return false;
+#endif
+#if TSAN_COLLECT_LOCK_STATS
+  return;
 #endif
 
   // Note: empty/zero slots don't intersect with any access.
@@ -434,6 +438,14 @@ NOINLINE void TraceRestartMemoryAccess(ThreadState* thr, uptr pc, uptr addr,
 
 ALWAYS_INLINE USED void MemoryAccess(ThreadState* thr, uptr pc, uptr addr,
                                      uptr size, AccessType typ) {
+#if TSAN_COLLECT_ACCESS_STATS
+  atomic_fetch_add(&ctx->num_accesses, 1, memory_order_relaxed);
+  return;
+  // if (LIKELY((atomic_fetch_add(&ctx->num_accesses, 1, memory_order_relaxed) & 0xff) > 0x20)) return false;
+#endif
+#if TSAN_COLLECT_LOCK_STATS
+  return;
+#endif
   RawShadow* shadow_mem = MemToShadow(addr);
   UNUSED char memBuf[4][64];
   DPrintf2("#%d: Access: %d@%d %p/%zd typ=0x%x {%s, %s, %s, %s}\n", thr->tid,
@@ -468,6 +480,14 @@ void RestartMemoryAccess16(ThreadState* thr, uptr pc, uptr addr,
 
 ALWAYS_INLINE USED void MemoryAccess16(ThreadState* thr, uptr pc, uptr addr,
                                        AccessType typ) {
+#if TSAN_COLLECT_ACCESS_STATS
+  atomic_fetch_add(&ctx->num_accesses, 1, memory_order_relaxed);
+  return;
+  // if (LIKELY((atomic_fetch_add(&ctx->num_accesses, 1, memory_order_relaxed) & 0xff) > 0x20)) return false;
+#endif
+#if TSAN_COLLECT_LOCK_STATS
+  return;
+#endif
   const uptr size = 16;
   FastState fast_state = thr->fast_state;
   if (UNLIKELY(fast_state.GetIgnoreBit()))
@@ -505,6 +525,14 @@ void RestartUnalignedMemoryAccess(ThreadState* thr, uptr pc, uptr addr,
 ALWAYS_INLINE USED void UnalignedMemoryAccess(ThreadState* thr, uptr pc,
                                               uptr addr, uptr size,
                                               AccessType typ) {
+#if TSAN_COLLECT_ACCESS_STATS
+  atomic_fetch_add(&ctx->num_accesses, 1, memory_order_relaxed);
+  return;
+  // if (LIKELY((atomic_fetch_add(&ctx->num_accesses, 1, memory_order_relaxed) & 0xff) > 0x20)) return false;
+#endif
+#if TSAN_COLLECT_LOCK_STATS
+  return;
+#endif
   DCHECK_LE(size, 8);
   FastState fast_state = thr->fast_state;
   if (UNLIKELY(fast_state.GetIgnoreBit()))
@@ -560,6 +588,14 @@ void ShadowSet(RawShadow* p, RawShadow* end, RawShadow v) {
 }
 
 static void MemoryRangeSet(uptr addr, uptr size, RawShadow val) {
+#if TSAN_COLLECT_ACCESS_STATS
+  atomic_fetch_add(&ctx->num_accesses, 1, memory_order_relaxed);
+  return;
+  // if (LIKELY((atomic_fetch_add(&ctx->num_accesses, 1, memory_order_relaxed) & 0xff) > 0x20)) return false;
+#endif
+#if TSAN_COLLECT_LOCK_STATS
+  return;
+#endif
   if (size == 0)
     return;
   DCHECK_EQ(addr % kShadowCell, 0);
@@ -596,12 +632,28 @@ static void MemoryRangeSet(uptr addr, uptr size, RawShadow val) {
 }
 
 void MemoryResetRange(ThreadState* thr, uptr pc, uptr addr, uptr size) {
+#if TSAN_COLLECT_ACCESS_STATS
+  atomic_fetch_add(&ctx->num_accesses, 1, memory_order_relaxed);
+  return;
+  // if (LIKELY((atomic_fetch_add(&ctx->num_accesses, 1, memory_order_relaxed) & 0xff) > 0x20)) return false;
+#endif
+#if TSAN_COLLECT_LOCK_STATS
+  return;
+#endif
   uptr addr1 = RoundDown(addr, kShadowCell);
   uptr size1 = RoundUp(size + addr - addr1, kShadowCell);
   MemoryRangeSet(addr1, size1, Shadow::kEmpty);
 }
 
 void MemoryRangeFreed(ThreadState* thr, uptr pc, uptr addr, uptr size) {
+#if TSAN_COLLECT_ACCESS_STATS
+  atomic_fetch_add(&ctx->num_accesses, 1, memory_order_relaxed);
+  return;
+  // if (LIKELY((atomic_fetch_add(&ctx->num_accesses, 1, memory_order_relaxed) & 0xff) > 0x20)) return false;
+#endif
+#if TSAN_COLLECT_LOCK_STATS
+  return;
+#endif
   // Callers must lock the slot to ensure synchronization with the reset.
   // The problem with "freed" memory is that it's not "monotonic"
   // with respect to bug detection: freed memory is bad to access,
@@ -646,6 +698,14 @@ void MemoryRangeFreed(ThreadState* thr, uptr pc, uptr addr, uptr size) {
 }
 
 void MemoryRangeImitateWrite(ThreadState* thr, uptr pc, uptr addr, uptr size) {
+#if TSAN_COLLECT_ACCESS_STATS
+  atomic_fetch_add(&ctx->num_accesses, 1, memory_order_relaxed);
+  return;
+  // if (LIKELY((atomic_fetch_add(&ctx->num_accesses, 1, memory_order_relaxed) & 0xff) > 0x20)) return false;
+#endif
+#if TSAN_COLLECT_LOCK_STATS
+  return;
+#endif
   DCHECK_EQ(addr % kShadowCell, 0);
   size = RoundUp(size, kShadowCell);
   TraceMemoryAccessRange(thr, pc, addr, size, kAccessWrite);
@@ -655,6 +715,14 @@ void MemoryRangeImitateWrite(ThreadState* thr, uptr pc, uptr addr, uptr size) {
 
 void MemoryRangeImitateWriteOrResetRange(ThreadState* thr, uptr pc, uptr addr,
                                          uptr size) {
+#if TSAN_COLLECT_ACCESS_STATS
+  atomic_fetch_add(&ctx->num_accesses, 1, memory_order_relaxed);
+  return;
+  // if (LIKELY((atomic_fetch_add(&ctx->num_accesses, 1, memory_order_relaxed) & 0xff) > 0x20)) return false;
+#endif
+#if TSAN_COLLECT_LOCK_STATS
+  return;
+#endif
   if (thr->ignore_reads_and_writes == 0)
     MemoryRangeImitateWrite(thr, pc, addr, size);
   else
@@ -664,6 +732,14 @@ void MemoryRangeImitateWriteOrResetRange(ThreadState* thr, uptr pc, uptr addr,
 ALWAYS_INLINE
 bool MemoryAccessRangeOne(ThreadState* thr, RawShadow* shadow_mem, Shadow cur,
                           AccessType typ) {
+#if TSAN_COLLECT_ACCESS_STATS
+  atomic_fetch_add(&ctx->num_accesses, 1, memory_order_relaxed);
+  return;
+  // if (LIKELY((atomic_fetch_add(&ctx->num_accesses, 1, memory_order_relaxed) & 0xff) > 0x20)) return false;
+#endif
+#if TSAN_COLLECT_LOCK_STATS
+  return;
+#endif
   LOAD_CURRENT_SHADOW(cur, shadow_mem);
   if (LIKELY(ContainsSameAccess(shadow_mem, cur, shadow, access, typ)))
     return false;
@@ -679,6 +755,14 @@ NOINLINE void RestartMemoryAccessRange(ThreadState* thr, uptr pc, uptr addr,
 
 template <bool is_read>
 void MemoryAccessRangeT(ThreadState* thr, uptr pc, uptr addr, uptr size) {
+#if TSAN_COLLECT_ACCESS_STATS
+  atomic_fetch_add(&ctx->num_accesses, 1, memory_order_relaxed);
+  return;
+  // if (LIKELY((atomic_fetch_add(&ctx->num_accesses, 1, memory_order_relaxed) & 0xff) > 0x20)) return false;
+#endif
+#if TSAN_COLLECT_LOCK_STATS
+  return;
+#endif
   const AccessType typ =
       (is_read ? kAccessRead : kAccessWrite) | kAccessNoRodata;
   RawShadow* shadow_mem = MemToShadow(addr);
