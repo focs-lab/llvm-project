@@ -306,11 +306,11 @@ bool CheckRaces(ThreadState* thr, RawShadow* shadow_mem, Shadow cur,
                 m128 shadow, m128 access, AccessType typ) {
 #if TSAN_COLLECT_ACCESS_STATS
   atomic_fetch_add(&ctx->num_accesses, 1, memory_order_relaxed);
-  return;
+  return false;
   // if (LIKELY((atomic_fetch_add(&ctx->num_accesses, 1, memory_order_relaxed) & 0xff) > 0x20)) return false;
 #endif
 #if TSAN_COLLECT_LOCK_STATS
-  return;
+  return false;
 #endif
 
   // Note: empty/zero slots don't intersect with any access.
@@ -734,11 +734,11 @@ bool MemoryAccessRangeOne(ThreadState* thr, RawShadow* shadow_mem, Shadow cur,
                           AccessType typ) {
 #if TSAN_COLLECT_ACCESS_STATS
   atomic_fetch_add(&ctx->num_accesses, 1, memory_order_relaxed);
-  return;
+  return false;
   // if (LIKELY((atomic_fetch_add(&ctx->num_accesses, 1, memory_order_relaxed) & 0xff) > 0x20)) return false;
 #endif
 #if TSAN_COLLECT_LOCK_STATS
-  return;
+  return false;
 #endif
   LOAD_CURRENT_SHADOW(cur, shadow_mem);
   if (LIKELY(ContainsSameAccess(shadow_mem, cur, shadow, access, typ)))

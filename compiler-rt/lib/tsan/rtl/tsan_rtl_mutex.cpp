@@ -178,10 +178,8 @@ void MutexPreLock(ThreadState *thr, uptr pc, uptr addr, u32 flagz) {
 
 void MutexPostLock(ThreadState *thr, uptr pc, uptr addr, u32 flagz, int rec) {
 #if TSAN_COLLECT_LOCK_STATS
-  return;
-#endif
-#if TSAN_COLLECT_LOCK_STATS
   atomic_fetch_add(&ctx->num_locks, 1, memory_order_relaxed);
+  return;
 #endif
   DPrintf("#%d: MutexPostLock %zx flag=0x%x rec=%d\n",
       thr->fast_state.sid(), addr, flagz, rec);
@@ -313,6 +311,7 @@ void MutexPreReadLock(ThreadState *thr, uptr pc, uptr addr, u32 flagz) {
 
 void MutexPostReadLock(ThreadState *thr, uptr pc, uptr addr, u32 flagz) {
 #if TSAN_COLLECT_LOCK_STATS
+  atomic_fetch_add(&ctx->num_locks, 1, memory_order_relaxed);
   return;
 #endif
   DPrintf("#%d: MutexPostReadLock %zx flagz=0x%x\n", thr->tid, addr, flagz);

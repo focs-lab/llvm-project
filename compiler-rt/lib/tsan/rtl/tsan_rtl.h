@@ -321,9 +321,13 @@ struct Context {
   bool after_multithreaded_fork;
 #endif
 
-#if TSAN_COLLECT_STATS
+#if TSAN_COLLECT_LOCK_STATS
   atomic_uint32_t num_locks;
+#endif
+#if TSAN_COLLECT_ACCESS_STATS
   atomic_uint32_t num_accesses;
+#endif
+#if TSAN_COLLECT_CLOCK_STATS
   atomic_uint32_t num_copies;
   atomic_uint32_t num_monocopies;
   atomic_uint32_t num_rel_acq;

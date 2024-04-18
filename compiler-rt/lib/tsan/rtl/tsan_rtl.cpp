@@ -322,7 +322,7 @@ void SlotAttachAndLock(ThreadState* thr) {
 }
 
 static void SlotDetachImpl(ThreadState* thr, bool exiting) {
-  // Printf("SlotDetach\n");
+  // Printf("%u: SlotDetach\n", thr->slot->sid);
   TidSlot* slot = thr->slot;
   thr->slot = nullptr;
   if (thr != slot->thr) {
@@ -406,9 +406,13 @@ Context::Context()
   }
   global_epoch = 1;
 
-#if TSAN_COLLECT_STATS
+#if TSAN_COLLECT_LOCK_STATS
   atomic_store_relaxed(&num_locks, 0);
+#endif
+#if TSAN_COLLECT_ACCESS_STATS
   atomic_store_relaxed(&num_accesses, 0);
+#endif
+#if TSAN_COLLECT_CLOCK_STATS
   atomic_store_relaxed(&num_copies, 0);
   atomic_store_relaxed(&num_monocopies, 0);
   atomic_store_relaxed(&num_rel_acq, 0);
@@ -811,9 +815,13 @@ int Finalize(ThreadState *thr) {
 #endif
   }
 
-#if TSAN_COLLECT_STATS
+#if TSAN_COLLECT_LOCK_STATS
   Printf("Num Locks: %u\n", atomic_load_relaxed(&ctx->num_locks));
+#endif
+#if TSAN_COLLECT_ACCESS_STATS
   Printf("Num Accesses: %u\n", atomic_load_relaxed(&ctx->num_accesses));
+#endif
+#if TSAN_COLLECT_CLOCK_STATS
   Printf("Num Copies: %u\n", atomic_load_relaxed(&ctx->num_copies));
   Printf("Num MonoCopies: %u\n", atomic_load_relaxed(&ctx->num_monocopies));
   Printf("Num relacq: %u\n", atomic_load_relaxed(&ctx->num_rel_acq));
