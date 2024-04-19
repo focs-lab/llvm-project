@@ -47,8 +47,8 @@ void TreeClock::Reset() {
   root_sid_ = kFreeSid;
   stack_pos_ = -1;
 
-  Printf("Reset clock: %p\n", this);
-  magic = 0x1337;
+  // Printf("Reset clock: %p\n", this);
+  // magic = 0x1337;
 #endif
 }
 
@@ -102,7 +102,6 @@ ALWAYS_INLINE void TreeClock::PushChild(Sid parent, Sid child, const TreeClock* 
   // update the links for the new child
   Node& new_node = GetNode(child);
   new_node.prev = kFreeSid;
-
   new_node.next = parent_first_child;
   new_node.parent = parent;
 
@@ -110,29 +109,28 @@ ALWAYS_INLINE void TreeClock::PushChild(Sid parent, Sid child, const TreeClock* 
   parent_node.first_child = child;
   // Printf("           %u -> %u\n", parent, GetNode(parent).first_child);
 
-  Sid cur_sid = child;
-  while (cur_sid != kFreeSid) {
-    cur_sid = GetNode(cur_sid).next;
-    if (child == cur_sid) {
-      Printf("%u: !!! PushChild cycle detected\n", root_sid_);
+  // Sid cur_sid = child;
+  // while (cur_sid != kFreeSid) {
+  //   cur_sid = GetNode(cur_sid).next;
+  //   if (child == cur_sid) {
+  //     // Printf("%u: !!! PushChild cycle detected\n", root_sid_);
 
-      // Print the cycle
-      Sid print_cur_sid = child;
-      do {
-        Printf("%u -> ", print_cur_sid);
-        print_cur_sid = GetNode(print_cur_sid).next;
-      } while (child != print_cur_sid);
-      Printf("\n");
+  //     // Print the cycle
+  //     Sid print_cur_sid = child;
+  //     do {
+  //       // Printf("%u -> ", print_cur_sid);
+  //       print_cur_sid = GetNode(print_cur_sid).next;
+  //     } while (child != print_cur_sid);
+  //     // Printf("\n");
 
-      Abort();
-    }
-  }
+  //     Abort();
+  //   }
+  // }
 }
 
 void TreeClock::PrintTreeClock() const {
   Printf("Tree Clock %u @ %p\n", root_sid_, this);
   Printf("  stack_pos_: %u, parent: %u, prev: %u, next: %u\n", stack_pos_, GetNode(root_sid_).parent, GetNode(root_sid_).prev, GetNode(root_sid_).next);
-  Printf("  has_reset: %u\n", magic);
 
   PrintTreeClock_(root_sid_);
 }
@@ -160,32 +158,32 @@ ALWAYS_INLINE void TreeClock::GetUpdatedNodesJoin(const TreeClock* src, Sid pare
       stack_[++stack_pos_] = cur_node_sid;
 
       // it's ok allow it. it needs to be updated as well
-      if (cur_node_sid == root_sid_) {
-        Printf("%u <- %u: Hmm!!!\n", root_sid_, src->root_sid_);
-        PrintTreeClock();
-        src->PrintTreeClock();
-        Abort();
-      }
-      if (stack_pos_ >= 256) {
-        Printf("wat!!!!\n");
-        Abort();
-      }
+      // if (cur_node_sid == root_sid_) {
+      //   Printf("%u <- %u: Hmm!!!\n", root_sid_, src->root_sid_);
+      //   PrintTreeClock();
+      //   src->PrintTreeClock();
+      //   Abort();
+      // }
+      // if (stack_pos_ >= 256) {
+      //   Printf("wat!!!!\n");
+      //   Abort();
+      // }
     }
     else if (src->GetAclk(cur_node_sid) <= parent_clk) break;
 
     cur_node_sid = src->GetNode(cur_node_sid).next;
-    if (cur_node_sid == parent_node.first_child) {
-      Printf("%u: GetUpdatedNodesJoin cycle detected\n", src->root_sid_);
+  //   if (cur_node_sid == parent_node.first_child) {
+  //     Printf("%u: GetUpdatedNodesJoin cycle detected\n", src->root_sid_);
 
-      Sid print_sid = parent_node.first_child;
-      do {
-        Printf("%u -> ", print_sid);
-        print_sid = src->GetNode(print_sid).next;
-      } while (print_sid != parent_node.first_child);
-      Printf("\n");
+  //     Sid print_sid = parent_node.first_child;
+  //     do {
+  //       Printf("%u -> ", print_sid);
+  //       print_sid = src->GetNode(print_sid).next;
+  //     } while (print_sid != parent_node.first_child);
+  //     Printf("\n");
 
-      Abort();
-    }
+  //     Abort();
+  //   }
   }
 }
 
@@ -239,26 +237,26 @@ void TreeClock::Acquire(const TreeClock* src) {
   //   Abort();
   // }
 
-  if (GetNode(root_sid_).parent != kFreeSid) {
-    Printf("%u: 0a Parent of root is not kFreeSid!\n", root_sid_);
-    PrintTreeClock();
-    Abort();
-  }
+  // if (GetNode(root_sid_).parent != kFreeSid) {
+  //   Printf("%u: 0a Parent of root is not kFreeSid!\n", root_sid_);
+  //   PrintTreeClock();
+  //   Abort();
+  // }
 
-  if (static_cast<u16>(GetAclk(root_sid_)) > 0) {
-    Printf("%u: 0 Aclk of root must be 0!\n", root_sid_);
-    PrintTreeClock();
-    Abort();
-  }
+  // if (static_cast<u16>(GetAclk(root_sid_)) > 0) {
+  //   Printf("%u: 0 Aclk of root must be 0!\n", root_sid_);
+  //   PrintTreeClock();
+  //   Abort();
+  // }
 
   // clock assignments
   Set(src_root_sid, src_src_root_clk);               // update epoch
   SetAclk(src_root_sid, Get(root_sid_));        // to indicate that the root sid was updated at this epoch
-  if (static_cast<u16>(GetAclk(root_sid_)) > 0) {
-    Printf("%u: 1 Aclk of root must be 0!\n", root_sid_);
-    PrintTreeClock();
-    Abort();
-  }
+  // if (static_cast<u16>(GetAclk(root_sid_)) > 0) {
+  //   Printf("%u: 1 Aclk of root must be 0!\n", root_sid_);
+  //   PrintTreeClock();
+  //   Abort();
+  // }
 
   // only push child if it is not the root node
   if (root_sid_ != src_root_sid) PushChild(root_sid_, src_root_sid, src);
@@ -277,9 +275,9 @@ void TreeClock::Acquire(const TreeClock* src) {
     Set(cur_node_sid, src->Get(cur_node_sid));
     SetAclk(cur_node_sid, src->GetAclk(cur_node_sid));
 
-    if (cur_node_sid == root_sid_) {
-      Printf("%u: root should not be acquiring\n", root_sid_);
-    }
+    // if (cur_node_sid == root_sid_) {
+    //   Printf("%u: root should not be acquiring\n", root_sid_);
+    // }
     PushChild(src->GetNode(cur_node_sid).parent, cur_node_sid, src);
     // if (GetNode(root_sid_).parent != kFreeSid) {
     //   Printf("%u: WOT6!!! root has %u -> %u.\n", root_sid_, GetNode(root_sid_).parent, root_sid_);
@@ -301,17 +299,17 @@ void TreeClock::Acquire(const TreeClock* src) {
   //   src->PrintTreeClock();
   //   Abort();
   // }
-  if (static_cast<u16>(GetAclk(root_sid_)) > 0) {
-    Printf("%u: 2 Aclk of root must be 0!\n", root_sid_);
-    PrintTreeClock();
-    Abort();
-  }
+  // if (static_cast<u16>(GetAclk(root_sid_)) > 0) {
+  //   Printf("%u: 2 Aclk of root must be 0!\n", root_sid_);
+  //   PrintTreeClock();
+  //   Abort();
+  // }
 
-  if (GetNode(root_sid_).parent != kFreeSid) {
-    Printf("%u: 0b Parent of root is not kFreeSid!\n", root_sid_);
-    PrintTreeClock();
-    Abort();
-  }
+  // if (GetNode(root_sid_).parent != kFreeSid) {
+  //   Printf("%u: 0b Parent of root is not kFreeSid!\n", root_sid_);
+  //   PrintTreeClock();
+  //   Abort();
+  // }
 
 #endif
 }
@@ -319,7 +317,7 @@ void TreeClock::Acquire(const TreeClock* src) {
 static TreeClock* AllocClock(TreeClock** dstp) {
   if (UNLIKELY(!*dstp)) {
     *dstp = New<TreeClock>();
-    Printf("Alloc clock @ %p\n", *dstp);
+    // Printf("Alloc clock @ %p\n", *dstp);
   }
   return *dstp;
 }
@@ -360,16 +358,16 @@ ALWAYS_INLINE void TreeClock::GetUpdatedNodesCopy(const TreeClock& other, Sid pa
     else if (other.GetAclk(cur_node_sid) <= parent_clk) break;
 
     cur_node_sid = other.GetNode(cur_node_sid).next;
-    if (cur_node_sid == parent_node.first_child) {
-      Printf("%u: GetUpdatedNodesCopy cycle detected\n", other.root_sid_);
-      Sid print_sid = parent_node.first_child;
-      do {
-        Printf("%u -> ", print_sid);
-        print_sid = other.GetNode(print_sid).next;
-      } while (print_sid != parent_node.first_child);
-      Printf("\n");
-      Abort();
-    }
+    // if (cur_node_sid == parent_node.first_child) {
+    //   Printf("%u: GetUpdatedNodesCopy cycle detected\n", other.root_sid_);
+    //   Sid print_sid = parent_node.first_child;
+    //   do {
+    //     Printf("%u -> ", print_sid);
+    //     print_sid = other.GetNode(print_sid).next;
+    //   } while (print_sid != parent_node.first_child);
+    //   Printf("\n");
+    //   Abort();
+    // }
   }
 }
 
@@ -414,23 +412,24 @@ TreeClock& TreeClock::operator=(const TreeClock& other) {
   Set(other_root_sid, other.Get(other_root_sid));
   SetAclk(other_root_sid, other.GetAclk(other_root_sid));
 
-  if (GetNode(root_sid_).parent != kFreeSid) {
-    Printf("%u: 1a Parent of root is not kFreeSid!\n", root_sid_);
-    PrintTreeClock();
-    Abort();
-  }
+  // if (GetNode(root_sid_).parent != kFreeSid) {
+  //   Printf("%u: 1a Parent of root is not kFreeSid!\n", root_sid_);
+  //   PrintTreeClock();
+  //   Abort();
+  // }
 
-  if (static_cast<u16>(GetAclk(root_sid_)) > 0) {
-    Printf("%u: 3a Aclk of root must be 0!\n", root_sid_);
-    PrintTreeClock();
-    Abort();
-  }
-  if (static_cast<u16>(other.GetAclk(other_root_sid)) > 0) {
-    Printf("%u = %u: 3b Aclk of root must be 0!\n", root_sid_, other.root_sid_);
-    other.PrintTreeClock();
-    Abort();
-  }
+  // if (static_cast<u16>(GetAclk(root_sid_)) > 0) {
+  //   Printf("%u: 3a Aclk of root must be 0!\n", root_sid_);
+  //   PrintTreeClock();
+  //   Abort();
+  // }
+  // if (static_cast<u16>(other.GetAclk(other_root_sid)) > 0) {
+  //   Printf("%u = %u: 3b Aclk of root must be 0!\n", root_sid_, other.root_sid_);
+  //   other.PrintTreeClock();
+  //   Abort();
+  // }
 
+  // Remove links to parent, prev, next for root
   Node& node = GetNode(other_root_sid);
   node.parent = kFreeSid;
   node.prev = kFreeSid;
@@ -447,7 +446,7 @@ TreeClock& TreeClock::operator=(const TreeClock& other) {
 
     // need to reorder this node in the tree
     // TODO: CHECK THE SECOND PREDICATE
-    if (!IsNodeNull(cur_node_sid)) DetachNode(cur_node_sid);
+    if (!IsNodeNull(cur_node_sid) && cur_node_sid != root_sid_) DetachNode(cur_node_sid);
 
     Set(cur_node_sid, other.Get(cur_node_sid));
     SetAclk(cur_node_sid, other.GetAclk(cur_node_sid));
@@ -469,21 +468,21 @@ TreeClock& TreeClock::operator=(const TreeClock& other) {
   // }
 
   root_sid_ = other_root_sid;
-  if (static_cast<u16>(GetAclk(root_sid_)) > 0) {
-    Printf("%u: 4 Aclk of root must be 0!\n", root_sid_);
-    PrintTreeClock();
-    Abort();
-  }
+  // if (static_cast<u16>(GetAclk(root_sid_)) > 0) {
+  //   Printf("%u: 4 Aclk of root must be 0!\n", root_sid_);
+  //   PrintTreeClock();
+  //   Abort();
+  // }
   // if (GetNode(root_sid_).parent != kFreeSid) {
   //   Printf("%u: WOT3!!! root has %u -> %u.\n", root_sid_, GetNode(root_sid_).parent, root_sid_);
   //   Abort();
   // }
 
-  if (GetNode(root_sid_).parent != kFreeSid) {
-    Printf("%u: 1b Parent of root is not kFreeSid!\n", root_sid_);
-    PrintTreeClock();
-    Abort();
-  }
+  // if (GetNode(root_sid_).parent != kFreeSid) {
+  //   Printf("%u: 1b Parent of root is not kFreeSid!\n", root_sid_);
+  //   PrintTreeClock();
+  //   Abort();
+  // }
 
 #endif
   return *this;
@@ -538,10 +537,10 @@ void TreeClock::ReleaseAcquire(TreeClock** dstp) {
 
   // Printf("%u - %u: ReleaseAcquire begin\n", root_sid_, dst->root_sid_);
 
-  if (dst == this) {
-    Printf("!!! Wow dst == this\n");
-    Abort();
-  }
+  // if (dst == this) {
+  //   Printf("!!! Wow dst == this\n");
+  //   Abort();
+  // }
 
   Acquire(dst);
   // if (GetNode(root_sid_).parent != kFreeSid) {

@@ -55,7 +55,7 @@ struct Node {
     u32  raw_nodes_[kThreadSlotCount] VECTOR_ALIGNED;
   };
 
-  u32 magic = 0;
+  // u32 magic = 0;
 
   Sid stack_[kThreadSlotCount] VECTOR_ALIGNED;
   Sid root_sid_;
@@ -104,10 +104,19 @@ ALWAYS_INLINE Sid TreeClock::GetRootSid() const {
 }
 
 ALWAYS_INLINE void TreeClock::SetRootSid(Sid sid) {
-  Printf("%u: SetRootSid = %u @ %p\n", root_sid_, sid, this);
-  DetachNode(sid);
-  GetNode(sid).parent = kFreeSid;
-  SetAclk(sid, static_cast<Epoch>(0));
+  // Printf("%u: SetRootSid = %u @ %p\n", root_sid_, sid, this);
+  // DetachNode(sid);
+  // Node node = GetNode(sid);
+  // if (node.parent != kFreeSid) GetNode(node.parent).first_child = node.next;
+  // if (node.prev != kFreeSid) GetNode(node.prev).next = node.next;
+  // if (node.next != kFreeSid) GetNode(node.next).prev = node.prev;
+
+  // // TODO: Can we just get rid of its child too?
+  // GetNode(sid).next = kFreeSid;
+  // GetNode(sid).prev = kFreeSid;
+  // GetNode(sid).parent = kFreeSid;
+  // SetAclk(sid, static_cast<Epoch>(0));
+  if (root_sid_ != kFreeSid) Reset();
   root_sid_ = sid;
 }
 
@@ -125,14 +134,17 @@ ALWAYS_INLINE u32 TreeClock::GetRawNode(Sid sid) const {
 
 ALWAYS_INLINE void TreeClock::DetachNode(Sid sid) {
   Node node = GetNode(sid);
+  // if (node.parent == kFreeSid) { Printf ("%u: Trying to detach [%u] from null parent node!\n", root_sid_, sid); PrintTreeClock(); Abort(); }
   Node& parent_node = GetNode(node.parent);     // get reference because may update the first child
 
   // if it's the first child, detach from the parent
   if (parent_node.first_child == sid)
     parent_node.first_child = node.next;
   // if it's not the first child, detach from the left sibling
-  else
+  else {
+    // if (node.prev == kFreeSid) { Printf("Trying to detach from null prev node!\n"); Abort(); }
     GetNode(node.prev).next = node.next;
+  }
 
   // also detach from the right sibling
   if (node.next != kFreeSid) {

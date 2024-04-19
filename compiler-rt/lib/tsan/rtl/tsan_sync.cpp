@@ -37,7 +37,7 @@ void SyncVar::Reset() {
   last_lock.Reset();
   recursion = 0;
   atomic_store_relaxed(&flags, 0);
-  Printf("Freeing clock @ %p\n", clock);
+  // Printf("Freeing clock @ %p\n", clock);
   Free(clock);
   Free(read_clock);
 }
