@@ -175,6 +175,10 @@ struct ThreadState {
 
   atomic_sint32_t pending_signals;
 
+#if TSAN_MINJIAN
+  u32 sampling_counter;
+#endif
+
   VectorClock clock;
 
   // This is a slow path flag. On fast path, fast_state.GetIgnoreBit() is read.
@@ -524,6 +528,14 @@ int Finalize(ThreadState *thr);
 void OnUserAlloc(ThreadState *thr, uptr pc, uptr p, uptr sz, bool write);
 void OnUserFree(ThreadState *thr, uptr pc, uptr p, bool write);
 
+#if TSAN_MINJIAN
+ALWAYS_INLINE bool CheckAndUpdateSamplingCounter(ThreadState *thr) {
+  u32 counter = thr->sampling_counter++;
+  // 8/256 ~= 3%
+  return ((counter & 0xff)) < 8;
+}
+#endif
+
 void MemoryAccess(ThreadState *thr, uptr pc, uptr addr, uptr size,
                   AccessType typ);
 void UnalignedMemoryAccess(ThreadState *thr, uptr pc, uptr addr, uptr size,
@@ -535,6 +547,9 @@ void MemoryAccessRangeT(ThreadState *thr, uptr pc, uptr addr, uptr size);
 ALWAYS_INLINE
 void MemoryAccessRange(ThreadState *thr, uptr pc, uptr addr, uptr size,
                        bool is_write) {
+#if TSAN_MINJIAN
+  if (LIKELY(!CheckAndUpdateSamplingCounter(thr))) return;
+#endif
   if (size == 0)
     return;
   if (is_write)

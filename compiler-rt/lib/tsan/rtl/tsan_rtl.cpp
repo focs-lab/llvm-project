@@ -313,6 +313,7 @@ void SlotAttachAndLock(ThreadState* thr) {
 #endif
   }
   thr->clock.Set(slot->sid, epoch);
+  thr->clock.SetSid(slot->sid);
   slot->journal.PushBack({thr->tid, epoch});
 }
 

@@ -18,9 +18,11 @@
 #include "sanitizer_common/sanitizer_mutex.h"
 #include "ubsan/ubsan_platform.h"
 
-#ifndef TSAN_VECTORIZE
-#  define TSAN_VECTORIZE __SSE4_2__
-#endif
+#define TSAN_MINJIAN 1
+
+// #ifndef TSAN_VECTORIZE
+// #  define TSAN_VECTORIZE __SSE4_2__
+// #endif
 
 #if TSAN_VECTORIZE
 // <emmintrin.h> transitively includes <stdlib.h>,

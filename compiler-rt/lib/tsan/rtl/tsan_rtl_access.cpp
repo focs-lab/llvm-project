@@ -194,6 +194,10 @@ bool ContainsSameAccess(RawShadow* s, Shadow cur, int unused0, int unused1,
 ALWAYS_INLINE
 bool CheckRaces(ThreadState* thr, RawShadow* shadow_mem, Shadow cur,
                 int unused0, int unused1, AccessType typ) {
+#if TSAN_MINJIAN
+  thr->clock.SetSampled();
+  // if (LIKELY(!CheckAndUpdateSamplingCounter(thr))) return;
+#endif
   bool stored = false;
   for (uptr idx = 0; idx < kShadowCnt; idx++) {
     RawShadow* sp = &shadow_mem[idx];
@@ -419,6 +423,9 @@ NOINLINE void TraceRestartMemoryAccess(ThreadState* thr, uptr pc, uptr addr,
 
 ALWAYS_INLINE USED void MemoryAccess(ThreadState* thr, uptr pc, uptr addr,
                                      uptr size, AccessType typ) {
+#if TSAN_MINJIAN
+  if (LIKELY(!CheckAndUpdateSamplingCounter(thr))) return;
+#endif
   RawShadow* shadow_mem = MemToShadow(addr);
   UNUSED char memBuf[4][64];
   DPrintf2("#%d: Access: %d@%d %p/%zd typ=0x%x {%s, %s, %s, %s}\n", thr->tid,
@@ -453,6 +460,9 @@ void RestartMemoryAccess16(ThreadState* thr, uptr pc, uptr addr,
 
 ALWAYS_INLINE USED void MemoryAccess16(ThreadState* thr, uptr pc, uptr addr,
                                        AccessType typ) {
+#if TSAN_MINJIAN
+  if (LIKELY(!CheckAndUpdateSamplingCounter(thr))) return;
+#endif
   const uptr size = 16;
   FastState fast_state = thr->fast_state;
   if (UNLIKELY(fast_state.GetIgnoreBit()))
@@ -490,6 +500,9 @@ void RestartUnalignedMemoryAccess(ThreadState* thr, uptr pc, uptr addr,
 ALWAYS_INLINE USED void UnalignedMemoryAccess(ThreadState* thr, uptr pc,
                                               uptr addr, uptr size,
                                               AccessType typ) {
+#if TSAN_MINJIAN
+  if (LIKELY(!CheckAndUpdateSamplingCounter(thr))) return;
+#endif
   DCHECK_LE(size, 8);
   FastState fast_state = thr->fast_state;
   if (UNLIKELY(fast_state.GetIgnoreBit()))
@@ -581,6 +594,9 @@ static void MemoryRangeSet(uptr addr, uptr size, RawShadow val) {
 }
 
 void MemoryResetRange(ThreadState* thr, uptr pc, uptr addr, uptr size) {
+#if TSAN_MINJIAN
+  if (LIKELY(!CheckAndUpdateSamplingCounter(thr))) return;
+#endif
   uptr addr1 = RoundDown(addr, kShadowCell);
   uptr size1 = RoundUp(size + addr - addr1, kShadowCell);
   MemoryRangeSet(addr1, size1, Shadow::kEmpty);
@@ -631,6 +647,9 @@ void MemoryRangeFreed(ThreadState* thr, uptr pc, uptr addr, uptr size) {
 }
 
 void MemoryRangeImitateWrite(ThreadState* thr, uptr pc, uptr addr, uptr size) {
+#if TSAN_MINJIAN
+  if (LIKELY(!CheckAndUpdateSamplingCounter(thr))) return;
+#endif
   DCHECK_EQ(addr % kShadowCell, 0);
   size = RoundUp(size, kShadowCell);
   TraceMemoryAccessRange(thr, pc, addr, size, kAccessWrite);
@@ -640,6 +659,9 @@ void MemoryRangeImitateWrite(ThreadState* thr, uptr pc, uptr addr, uptr size) {
 
 void MemoryRangeImitateWriteOrResetRange(ThreadState* thr, uptr pc, uptr addr,
                                          uptr size) {
+#if TSAN_MINJIAN
+  if (LIKELY(!CheckAndUpdateSamplingCounter(thr))) return;
+#endif
   if (thr->ignore_reads_and_writes == 0)
     MemoryRangeImitateWrite(thr, pc, addr, size);
   else
@@ -649,6 +671,9 @@ void MemoryRangeImitateWriteOrResetRange(ThreadState* thr, uptr pc, uptr addr,
 ALWAYS_INLINE
 bool MemoryAccessRangeOne(ThreadState* thr, RawShadow* shadow_mem, Shadow cur,
                           AccessType typ) {
+#if TSAN_MINJIAN
+  if (LIKELY(!CheckAndUpdateSamplingCounter(thr))) return false;
+#endif
   LOAD_CURRENT_SHADOW(cur, shadow_mem);
   if (LIKELY(ContainsSameAccess(shadow_mem, cur, shadow, access, typ)))
     return false;
@@ -664,6 +689,9 @@ NOINLINE void RestartMemoryAccessRange(ThreadState* thr, uptr pc, uptr addr,
 
 template <bool is_read>
 void MemoryAccessRangeT(ThreadState* thr, uptr pc, uptr addr, uptr size) {
+#if TSAN_MINJIAN
+  if (LIKELY(!CheckAndUpdateSamplingCounter(thr))) return;
+#endif
   const AccessType typ =
       (is_read ? kAccessRead : kAccessWrite) | kAccessNoRodata;
   RawShadow* shadow_mem = MemToShadow(addr);
