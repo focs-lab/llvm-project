@@ -37,12 +37,7 @@ void VectorClock::Reset() {
 #if !TSAN_VECTORIZE
   for (uptr i = 0; i < kThreadSlotCount; i++) {
     clk_[i] = kEpochZero;
-    uclk_[i] = kEpochZero;
   }
-
-  // only for locks
-  last_released_ = kFreeSid;
-  lock_uclk_ = kEpochZero;
 #else
   m128 z = _mm_setzero_si128();
   m128* vclk = reinterpret_cast<m128*>(clk_);

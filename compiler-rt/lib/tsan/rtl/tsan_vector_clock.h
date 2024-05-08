@@ -49,7 +49,9 @@ class VectorClock {
 
  private:
   Epoch clk_[kThreadSlotCount] VECTOR_ALIGNED;
+#if TSAN_MINJIAN
   Epoch uclk_[kThreadSlotCount] VECTOR_ALIGNED;
+#endif
 
 #if TSAN_MINJIAN
   // only used by threads

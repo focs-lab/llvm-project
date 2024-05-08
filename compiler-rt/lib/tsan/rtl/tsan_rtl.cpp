@@ -313,7 +313,9 @@ void SlotAttachAndLock(ThreadState* thr) {
 #endif
   }
   thr->clock.Set(slot->sid, epoch);
+#if TSAN_MINJIAN
   thr->clock.SetSid(slot->sid);
+#endif
   slot->journal.PushBack({thr->tid, epoch});
 }
 

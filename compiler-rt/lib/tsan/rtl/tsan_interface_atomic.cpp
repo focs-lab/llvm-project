@@ -275,7 +275,11 @@ static void AtomicStore(ThreadState *thr, uptr pc, volatile T *a, T v,
   {
     auto s = ctx->metamap.GetSyncOrCreate(thr, pc, (uptr)a, false);
     Lock lock(&s->mtx);
+#if TSAN_MINJIAN
     thr->clock.ReleaseStoreAtomic(&s->clock);
+#else
+    thr->clock.ReleaseStore(&s->clock);
+#endif
     NoTsanAtomicStore(a, v, mo);
   }
   IncrementEpoch(thr);
