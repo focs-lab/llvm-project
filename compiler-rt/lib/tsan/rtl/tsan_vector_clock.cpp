@@ -73,7 +73,7 @@ void VectorClock::Acquire(const VectorClock* src) {
 #else
 #if !TSAN_VECTORIZE
   for (uptr i = 0; i < kThreadSlotCount; i++)
-    clk_[i] = max(uclk_[i], src->clk_[i]);
+    clk_[i] = max(clk_[i], src->clk_[i]);
 #else
   m128* __restrict vdst = reinterpret_cast<m128*>(clk_);
   m128 const* __restrict vsrc = reinterpret_cast<m128 const*>(src->clk_);
