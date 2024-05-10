@@ -213,7 +213,8 @@ void ThreadContext::OnStarted(void *arg) {
 
 void ThreadFinish(ThreadState *thr) {
   DPrintf("#%d: ThreadFinish\n", thr->tid);
-  ThreadCheckIgnore(thr);
+  if (LIKELY(atomic_load(&thr->in_blocking_func, memory_order_relaxed) == 0))
+    ThreadCheckIgnore(thr);
   if (thr->stk_addr && thr->stk_size)
     DontNeedShadowFor(thr->stk_addr, thr->stk_size);
   if (thr->tls_addr && thr->tls_size)
