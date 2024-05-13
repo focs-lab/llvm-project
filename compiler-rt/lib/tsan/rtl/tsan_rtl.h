@@ -139,7 +139,7 @@ struct TidEpoch {
 struct TidSlot {
   Mutex mtx;
   Sid sid;
-  atomic_uint32_t raw_epoch;
+  atomic_uint32_t raw_epoch, raw_uclk;
   ThreadState *thr;
   Vector<TidEpoch> journal;
   INode node;
@@ -150,6 +150,14 @@ struct TidSlot {
 
   void SetEpoch(Epoch v) {
     atomic_store(&raw_epoch, static_cast<u32>(v), memory_order_relaxed);
+  }
+
+  Epoch uclk() const {
+    return static_cast<Epoch>(atomic_load(&raw_uclk, memory_order_relaxed));
+  }
+
+  void SetUclk(Epoch v) {
+    atomic_store(&raw_uclk, static_cast<u32>(v), memory_order_relaxed);
   }
 
   TidSlot();
@@ -175,8 +183,9 @@ struct ThreadState {
 
   atomic_sint32_t pending_signals;
 
-#if TSAN_MINJIAN
-  u32 sampling_counter;
+#if TSAN_SAMPLING
+  u32 sampling_rng_state;
+  bool sampled;
 #endif
 
   VectorClock clock;
@@ -528,11 +537,20 @@ int Finalize(ThreadState *thr);
 void OnUserAlloc(ThreadState *thr, uptr pc, uptr p, uptr sz, bool write);
 void OnUserFree(ThreadState *thr, uptr pc, uptr p, bool write);
 
-#if TSAN_MINJIAN
-ALWAYS_INLINE bool CheckAndUpdateSamplingCounter(ThreadState *thr) {
-  u32 counter = thr->sampling_counter++;
-  // 8/256 ~= 3%
-  return ((counter & 0xff)) < 8;
+#if TSAN_SAMPLING
+ALWAYS_INLINE bool ShouldSample(ThreadState *thr) {
+  // https://en.wikipedia.org/wiki/Linear-feedback_shift_register#Galois_LFSRs
+  // https://users.ece.cmu.edu/~koopman/lfsr/32.txt
+  u32 lfsr = thr->sampling_rng_state;
+  u8 lsb = lfsr & 1u;
+  lfsr >>= 1;
+  lfsr ^= (-lsb) & 0x80000057u;
+  thr->sampling_rng_state = lfsr;
+
+  // 0.03 * 65536 = 1966.08
+  bool should_sample = (lfsr & 0xffff) < 2000;
+  if (UNLIKELY(should_sample)) thr->sampled = true;
+  return should_sample;
 }
 #endif
 
@@ -547,8 +565,8 @@ void MemoryAccessRangeT(ThreadState *thr, uptr pc, uptr addr, uptr size);
 ALWAYS_INLINE
 void MemoryAccessRange(ThreadState *thr, uptr pc, uptr addr, uptr size,
                        bool is_write) {
-#if TSAN_MINJIAN
-  if (LIKELY(!CheckAndUpdateSamplingCounter(thr))) return;
+#if TSAN_SAMPLING
+  if (LIKELY(!ShouldSample(thr))) return;
 #endif
   if (size == 0)
     return;

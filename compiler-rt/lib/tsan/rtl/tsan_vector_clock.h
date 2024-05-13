@@ -24,23 +24,24 @@ class VectorClock {
   Epoch Get(Sid sid) const;
   void Set(Sid sid, Epoch v);
 
-#if TSAN_MINJIAN
+#if TSAN_SAMPLING
   Epoch GetUclk(Sid sid) const;
   void SetUclk(Sid sid, Epoch v);
 
   Sid GetSid() const;
   void SetSid(Sid sid);
-
-  bool HasSampled() const;
-  void SetSampled();
 #endif
 
   void Reset();
   void Acquire(const VectorClock* src);
   void Release(VectorClock** dstp);
   void ReleaseStore(VectorClock** dstp);
-#if TSAN_MINJIAN
+#if TSAN_SAMPLING
   void ReleaseStoreAtomic(VectorClock** dstp);
+  // void IncClk();
+  Epoch IncUclk();
+  void ReleaseFork(VectorClock** dstp);
+  void AcquireJoin(const VectorClock* src);
 #endif
   void ReleaseStoreAcquire(VectorClock** dstp);
   void ReleaseAcquire(VectorClock** dstp);
@@ -49,18 +50,16 @@ class VectorClock {
 
  private:
   Epoch clk_[kThreadSlotCount] VECTOR_ALIGNED;
-#if TSAN_MINJIAN
+#if TSAN_SAMPLING
   Epoch uclk_[kThreadSlotCount] VECTOR_ALIGNED;
 #endif
 
-#if TSAN_MINJIAN
+#if TSAN_SAMPLING
   // only used by threads
   Sid sid_;
-  bool has_sampled_;
 
   // only used by locks
-  Epoch lock_uclk_;
-  Sid last_released_;
+  Sid last_released_thread_;
 #endif
 };
 
@@ -73,13 +72,19 @@ ALWAYS_INLINE void VectorClock::Set(Sid sid, Epoch v) {
   clk_[static_cast<u8>(sid)] = v;
 }
 
-#if TSAN_MINJIAN
+#if TSAN_SAMPLING
 ALWAYS_INLINE Epoch VectorClock::GetUclk(Sid sid) const {
   return uclk_[static_cast<u8>(sid)];
 }
 
 ALWAYS_INLINE void VectorClock::SetUclk(Sid sid, Epoch v) {
   DCHECK_GE(v, uclk_[static_cast<u8>(sid)]);
+  // Epoch has 16 bits. It is ok to be above kEpochLast.
+  // fast_state.uclk_overflowed_ will be true once uclk is above kEpochLast.
+  // This should give plenty of room for slot to detach.
+  // If slot is not detached even after so many "grace-period" increments, there
+  // is clearly something wrong.
+  CHECK_LT(v, static_cast<u16>(kEpochOver) << 1);
   uclk_[static_cast<u8>(sid)] = v;
 }
 
@@ -91,12 +96,17 @@ ALWAYS_INLINE void VectorClock::SetSid(Sid sid) {
   sid_ = sid;
 }
 
-ALWAYS_INLINE bool VectorClock::HasSampled() const {
-  return has_sampled_;
-}
+// ALWAYS_INLINE void VectorClock::IncClk() {
+//   Epoch epoch = EpochInc(Get(sid_));
+//   CHECK(!EpochOverflow(epoch));
+//   Set(sid_, epoch);
+// }
 
-ALWAYS_INLINE void VectorClock::SetSampled() {
-  has_sampled_ = true;
+ALWAYS_INLINE Epoch VectorClock::IncUclk() {
+  Epoch epoch = EpochInc(GetUclk(sid_));
+  CHECK(!EpochOverflow(epoch));
+  SetUclk(sid_, epoch);
+  return epoch;
 }
 #endif
 

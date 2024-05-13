@@ -268,6 +268,13 @@ static TidSlot* FindSlotAndLock(ThreadState* thr)
         slot = ctx->slot_queue.PopFront();
         if (!slot)
           break;
+#if TSAN_SAMPLING || TSAN_DISABLE_SLOTS
+// If we are disabling slots, no slots will be pushed back into the queue.
+// So, each slot is used exclusively by 1 thread.
+// There is no more need to check if the slot is exhaused because it should be a fresh slot.
+// Furthermore, there is no possibility of any thread being preempted.
+        break;
+#endif
         if (slot->epoch() != kEpochLast) {
           ctx->slot_queue.PushBack(slot);
           break;
@@ -312,9 +319,16 @@ void SlotAttachAndLock(ThreadState* thr) {
     thr->last_sleep_clock.Reset();
 #endif
   }
-  thr->clock.Set(slot->sid, epoch);
-#if TSAN_MINJIAN
+#if TSAN_SAMPLING
+  // TSAN_SAMPLING ==> no thread preempting, each slot is held exclusively by 1 thread
+  // so epoch == 1
+  DPrintf("#%d: SlotAttach sid: %u, epoch: %u\n", thr->tid, slot->sid, epoch);
   thr->clock.SetSid(slot->sid);
+  CHECK_EQ(epoch, 1);
+  thr->clock.Set(slot->sid, epoch);
+  thr->clock.SetUclk(slot->sid, epoch);
+#else
+  thr->clock.Set(slot->sid, epoch);
 #endif
   slot->journal.PushBack({thr->tid, epoch});
 }
@@ -346,8 +360,21 @@ static void SlotDetachImpl(ThreadState* thr, bool exiting) {
     }
     return;
   }
+#if TSAN_SAMPLING
+  CHECK(exiting || thr->fast_state.epoch() == kEpochLast || thr->fast_state.IsUclkOverflowed());
+#else
   CHECK(exiting || thr->fast_state.epoch() == kEpochLast);
+#endif
+// #if TSAN_DISABLE_SLOTS
+// // For now, don't allow reuse of slots that detached due to thread exit.
+// // Because it does not set the clock to 1.
+// // But actually it should be ok to not be 1. Check with Umang to confirm.
+// // Setting the slot epoch to kEpochLast means no new threads will want to attach to this slot,
+// // because the slot is exhausted.
+//   slot->SetEpoch(kEpochLast);
+// #else
   slot->SetEpoch(thr->fast_state.epoch());
+// #endif
   slot->thr = nullptr;
 }
 
@@ -368,6 +395,9 @@ void SlotLock(ThreadState* thr) SANITIZER_NO_THREAD_SAFETY_ANALYSIS {
   TidSlot* slot = thr->slot;
   slot->mtx.Lock();
   thr->slot_locked = true;
+#if TSAN_SAMPLING
+  if (LIKELY(!thr->fast_state.IsUclkOverflowed()))
+#endif
   if (LIKELY(thr == slot->thr && thr->fast_state.epoch() != kEpochLast))
     return;
   SlotDetachImpl(thr, false);
@@ -427,6 +457,16 @@ ThreadState::ThreadState(Tid tid)
 #endif
   shadow_stack_pos = shadow_stack;
   shadow_stack_end = shadow_stack + kInitStackSize;
+
+#if TSAN_SAMPLING
+  uptr seed = 0;
+  seed = (uptr) &seed;
+  seed = (seed >> 12) & 0xfff;
+  if (seed == 0) seed = 0x1234;   // lfsr start state cannot be 0
+  // Printf("Seed: %lu\n", seed);
+  sampling_rng_state = seed;
+  sampled = false;
+#endif
 }
 
 #if !SANITIZER_GO

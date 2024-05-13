@@ -275,13 +275,16 @@ static void AtomicStore(ThreadState *thr, uptr pc, volatile T *a, T v,
   {
     auto s = ctx->metamap.GetSyncOrCreate(thr, pc, (uptr)a, false);
     Lock lock(&s->mtx);
-#if TSAN_MINJIAN
-    thr->clock.ReleaseStoreAtomic(&s->clock);
+#if TSAN_SAMPLING || TSAN_STORES_ARE_ALL_RELACQ
+    thr->clock.ReleaseAcquire(&s->clock);
 #else
     thr->clock.ReleaseStore(&s->clock);
 #endif
     NoTsanAtomicStore(a, v, mo);
   }
+#if TSAN_SAMPLING
+  if (UNLIKELY(thr->sampled))
+#endif
   IncrementEpoch(thr);
 }
 
@@ -302,6 +305,9 @@ static T AtomicRMW(ThreadState *thr, uptr pc, volatile T *a, T v, morder mo) {
       thr->clock.Acquire(s->clock);
     v = F(a, v);
   }
+#if TSAN_SAMPLING
+  if (UNLIKELY(thr->sampled))
+#endif
   if (IsReleaseOrder(mo))
     IncrementEpoch(thr);
   return v;
@@ -444,6 +450,9 @@ static bool AtomicCAS(ThreadState *thr, uptr pc, volatile T *a, T *c, T v,
     else if (IsAcquireOrder(mo))
       thr->clock.Acquire(s->clock);
   }
+#if TSAN_SAMPLING
+  if (UNLIKELY(thr->sampled))
+#endif
   if (success && release)
     IncrementEpoch(thr);
   return success;
