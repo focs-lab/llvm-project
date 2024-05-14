@@ -275,8 +275,8 @@ static void AtomicStore(ThreadState *thr, uptr pc, volatile T *a, T v,
   {
     auto s = ctx->metamap.GetSyncOrCreate(thr, pc, (uptr)a, false);
     Lock lock(&s->mtx);
-#if TSAN_UCLOCKS || TSAN_STORES_ARE_ALL_RELACQ
-    thr->clock.ReleaseAcquire(&s->clock);
+#if TSAN_UCLOCKS
+    thr->clock.ReleaseStoreAtomic(&s->clock);
 #else
     thr->clock.ReleaseStore(&s->clock);
 #endif
