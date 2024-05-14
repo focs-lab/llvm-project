@@ -122,13 +122,13 @@ Tid ThreadCreate(ThreadState *thr, uptr pc, uptr uid, bool detached) {
     arg.stack = CurrentStackId(thr, pc);
     if (!thr->ignore_sync) {
       SlotLocker locker(thr);
-#if TSAN_SAMPLING
+#if TSAN_UCLOCKS
       thr->clock.ReleaseFork(&arg.sync);
 #else
       thr->clock.ReleaseStore(&arg.sync);
 #endif
       arg.sync_epoch = ctx->global_epoch;
-#if TSAN_SAMPLING
+#if TSAN_UCLOCKS
   if (UNLIKELY(thr->sampled))
 #endif
       IncrementEpoch(thr);
@@ -240,7 +240,7 @@ void ThreadFinish(ThreadState *thr) {
     if (!thr->tctx->detached) {
       thr->clock.ReleaseStore(&thr->tctx->sync);
       thr->tctx->sync_epoch = ctx->global_epoch;
-#if TSAN_SAMPLING
+#if TSAN_UCLOCKS
   if (UNLIKELY(thr->sampled))
 #endif
       IncrementEpoch(thr);
@@ -309,7 +309,7 @@ void ThreadJoin(ThreadState *thr, uptr pc, Tid tid) {
   if (!thr->ignore_sync) {
     SlotLocker locker(thr);
     if (arg.sync_epoch == ctx->global_epoch)
-#if TSAN_SAMPLING
+#if TSAN_UCLOCKS
       thr->clock.AcquireJoin(arg.sync);
 #else
       thr->clock.Acquire(arg.sync);

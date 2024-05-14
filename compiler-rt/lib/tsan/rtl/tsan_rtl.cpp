@@ -268,15 +268,16 @@ static TidSlot* FindSlotAndLock(ThreadState* thr)
         slot = ctx->slot_queue.PopFront();
         if (!slot)
           break;
-#if TSAN_SAMPLING || TSAN_DISABLE_SLOTS
+
+        if (slot->epoch() != kEpochLast) {
+#if !(TSAN_UCLOCKS || TSAN_DISABLE_SLOTS)
 // If we are disabling slots, no slots will be pushed back into the queue.
 // So, each slot is used exclusively by 1 thread.
-// There is no more need to check if the slot is exhaused because it should be a fresh slot.
+// There should be no more need to check if the slot is exhausted because it should be a fresh slot.
+// But putting it like this here to be safe for now.
 // Furthermore, there is no possibility of any thread being preempted.
-        break;
-#endif
-        if (slot->epoch() != kEpochLast) {
           ctx->slot_queue.PushBack(slot);
+#endif
           break;
         }
       }
@@ -288,6 +289,16 @@ static TidSlot* FindSlotAndLock(ThreadState* thr)
     slot->mtx.Lock();
     CHECK(!thr->slot_locked);
     thr->slot_locked = true;
+#if TSAN_UCLOCKS || TSAN_DISABLE_SLOTS
+    // No preempting allowed. It should never be the case that a slot that is held by another thread is in the queue.
+    // if (slot->thr) Printf("#%d: slot->thr: %p\n", thr->tid, slot->thr);
+    CHECK(!slot->thr);
+    // This is necessary because a thread might have called IncrementEpoch when DoReset is called.
+    // In this case, the thread would later detach and attach to a new slot.
+    // This new slot would need to know about that increment.
+    // Otherwise, HB edge might be missed resulting in FP.
+    slot->SetEpoch(slot->thr->fast_state.epoch());
+#endif  // wont enter branch below if slots is disabled
     if (slot->thr) {
       DPrintf("#%d: preempting sid=%d tid=%d\n", thr->tid, (u32)slot->sid,
               slot->thr->tid);
@@ -311,6 +322,9 @@ void SlotAttachAndLock(ThreadState* thr) {
   slot->SetEpoch(epoch);
   thr->fast_state.SetSid(slot->sid);
   thr->fast_state.SetEpoch(epoch);
+#if TSAN_UCLOCKS
+  thr->fast_state.ClearUclkOverflowed();    // new slot, no more overflowed uclk
+#endif
   if (thr->slot_epoch != ctx->global_epoch) {
     thr->slot_epoch = ctx->global_epoch;
     thr->clock.Reset();
@@ -319,22 +333,23 @@ void SlotAttachAndLock(ThreadState* thr) {
     thr->last_sleep_clock.Reset();
 #endif
   }
-#if TSAN_SAMPLING
-  // TSAN_SAMPLING ==> no thread preempting, each slot is held exclusively by 1 thread
-  // so epoch == 1
-  DPrintf("#%d: SlotAttach sid: %u, epoch: %u\n", thr->tid, slot->sid, epoch);
-  thr->clock.SetSid(slot->sid);
-  CHECK_EQ(epoch, 1);
-  thr->clock.Set(slot->sid, epoch);
-  thr->clock.SetUclk(slot->sid, epoch);
-#else
-  thr->clock.Set(slot->sid, epoch);
+#if TSAN_UCLOCKS || TSAN_DISABLE_SLOTS
+  // TSAN_UCLOCKS || TSAN_DISABLE_SLOTS ==> no thread preempting, so each slot is held exclusively by 1 thread
+  // so epoch == 1 (it may be 2 because of DoResetImpl running concurrently with IncrementEpoch)
+  DPrintf("#%d: SlotAttach sid: %u, epoch: %u overflowed: %u\n", thr->tid, slot->sid, epoch, thr->fast_state.IsUclkOverflowed());
+  CHECK_LE(epoch, 2);
 #endif
+#if TSAN_UCLOCKS
+  thr->clock.SetSid(slot->sid);
+  thr->clock.SetUclk(slot->sid, epoch);   // epoch would be either 1 or 2. It doesnt make a difference because it is a fresh slot.
+#endif
+  thr->clock.Set(slot->sid, epoch);
   slot->journal.PushBack({thr->tid, epoch});
 }
 
 static void SlotDetachImpl(ThreadState* thr, bool exiting) {
   TidSlot* slot = thr->slot;
+  DPrintf("#%d: SlotDetachImpl sid: %u epoch: %u uepoch: %u overflowed: %u\n", thr->tid, slot->sid, thr->fast_state.epoch(), slot->uepoch(), thr->fast_state.IsUclkOverflowed());
   thr->slot = nullptr;
   if (thr != slot->thr) {
     slot = nullptr;  // we don't own the slot anymore
@@ -360,7 +375,7 @@ static void SlotDetachImpl(ThreadState* thr, bool exiting) {
     }
     return;
   }
-#if TSAN_SAMPLING
+#if TSAN_UCLOCKS
   CHECK(exiting || thr->fast_state.epoch() == kEpochLast || thr->fast_state.IsUclkOverflowed());
 #else
   CHECK(exiting || thr->fast_state.epoch() == kEpochLast);
@@ -395,7 +410,7 @@ void SlotLock(ThreadState* thr) SANITIZER_NO_THREAD_SAFETY_ANALYSIS {
   TidSlot* slot = thr->slot;
   slot->mtx.Lock();
   thr->slot_locked = true;
-#if TSAN_SAMPLING
+#if TSAN_UCLOCKS
   if (LIKELY(!thr->fast_state.IsUclkOverflowed()))
 #endif
   if (LIKELY(thr == slot->thr && thr->fast_state.epoch() != kEpochLast))
@@ -458,7 +473,7 @@ ThreadState::ThreadState(Tid tid)
   shadow_stack_pos = shadow_stack;
   shadow_stack_end = shadow_stack + kInitStackSize;
 
-#if TSAN_SAMPLING
+#if TSAN_UCLOCKS
   uptr seed = 0;
   seed = (uptr) &seed;
   seed = (seed >> 12) & 0xfff;
@@ -1061,7 +1076,13 @@ void TraceSwitchPartImpl(ThreadState* thr) {
     // or (2) if we've acquired a new slot in SlotLock in the beginning
     // of the function and the slot was at kEpochLast - 1, so after increment
     // in SlotAttachAndLock it become kEpochLast.
+    // No slots should be still in the queue after attached.
     if (ctx->slot_queue.Queued(thr->slot)) {
+#if TSAN_UCLOCKS || TSAN_DISABLE_SLOTS
+      // If epoch is in the queue, it must be 0.
+      // It could be 1 because DoResetImpl may run concurrently with IncrementEpoch.
+      CHECK_LE(thr->slot->epoch(), 1);
+#endif
       ctx->slot_queue.Remove(thr->slot);
       ctx->slot_queue.PushBack(thr->slot);
     }

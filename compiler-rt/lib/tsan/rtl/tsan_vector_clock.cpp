@@ -23,7 +23,7 @@ const uptr kVectorClockSize = kThreadSlotCount * sizeof(Epoch) / sizeof(m128);
 VectorClock::VectorClock() { Reset(); }
 
 void VectorClock::Reset() {
-#if TSAN_SAMPLING
+#if TSAN_UCLOCKS
   for (uptr i = 0; i < kThreadSlotCount; i++) {
     clk_[i] = kEpochZero;
     uclk_[i] = kEpochZero;
@@ -47,7 +47,7 @@ void VectorClock::Reset() {
 void VectorClock::Acquire(const VectorClock* src) {
   if (!src)
     return;
-#if TSAN_SAMPLING
+#if TSAN_UCLOCKS
 // Acq(t, l):
 // 	If U_l(LR_l) <= U_t(LR_l):
 // 		Return
@@ -101,7 +101,7 @@ static VectorClock* AllocClock(VectorClock** dstp) {
 void VectorClock::Release(VectorClock** dstp) {
   VectorClock* dst = AllocClock(dstp);
 
-#if TSAN_SAMPLING
+#if TSAN_UCLOCKS
 // Rel(t, l);
 // 	If U_t(t) != U_l(t):
 // 		C_l := C_t join C_l // Also equivalent to “C_l := C_t”. When using tree clocks, use the “MonotoneCopy” function; see TC paper
@@ -140,7 +140,7 @@ void VectorClock::Release(VectorClock** dstp) {
 void VectorClock::ReleaseStore(VectorClock** dstp) {
   VectorClock* dst = AllocClock(dstp);
 
-#if TSAN_SAMPLING
+#if TSAN_UCLOCKS
   // Let's do the same thing as Release
   Release(dstp);
   return;
@@ -170,7 +170,7 @@ void VectorClock::ReleaseStore(VectorClock** dstp) {
 #endif
 }
 
-#if TSAN_SAMPLING
+#if TSAN_UCLOCKS
 // Only for atomic_store with memory_order_release
 void VectorClock::ReleaseStoreAtomic(VectorClock** dstp) {
   VectorClock* dst = AllocClock(dstp);
@@ -240,7 +240,7 @@ void VectorClock::AcquireJoin(const VectorClock* child) {
 #endif
 
 VectorClock& VectorClock::operator=(const VectorClock& other) {
-#if TSAN_SAMPLING
+#if TSAN_UCLOCKS
   for (uptr i = 0; i < kThreadSlotCount; i++) {
     clk_[i] = other.clk_[i];
     uclk_[i] = other.uclk_[i];
@@ -285,7 +285,7 @@ void VectorClock::ReleaseStoreAcquire(VectorClock** dstp) {
 
 void VectorClock::ReleaseAcquire(VectorClock** dstp) {
   VectorClock* dst = AllocClock(dstp);
-#if TSAN_SAMPLING
+#if TSAN_UCLOCKS
   Acquire(dst);
   ReleaseStore(dstp);
 #else

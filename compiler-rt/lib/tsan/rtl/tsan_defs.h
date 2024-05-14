@@ -18,13 +18,14 @@
 #include "sanitizer_common/sanitizer_mutex.h"
 #include "ubsan/ubsan_platform.h"
 
-#define TSAN_SAMPLING 1
-#define TSAN_DISABLE_SLOTS 0
-#define TSAN_STORES_ARE_ALL_RELACQ 1
+#define TSAN_SAMPLING 0
+#define TSAN_UCLOCKS 1
+#define TSAN_DISABLE_SLOTS 1
+#define TSAN_STORES_ARE_ALL_RELACQ 0
 
-// #ifndef TSAN_VECTORIZE
+#ifndef TSAN_VECTORIZE
 // #  define TSAN_VECTORIZE __SSE4_2__
-// #endif
+#endif
 
 #if TSAN_VECTORIZE
 // <emmintrin.h> transitively includes <stdlib.h>,

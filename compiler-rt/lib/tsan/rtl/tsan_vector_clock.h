@@ -24,7 +24,7 @@ class VectorClock {
   Epoch Get(Sid sid) const;
   void Set(Sid sid, Epoch v);
 
-#if TSAN_SAMPLING
+#if TSAN_UCLOCKS
   Epoch GetUclk(Sid sid) const;
   void SetUclk(Sid sid, Epoch v);
 
@@ -36,7 +36,7 @@ class VectorClock {
   void Acquire(const VectorClock* src);
   void Release(VectorClock** dstp);
   void ReleaseStore(VectorClock** dstp);
-#if TSAN_SAMPLING
+#if TSAN_UCLOCKS
   void ReleaseStoreAtomic(VectorClock** dstp);
   // void IncClk();
   Epoch IncUclk();
@@ -50,11 +50,11 @@ class VectorClock {
 
  private:
   Epoch clk_[kThreadSlotCount] VECTOR_ALIGNED;
-#if TSAN_SAMPLING
+#if TSAN_UCLOCKS
   Epoch uclk_[kThreadSlotCount] VECTOR_ALIGNED;
 #endif
 
-#if TSAN_SAMPLING
+#if TSAN_UCLOCKS
   // only used by threads
   Sid sid_;
 
@@ -72,7 +72,7 @@ ALWAYS_INLINE void VectorClock::Set(Sid sid, Epoch v) {
   clk_[static_cast<u8>(sid)] = v;
 }
 
-#if TSAN_SAMPLING
+#if TSAN_UCLOCKS
 ALWAYS_INLINE Epoch VectorClock::GetUclk(Sid sid) const {
   return uclk_[static_cast<u8>(sid)];
 }

@@ -194,7 +194,7 @@ bool ContainsSameAccess(RawShadow* s, Shadow cur, int unused0, int unused1,
 ALWAYS_INLINE
 bool CheckRaces(ThreadState* thr, RawShadow* shadow_mem, Shadow cur,
                 int unused0, int unused1, AccessType typ) {
-#if TSAN_SAMPLING
+#if TSAN_UCLOCKS
   if (LIKELY(!ShouldSample(thr))) return false;
 #endif
   bool stored = false;
@@ -422,7 +422,7 @@ NOINLINE void TraceRestartMemoryAccess(ThreadState* thr, uptr pc, uptr addr,
 
 ALWAYS_INLINE USED void MemoryAccess(ThreadState* thr, uptr pc, uptr addr,
                                      uptr size, AccessType typ) {
-#if TSAN_SAMPLING
+#if TSAN_UCLOCKS
   if (LIKELY(!ShouldSample(thr))) return;
 #endif
   RawShadow* shadow_mem = MemToShadow(addr);
@@ -459,7 +459,7 @@ void RestartMemoryAccess16(ThreadState* thr, uptr pc, uptr addr,
 
 ALWAYS_INLINE USED void MemoryAccess16(ThreadState* thr, uptr pc, uptr addr,
                                        AccessType typ) {
-#if TSAN_SAMPLING
+#if TSAN_UCLOCKS
   if (LIKELY(!ShouldSample(thr))) return;
 #endif
   const uptr size = 16;
@@ -499,7 +499,7 @@ void RestartUnalignedMemoryAccess(ThreadState* thr, uptr pc, uptr addr,
 ALWAYS_INLINE USED void UnalignedMemoryAccess(ThreadState* thr, uptr pc,
                                               uptr addr, uptr size,
                                               AccessType typ) {
-#if TSAN_SAMPLING
+#if TSAN_UCLOCKS
   if (LIKELY(!ShouldSample(thr))) return;
 #endif
   DCHECK_LE(size, 8);
@@ -593,7 +593,7 @@ static void MemoryRangeSet(uptr addr, uptr size, RawShadow val) {
 }
 
 void MemoryResetRange(ThreadState* thr, uptr pc, uptr addr, uptr size) {
-#if TSAN_SAMPLING
+#if TSAN_UCLOCKS
   if (LIKELY(!ShouldSample(thr))) return;
 #endif
   uptr addr1 = RoundDown(addr, kShadowCell);
@@ -646,7 +646,7 @@ void MemoryRangeFreed(ThreadState* thr, uptr pc, uptr addr, uptr size) {
 }
 
 void MemoryRangeImitateWrite(ThreadState* thr, uptr pc, uptr addr, uptr size) {
-#if TSAN_SAMPLING
+#if TSAN_UCLOCKS
   if (LIKELY(!ShouldSample(thr))) return;
 #endif
   DCHECK_EQ(addr % kShadowCell, 0);
@@ -658,7 +658,7 @@ void MemoryRangeImitateWrite(ThreadState* thr, uptr pc, uptr addr, uptr size) {
 
 void MemoryRangeImitateWriteOrResetRange(ThreadState* thr, uptr pc, uptr addr,
                                          uptr size) {
-#if TSAN_SAMPLING
+#if TSAN_UCLOCKS
   if (LIKELY(!ShouldSample(thr))) return;
 #endif
   if (thr->ignore_reads_and_writes == 0)
@@ -670,7 +670,7 @@ void MemoryRangeImitateWriteOrResetRange(ThreadState* thr, uptr pc, uptr addr,
 ALWAYS_INLINE
 bool MemoryAccessRangeOne(ThreadState* thr, RawShadow* shadow_mem, Shadow cur,
                           AccessType typ) {
-#if TSAN_SAMPLING
+#if TSAN_UCLOCKS
   if (LIKELY(!ShouldSample(thr))) return false;
 #endif
   LOAD_CURRENT_SHADOW(cur, shadow_mem);
@@ -688,7 +688,7 @@ NOINLINE void RestartMemoryAccessRange(ThreadState* thr, uptr pc, uptr addr,
 
 template <bool is_read>
 void MemoryAccessRangeT(ThreadState* thr, uptr pc, uptr addr, uptr size) {
-#if TSAN_SAMPLING
+#if TSAN_UCLOCKS
   if (LIKELY(!ShouldSample(thr))) return;
 #endif
   const AccessType typ =

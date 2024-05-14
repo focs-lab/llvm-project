@@ -250,7 +250,7 @@ int MutexUnlock(ThreadState *thr, uptr pc, uptr addr, u32 flagz) {
         ctx->dd->MutexBeforeUnlock(&cb, &s->dd, true);
       }
     }
-#if TSAN_SAMPLING
+#if TSAN_UCLOCKS
   if (UNLIKELY(thr->sampled))
 #endif
     if (released)
@@ -353,7 +353,7 @@ void MutexReadUnlock(ThreadState *thr, uptr pc, uptr addr) {
         ctx->dd->MutexBeforeUnlock(&cb, &s->dd, false);
       }
     }
-#if TSAN_SAMPLING
+#if TSAN_UCLOCKS
   if (UNLIKELY(thr->sampled))
 #endif
     if (released)
@@ -410,7 +410,7 @@ void MutexReadOrWriteUnlock(ThreadState *thr, uptr pc, uptr addr) {
         ctx->dd->MutexBeforeUnlock(&cb, &s->dd, write);
       }
     }
-#if TSAN_SAMPLING
+#if TSAN_UCLOCKS
   if (UNLIKELY(thr->sampled))
 #endif
     if (released)
@@ -479,7 +479,7 @@ void Release(ThreadState *thr, uptr pc, uptr addr) {
     Lock lock(&s->mtx);
     thr->clock.Release(&s->clock);
   }
-#if TSAN_SAMPLING
+#if TSAN_UCLOCKS
   if (UNLIKELY(thr->sampled))
 #endif
   IncrementEpoch(thr);
@@ -495,7 +495,7 @@ void ReleaseStore(ThreadState *thr, uptr pc, uptr addr) {
     Lock lock(&s->mtx);
     thr->clock.ReleaseStore(&s->clock);
   }
-#if TSAN_SAMPLING
+#if TSAN_UCLOCKS
   if (UNLIKELY(thr->sampled))
 #endif
   IncrementEpoch(thr);
@@ -511,7 +511,7 @@ void ReleaseStoreAcquire(ThreadState *thr, uptr pc, uptr addr) {
     Lock lock(&s->mtx);
     thr->clock.ReleaseStoreAcquire(&s->clock);
   }
-#if TSAN_SAMPLING
+#if TSAN_UCLOCKS
   if (UNLIKELY(thr->sampled))
 #endif
   IncrementEpoch(thr);
@@ -519,10 +519,13 @@ void ReleaseStoreAcquire(ThreadState *thr, uptr pc, uptr addr) {
 
 void IncrementEpoch(ThreadState *thr) {
   DCHECK(!thr->ignore_sync);
-  DCHECK(thr->slot_locked);
-#if TSAN_SAMPLING
+  CHECK(thr->slot_locked);
+#if TSAN_UCLOCKS
   CHECK(thr->sampled);
-  if (thr->clock.IncUclk() > kEpochLast) thr->fast_state.SetUclkOverflowed();
+  CHECK(thr->slot->thr == thr);
+  Epoch uepoch = thr->clock.IncUclk();
+  if (uepoch > kEpochLast) thr->fast_state.SetUclkOverflowed();
+  // thr->slot->SetUEpoch(uepoch);
   thr->sampled = false;
 #endif
   Epoch epoch = EpochInc(thr->fast_state.epoch());
