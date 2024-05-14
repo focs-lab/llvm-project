@@ -175,8 +175,10 @@ struct ThreadState {
 
   atomic_sint32_t pending_signals;
 
-#if TSAN_UCLOCKS
+#if TSAN_SAMPLING
   u32 sampling_rng_state;
+#endif
+#if TSAN_UCLOCKS
   bool sampled;
 #endif
 
@@ -529,11 +531,10 @@ int Finalize(ThreadState *thr);
 void OnUserAlloc(ThreadState *thr, uptr pc, uptr p, uptr sz, bool write);
 void OnUserFree(ThreadState *thr, uptr pc, uptr p, bool write);
 
-#if TSAN_UCLOCKS
+#if TSAN_SAMPLING
 ALWAYS_INLINE bool ShouldSample(ThreadState *thr) {
-#if !TSAN_SAMPLING
-  return true;
-#endif
+  // thr->sampled = true;
+  // return true;
   // https://en.wikipedia.org/wiki/Linear-feedback_shift_register#Galois_LFSRs
   // https://users.ece.cmu.edu/~koopman/lfsr/32.txt
   u32 lfsr = thr->sampling_rng_state;
@@ -544,7 +545,9 @@ ALWAYS_INLINE bool ShouldSample(ThreadState *thr) {
 
   // 0.03 * 65536 = 1966.08
   bool should_sample = (lfsr & 0xffff) < 2000;
+#if TSAN_UCLOCKS
   if (UNLIKELY(should_sample)) thr->sampled = true;
+#endif
   return should_sample;
 }
 #endif
@@ -560,9 +563,6 @@ void MemoryAccessRangeT(ThreadState *thr, uptr pc, uptr addr, uptr size);
 ALWAYS_INLINE
 void MemoryAccessRange(ThreadState *thr, uptr pc, uptr addr, uptr size,
                        bool is_write) {
-#if TSAN_UCLOCKS
-  if (LIKELY(!ShouldSample(thr))) return;
-#endif
   if (size == 0)
     return;
   if (is_write)

@@ -477,13 +477,15 @@ ThreadState::ThreadState(Tid tid)
   shadow_stack_pos = shadow_stack;
   shadow_stack_end = shadow_stack + kInitStackSize;
 
-#if TSAN_UCLOCKS
+#if TSAN_SAMPLING
   uptr seed = 0;
   seed = (uptr) &seed;
   seed = (seed >> 12) & 0xfff;
   if (seed == 0) seed = 0x1234;   // lfsr start state cannot be 0
   // Printf("Seed: %lu\n", seed);
   sampling_rng_state = seed;
+#endif
+#if TSAN_UCLOCKS
   sampled = false;
 #endif
 }
