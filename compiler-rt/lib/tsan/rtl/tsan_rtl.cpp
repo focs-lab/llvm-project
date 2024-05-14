@@ -190,6 +190,13 @@ static void DoResetImpl(uptr epoch) {
   while (ctx->slot_queue.PopFront()) {
   }
   for (auto& slot : ctx->slots) {
+#if TSAN_UCLOCKS || TSAN_DISABLE_SLOTS
+    // If we are disabling slots, do not preempt the slots that are held by a thread.
+    // Just reset those that already have been detached.
+    // slot.thr == nullptr iff the thread is detached or is preempted.
+    // There is no preemption so it must have been detached.
+    if (slot.thr) continue;
+#endif
     slot.SetEpoch(kEpochZero);
     slot.journal.Reset();
     slot.thr = nullptr;
@@ -297,7 +304,9 @@ static TidSlot* FindSlotAndLock(ThreadState* thr)
     // In this case, the thread would later detach and attach to a new slot.
     // This new slot would need to know about that increment.
     // Otherwise, HB edge might be missed resulting in FP.
-    slot->SetEpoch(slot->thr->fast_state.epoch());
+    // EDIT: Dont care about it for now. If it is in the queue it should already be 0.
+    // slot->SetEpoch(kEpochZero);
+    return slot;    // We can return already because it would never be kEpochLast if it is in the queue.
 #endif  // wont enter branch below if slots is disabled
     if (slot->thr) {
       DPrintf("#%d: preempting sid=%d tid=%d\n", thr->tid, (u32)slot->sid,
@@ -317,6 +326,10 @@ void SlotAttachAndLock(ThreadState* thr) {
   CHECK(!thr->slot);
   slot->thr = thr;
   thr->slot = slot;
+#if TSAN_UCLOCKS || TSAN_DISABLE_SLOTS
+  // If slot preemption is disabled, the slot must be a fresh one.
+  CHECK_EQ(slot->epoch(), kEpochZero);
+#endif
   Epoch epoch = EpochInc(slot->epoch());
   CHECK(!EpochOverflow(epoch));
   slot->SetEpoch(epoch);
@@ -335,9 +348,9 @@ void SlotAttachAndLock(ThreadState* thr) {
   }
 #if TSAN_UCLOCKS || TSAN_DISABLE_SLOTS
   // TSAN_UCLOCKS || TSAN_DISABLE_SLOTS ==> no thread preempting, so each slot is held exclusively by 1 thread
-  // so epoch == 1 (it may be 2 because of DoResetImpl running concurrently with IncrementEpoch)
+  // so epoch == 1
   DPrintf("#%d: SlotAttach sid: %u, epoch: %u overflowed: %u\n", thr->tid, slot->sid, epoch, thr->fast_state.IsUclkOverflowed());
-  CHECK_LE(epoch, 2);
+  CHECK_EQ(epoch, 1);
 #endif
 #if TSAN_UCLOCKS
   thr->clock.SetSid(slot->sid);
@@ -349,7 +362,7 @@ void SlotAttachAndLock(ThreadState* thr) {
 
 static void SlotDetachImpl(ThreadState* thr, bool exiting) {
   TidSlot* slot = thr->slot;
-  DPrintf("#%d: SlotDetachImpl sid: %u epoch: %u uepoch: %u overflowed: %u\n", thr->tid, slot->sid, thr->fast_state.epoch(), slot->uepoch(), thr->fast_state.IsUclkOverflowed());
+  DPrintf("#%d: SlotDetachImpl sid: %u epoch: %u\n", thr->tid, slot->sid, thr->fast_state.epoch());
   thr->slot = nullptr;
   if (thr != slot->thr) {
     slot = nullptr;  // we don't own the slot anymore
@@ -380,16 +393,7 @@ static void SlotDetachImpl(ThreadState* thr, bool exiting) {
 #else
   CHECK(exiting || thr->fast_state.epoch() == kEpochLast);
 #endif
-// #if TSAN_DISABLE_SLOTS
-// // For now, don't allow reuse of slots that detached due to thread exit.
-// // Because it does not set the clock to 1.
-// // But actually it should be ok to not be 1. Check with Umang to confirm.
-// // Setting the slot epoch to kEpochLast means no new threads will want to attach to this slot,
-// // because the slot is exhausted.
-//   slot->SetEpoch(kEpochLast);
-// #else
   slot->SetEpoch(thr->fast_state.epoch());
-// #endif
   slot->thr = nullptr;
 }
 
@@ -1080,8 +1084,7 @@ void TraceSwitchPartImpl(ThreadState* thr) {
     if (ctx->slot_queue.Queued(thr->slot)) {
 #if TSAN_UCLOCKS || TSAN_DISABLE_SLOTS
       // If epoch is in the queue, it must be 0.
-      // It could be 1 because DoResetImpl may run concurrently with IncrementEpoch.
-      CHECK_LE(thr->slot->epoch(), 1);
+      CHECK_EQ(thr->slot->epoch(), kEpochZero);
 #endif
       ctx->slot_queue.Remove(thr->slot);
       ctx->slot_queue.PushBack(thr->slot);

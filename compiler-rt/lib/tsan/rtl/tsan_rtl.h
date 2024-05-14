@@ -139,7 +139,7 @@ struct TidEpoch {
 struct TidSlot {
   Mutex mtx;
   Sid sid;
-  atomic_uint32_t raw_epoch, raw_uepoch;
+  atomic_uint32_t raw_epoch;
   ThreadState *thr;
   Vector<TidEpoch> journal;
   INode node;
@@ -150,14 +150,6 @@ struct TidSlot {
 
   void SetEpoch(Epoch v) {
     atomic_store(&raw_epoch, static_cast<u32>(v), memory_order_relaxed);
-  }
-
-  Epoch uepoch() const {
-    return static_cast<Epoch>(atomic_load(&raw_uepoch, memory_order_relaxed));
-  }
-
-  void SetUEpoch(Epoch v) {
-    atomic_store(&raw_uepoch, static_cast<u32>(v), memory_order_relaxed);
   }
 
   TidSlot();

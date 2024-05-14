@@ -525,7 +525,6 @@ void IncrementEpoch(ThreadState *thr) {
   CHECK(thr->slot->thr == thr);
   Epoch uepoch = thr->clock.IncUclk();
   if (uepoch > kEpochLast) thr->fast_state.SetUclkOverflowed();
-  // thr->slot->SetUEpoch(uepoch);
   thr->sampled = false;
 #endif
   Epoch epoch = EpochInc(thr->fast_state.epoch());
