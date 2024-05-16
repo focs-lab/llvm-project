@@ -262,9 +262,6 @@ template <typename T>
 static void AtomicStore(ThreadState *thr, uptr pc, volatile T *a, T v,
                         morder mo) {
   DCHECK(IsStoreOrder(mo));
-#if TSAN_MEASUREMENTS
-  thr->num_atomic_stores++;
-#endif
   MemoryAccess(thr, pc, (uptr)a, AccessSize<T>(), kAccessWrite | kAccessAtomic);
   // This fast-path is critical for performance.
   // Assume the access is atomic.
@@ -274,6 +271,10 @@ static void AtomicStore(ThreadState *thr, uptr pc, volatile T *a, T v,
     NoTsanAtomicStore(a, v, mo);
     return;
   }
+#if TSAN_MEASUREMENTS
+  // dont need to count relaxed store
+  thr->num_atomic_stores++;
+#endif
   SlotLocker locker(thr);
   {
     auto s = ctx->metamap.GetSyncOrCreate(thr, pc, (uptr)a, false);
