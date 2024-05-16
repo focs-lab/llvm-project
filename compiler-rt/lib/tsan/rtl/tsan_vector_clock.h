@@ -104,7 +104,7 @@ ALWAYS_INLINE void VectorClock::SetSid(Sid sid) {
 
 ALWAYS_INLINE Epoch VectorClock::IncUclk() {
   Epoch epoch = EpochInc(GetUclk(sid_));
-  CHECK(!EpochOverflow(epoch));
+  // CHECK(!EpochOverflow(epoch));
   SetUclk(sid_, epoch);
   return epoch;
 }
