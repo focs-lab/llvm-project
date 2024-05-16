@@ -858,6 +858,13 @@ int Finalize(ThreadState *thr) {
   if (Verbosity()) AllocatorPrintStats();
 #endif
 
+#if TSAN_MEASUREMENTS
+  // The main thread will need to add its stats to the ctx ones too. It does not call ThreadFinish so we should do them here.
+  atomic_fetch_add(&ctx->num_locks, thr->num_locks, memory_order_relaxed);
+  atomic_fetch_add(&ctx->num_accesses, thr->num_accesses, memory_order_relaxed);
+  atomic_fetch_add(&ctx->num_atomic_stores, thr->num_atomic_stores, memory_order_relaxed);
+#endif
+
   ThreadFinalize(thr);
 
   if (ctx->nreported) {
