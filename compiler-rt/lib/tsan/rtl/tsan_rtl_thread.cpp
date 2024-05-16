@@ -258,6 +258,13 @@ void ThreadFinish(ThreadState *thr) {
     ctx->dd->DestroyLogicalThread(thr->dd_lt);
   SlotDetach(thr);
   ctx->thread_registry.FinishThread(thr->tid);
+
+#if TSAN_MEASUREMENTS
+  atomic_fetch_add(&ctx->num_locks, thr->num_locks, memory_order_relaxed);
+  atomic_fetch_add(&ctx->num_accesses, thr->num_accesses, memory_order_relaxed);
+  atomic_fetch_add(&ctx->num_atomic_stores, thr->num_atomic_stores, memory_order_relaxed);
+#endif
+
   thr->~ThreadState();
 }
 

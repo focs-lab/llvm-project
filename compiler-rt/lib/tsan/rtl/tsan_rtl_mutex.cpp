@@ -519,7 +519,7 @@ void ReleaseStoreAcquire(ThreadState *thr, uptr pc, uptr addr) {
 
 void IncrementEpoch(ThreadState *thr) {
   DCHECK(!thr->ignore_sync);
-  CHECK(thr->slot_locked);
+  DCHECK(thr->slot_locked);
 #if TSAN_UCLOCKS
   CHECK(thr->sampled);
   CHECK(thr->slot->thr == thr);

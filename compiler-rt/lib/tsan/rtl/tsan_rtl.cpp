@@ -450,6 +450,12 @@ Context::Context()
     slot_queue.PushBack(slot);
   }
   global_epoch = 1;
+
+#if TSAN_MEASUREMENTS
+  atomic_store_relaxed(&num_locks, 0);
+  atomic_store_relaxed(&num_accesses, 0);
+  atomic_store_relaxed(&num_atomic_stores, 0);
+#endif
 }
 
 TidSlot::TidSlot() : mtx(MutexTypeSlot) {}
@@ -487,6 +493,10 @@ ThreadState::ThreadState(Tid tid)
 #endif
 #if TSAN_UCLOCKS
   sampled = false;
+#endif
+
+#if TSAN_MEASUREMENTS
+  num_locks = num_accesses = num_atomic_stores = 0;
 #endif
 }
 
@@ -858,6 +868,12 @@ int Finalize(ThreadState *thr) {
     Printf("Found %d data race(s)\n", ctx->nreported);
 #endif
   }
+
+#if TSAN_MEASUREMENTS
+  Printf("Num locks: %u\n", atomic_load_relaxed(&ctx->num_locks));
+  Printf("Num accesses: %u\n", atomic_load_relaxed(&ctx->num_accesses));
+  Printf("Num atomic stores: %u\n", atomic_load_relaxed(&ctx->num_atomic_stores));
+#endif
 
   if (common_flags()->print_suppressions)
     PrintMatchedSuppressions();

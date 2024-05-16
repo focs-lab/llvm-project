@@ -262,6 +262,9 @@ template <typename T>
 static void AtomicStore(ThreadState *thr, uptr pc, volatile T *a, T v,
                         morder mo) {
   DCHECK(IsStoreOrder(mo));
+#if TSAN_MEASUREMENTS
+  thr->num_atomic_stores++;
+#endif
   MemoryAccess(thr, pc, (uptr)a, AccessSize<T>(), kAccessWrite | kAccessAtomic);
   // This fast-path is critical for performance.
   // Assume the access is atomic.

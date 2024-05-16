@@ -182,6 +182,12 @@ struct ThreadState {
   bool sampled;
 #endif
 
+#if TSAN_MEASUREMENTS
+  u32 num_locks;
+  u32 num_accesses;
+  u32 num_atomic_stores;
+#endif
+
   VectorClock clock;
 
   // This is a slow path flag. On fast path, fast_state.GetIgnoreBit() is read.
@@ -322,6 +328,12 @@ struct Context {
   atomic_uint32_t stop_background_thread;
 
   ThreadRegistry thread_registry;
+
+#if TSAN_MEASUREMENTS
+  atomic_uint32_t num_locks;
+  atomic_uint64_t num_accesses;
+  atomic_uint64_t num_atomic_stores;
+#endif
 
   // This is used to prevent a very unlikely but very pathological behavior.
   // Since memory access handling is not synchronized with DoReset,

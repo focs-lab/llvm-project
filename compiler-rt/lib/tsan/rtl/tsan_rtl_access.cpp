@@ -36,6 +36,9 @@ ALWAYS_INLINE USED bool TryTraceMemoryAccess(ThreadState* thr, uptr pc,
     DCHECK_EQ(ev->pc_delta, pc_delta);
     ev->addr = CompressAddr(addr);
     TraceRelease(thr, ev);
+#if TSAN_MEASUREMENTS
+  thr->num_accesses++;
+#endif
     return true;
   }
   auto* evex = reinterpret_cast<EventAccessExt*>(ev);
@@ -50,6 +53,9 @@ ALWAYS_INLINE USED bool TryTraceMemoryAccess(ThreadState* thr, uptr pc,
   evex->addr = CompressAddr(addr);
   evex->pc = pc;
   TraceRelease(thr, evex);
+#if TSAN_MEASUREMENTS
+  thr->num_accesses++;
+#endif
   return true;
 }
 
@@ -72,6 +78,9 @@ bool TryTraceMemoryAccessRange(ThreadState* thr, uptr pc, uptr addr, uptr size,
   ev->addr = CompressAddr(addr);
   ev->size_hi = size >> EventAccessRange::kSizeLoBits;
   TraceRelease(thr, ev);
+#if TSAN_MEASUREMENTS
+  thr->num_accesses++;
+#endif
   return true;
 }
 
@@ -117,6 +126,9 @@ void TraceMutexLock(ThreadState* thr, EventType type, uptr pc, uptr addr,
   ev._ = 0;
   ev.addr = CompressAddr(addr);
   TraceEvent(thr, ev);
+#if TSAN_MEASUREMENTS
+  thr->num_locks++;
+#endif
 }
 
 void TraceMutexUnlock(ThreadState* thr, uptr addr) {
