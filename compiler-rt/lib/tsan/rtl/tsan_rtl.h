@@ -335,6 +335,15 @@ struct Context {
   atomic_uint64_t num_atomic_stores;
 #endif
 
+#if TSAN_UCLOCK_MEASUREMENTS
+  atomic_uint64_t num_original_acquires;
+  atomic_uint64_t num_uclock_acquires;
+  atomic_uint64_t num_original_releases;
+  atomic_uint64_t num_uclock_releases;
+  atomic_uint64_t num_original_incs;
+  atomic_uint64_t num_uclock_incs;
+#endif
+
   // This is used to prevent a very unlikely but very pathological behavior.
   // Since memory access handling is not synchronized with DoReset,
   // a thread running concurrently with DoReset can leave a bogus shadow value

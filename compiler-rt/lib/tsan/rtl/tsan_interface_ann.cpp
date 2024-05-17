@@ -149,11 +149,13 @@ using namespace __tsan;
 extern "C" {
 void INTERFACE_ATTRIBUTE AnnotateHappensBefore(char *f, int l, uptr addr) {
   SCOPED_ANNOTATION(AnnotateHappensBefore);
+  // Printf("AnnotateHB: %s\n", f);
   Release(thr, pc, addr);
 }
 
 void INTERFACE_ATTRIBUTE AnnotateHappensAfter(char *f, int l, uptr addr) {
   SCOPED_ANNOTATION(AnnotateHappensAfter);
+  // Printf("AnnotateHA: %s\n", f);
   Acquire(thr, pc, addr);
 }
 

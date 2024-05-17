@@ -128,6 +128,9 @@ Tid ThreadCreate(ThreadState *thr, uptr pc, uptr uid, bool detached) {
       thr->clock.ReleaseStore(&arg.sync);
 #endif
       arg.sync_epoch = ctx->global_epoch;
+#if TSAN_UCLOCK_MEASUREMENTS
+  atomic_fetch_add(&ctx->num_original_incs, 1, memory_order_relaxed);
+#endif
 #if TSAN_UCLOCKS
   if (UNLIKELY(thr->sampled))
 #endif
@@ -162,7 +165,7 @@ void ThreadStart(ThreadState *thr, Tid tid, tid_t os_id,
   if (!thr->ignore_sync) {
     SlotAttachAndLock(thr);
     if (thr->tctx->sync_epoch == ctx->global_epoch)
-      thr->clock.Acquire(thr->tctx->sync);
+      thr->clock.AcquireFromFork(thr->tctx->sync);
     SlotUnlock(thr);
   }
   Free(thr->tctx->sync);
@@ -240,6 +243,9 @@ void ThreadFinish(ThreadState *thr) {
     if (!thr->tctx->detached) {
       thr->clock.ReleaseStore(&thr->tctx->sync);
       thr->tctx->sync_epoch = ctx->global_epoch;
+#if TSAN_UCLOCK_MEASUREMENTS
+  atomic_fetch_add(&ctx->num_original_incs, 1, memory_order_relaxed);
+#endif
 #if TSAN_UCLOCKS
   if (UNLIKELY(thr->sampled))
 #endif

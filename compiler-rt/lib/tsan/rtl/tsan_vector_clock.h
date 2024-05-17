@@ -41,6 +41,7 @@ class VectorClock {
   // void IncClk();
   Epoch IncUclk();
   void ReleaseFork(VectorClock** dstp);
+  void AcquireFromFork(const VectorClock* src);
   void AcquireJoin(const VectorClock* src);
 #endif
   void ReleaseStoreAcquire(VectorClock** dstp);
@@ -103,6 +104,7 @@ ALWAYS_INLINE void VectorClock::SetSid(Sid sid) {
 // }
 
 ALWAYS_INLINE Epoch VectorClock::IncUclk() {
+  CHECK_NE(sid_, kFreeSid);
   Epoch epoch = EpochInc(GetUclk(sid_));
   // CHECK(!EpochOverflow(epoch));
   SetUclk(sid_, epoch);

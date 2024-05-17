@@ -190,13 +190,6 @@ static void DoResetImpl(uptr epoch) {
   while (ctx->slot_queue.PopFront()) {
   }
   for (auto& slot : ctx->slots) {
-#if TSAN_UCLOCKS || TSAN_DISABLE_SLOTS
-    // If we are disabling slots, do not preempt the slots that are held by a thread.
-    // Just reset those that already have been detached.
-    // slot.thr == nullptr iff the thread is detached or is preempted.
-    // There is no preemption so it must have been detached.
-    if (slot.thr) continue;
-#endif
     slot.SetEpoch(kEpochZero);
     slot.journal.Reset();
     slot.thr = nullptr;
@@ -455,6 +448,15 @@ Context::Context()
   atomic_store_relaxed(&num_locks, 0);
   atomic_store_relaxed(&num_accesses, 0);
   atomic_store_relaxed(&num_atomic_stores, 0);
+#endif
+
+#if TSAN_UCLOCK_MEASUREMENTS
+  atomic_store_relaxed(&num_original_acquires, 0);
+  atomic_store_relaxed(&num_original_releases, 0);
+  atomic_store_relaxed(&num_original_incs, 0);
+  atomic_store_relaxed(&num_uclock_acquires, 0);
+  atomic_store_relaxed(&num_uclock_releases, 0);
+  atomic_store_relaxed(&num_uclock_incs, 0);
 #endif
 }
 
@@ -880,6 +882,15 @@ int Finalize(ThreadState *thr) {
   Printf("Num locks: %u\n", atomic_load_relaxed(&ctx->num_locks));
   Printf("Num accesses: %u\n", atomic_load_relaxed(&ctx->num_accesses));
   Printf("Num atomic stores: %u\n", atomic_load_relaxed(&ctx->num_atomic_stores));
+#endif
+
+#if TSAN_UCLOCK_MEASUREMENTS
+  Printf("Num original acquires: %u\n", atomic_load_relaxed(&ctx->num_original_acquires));
+  Printf("Num uclock acquires: %u\n", atomic_load_relaxed(&ctx->num_uclock_acquires));
+  Printf("Num original releases: %u\n", atomic_load_relaxed(&ctx->num_original_releases));
+  Printf("Num uclock releases: %u\n", atomic_load_relaxed(&ctx->num_uclock_releases));
+  Printf("Num original incs: %u\n", atomic_load_relaxed(&ctx->num_original_incs));
+  Printf("Num uclock incs: %u\n", atomic_load_relaxed(&ctx->num_uclock_incs));
 #endif
 
   if (common_flags()->print_suppressions)
