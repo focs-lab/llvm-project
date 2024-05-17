@@ -93,13 +93,7 @@ void VectorClock::Acquire(const VectorClock* src) {
   }
 
   // If learnt something new about the lock, increment augmented epoch to signal that future releases will give new information
-  if (did_acquire) {
-    IncUclk();
-#if TSAN_UCLOCK_MEASUREMENTS
-  // thr->num_uclock_incs++;
-  atomic_fetch_add(&ctx->num_uclock_incs, 1, memory_order_relaxed);
-#endif
-  }
+  if (did_acquire) IncUclk();
 #else
 #if !TSAN_VECTORIZE
   for (uptr i = 0; i < kThreadSlotCount; i++)
@@ -260,11 +254,6 @@ void VectorClock::AcquireFromFork(const VectorClock* src) {
     uclk_[i] = max(uclk_[i], src->uclk_[i]);
   }
   IncUclk();
-
-#if TSAN_UCLOCK_MEASUREMENTS
-  atomic_fetch_add(&ctx->num_original_releases, 1, memory_order_relaxed);
-  atomic_fetch_add(&ctx->num_uclock_releases, 1, memory_order_relaxed);
-#endif
 }
 
 void VectorClock::AcquireJoin(const VectorClock* child) {
@@ -302,13 +291,7 @@ void VectorClock::AcquireJoin(const VectorClock* child) {
   }
 
   // If learnt something new about the lock, increment augmented epoch to signal that future releases will give new information
-  if (did_acquire) {
-#if TSAN_UCLOCK_MEASUREMENTS
-  // thr->num_uclock_incs++;
-  atomic_fetch_add(&ctx->num_uclock_incs, 1, memory_order_relaxed);
-#endif
-    IncUclk();
-  }
+  if (did_acquire) IncUclk();
 }
 #endif
 

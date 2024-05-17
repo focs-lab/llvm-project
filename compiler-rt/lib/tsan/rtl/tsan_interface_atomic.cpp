@@ -287,7 +287,6 @@ static void AtomicStore(ThreadState *thr, uptr pc, volatile T *a, T v,
     NoTsanAtomicStore(a, v, mo);
   }
 #if TSAN_UCLOCK_MEASUREMENTS
-  // thr->num_original_incs++;
   atomic_fetch_add(&ctx->num_original_incs, 1, memory_order_relaxed);
 #endif
 #if TSAN_UCLOCKS
@@ -318,7 +317,6 @@ static T AtomicRMW(ThreadState *thr, uptr pc, volatile T *a, T v, morder mo) {
 #endif
   if (IsReleaseOrder(mo)) {
 #if TSAN_UCLOCK_MEASUREMENTS
-  // thr->num_original_incs++;
   atomic_fetch_add(&ctx->num_original_incs, 1, memory_order_relaxed);
 #endif
     IncrementEpoch(thr);
@@ -468,7 +466,6 @@ static bool AtomicCAS(ThreadState *thr, uptr pc, volatile T *a, T *c, T v,
 #endif
   if (success && release) {
 #if TSAN_UCLOCK_MEASUREMENTS
-  // thr->num_original_incs++;
   atomic_fetch_add(&ctx->num_original_incs, 1, memory_order_relaxed);
 #endif
     IncrementEpoch(thr);
