@@ -184,8 +184,11 @@ struct ThreadState {
 
 #if TSAN_MEASUREMENTS
   u32 num_locks;
+  u32 num_read_locks;
   u32 num_accesses;
   u32 num_atomic_stores;
+  u32 num_original_accesses;
+  u32 num_sampled_accesses;
 #endif
 
   VectorClock clock;
@@ -331,8 +334,11 @@ struct Context {
 
 #if TSAN_MEASUREMENTS
   atomic_uint32_t num_locks;
+  atomic_uint32_t num_read_locks;
   atomic_uint64_t num_accesses;
   atomic_uint64_t num_atomic_stores;
+  atomic_uint64_t num_original_accesses;
+  atomic_uint64_t num_sampled_accesses;
 #endif
 
 #if TSAN_UCLOCK_MEASUREMENTS
@@ -565,10 +571,16 @@ ALWAYS_INLINE bool ShouldSample(ThreadState *thr) {
   thr->sampling_rng_state = lfsr;
 
   // 0.03 * 65536 = 1966.08
-  bool should_sample = (lfsr & 0xffff) < 2000;
+  bool should_sample = (lfsr & 0xffff) < 0x10000;
 #if TSAN_UCLOCKS
   if (UNLIKELY(should_sample)) thr->sampled = true;
 #endif
+
+#if TSAN_MEASUREMENTS
+  thr->num_original_accesses++;
+  if (should_sample) thr->num_sampled_accesses++;
+#endif
+
   return should_sample;
 }
 #endif

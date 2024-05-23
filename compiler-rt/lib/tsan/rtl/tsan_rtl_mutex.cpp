@@ -75,6 +75,10 @@ static void RecordMutexLock(ThreadState *thr, uptr pc, uptr addr,
   // mutex set in the beginning of the part and then trace unlock again.
   TraceMutexLock(thr, typ, pc, addr, stack_id);
   thr->mset.AddAddr(addr, stack_id, write);
+
+#if TSAN_MEASUREMENTS
+  if (!write) thr->num_read_locks++;
+#endif
 }
 
 static void RecordMutexUnlock(ThreadState *thr, uptr addr) {

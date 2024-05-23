@@ -133,6 +133,7 @@ void TraceResetForTesting() {
 }
 
 static void DoResetImpl(uptr epoch) {
+  // CHECK(0);
   ThreadRegistryLock lock0(&ctx->thread_registry);
   Lock lock1(&ctx->slot_mtx);
   CHECK_EQ(ctx->global_epoch, epoch);
@@ -446,8 +447,11 @@ Context::Context()
 
 #if TSAN_MEASUREMENTS
   atomic_store_relaxed(&num_locks, 0);
+  atomic_store_relaxed(&num_read_locks, 0);
   atomic_store_relaxed(&num_accesses, 0);
   atomic_store_relaxed(&num_atomic_stores, 0);
+  atomic_store_relaxed(&num_original_accesses, 0);
+  atomic_store_relaxed(&num_sampled_accesses, 0);
 #endif
 
 #if TSAN_UCLOCK_MEASUREMENTS
@@ -498,7 +502,7 @@ ThreadState::ThreadState(Tid tid)
 #endif
 
 #if TSAN_MEASUREMENTS
-  num_locks = num_accesses = num_atomic_stores = 0;
+  num_locks = num_read_locks = num_accesses = num_atomic_stores = num_original_accesses = num_sampled_accesses = 0;
 #endif
 }
 
@@ -863,8 +867,11 @@ int Finalize(ThreadState *thr) {
 #if TSAN_MEASUREMENTS
   // The main thread will need to add its stats to the ctx ones too. It does not call ThreadFinish so we should do them here.
   atomic_fetch_add(&ctx->num_locks, thr->num_locks, memory_order_relaxed);
+  atomic_fetch_add(&ctx->num_read_locks, thr->num_read_locks, memory_order_relaxed);
   atomic_fetch_add(&ctx->num_accesses, thr->num_accesses, memory_order_relaxed);
   atomic_fetch_add(&ctx->num_atomic_stores, thr->num_atomic_stores, memory_order_relaxed);
+  atomic_fetch_add(&ctx->num_original_accesses, thr->num_original_accesses, memory_order_relaxed);
+  atomic_fetch_add(&ctx->num_sampled_accesses, thr->num_sampled_accesses, memory_order_relaxed);
 #endif
 
   ThreadFinalize(thr);
@@ -872,7 +879,7 @@ int Finalize(ThreadState *thr) {
   if (ctx->nreported) {
     failed = true;
 #if !SANITIZER_GO
-    Printf("ThreadSanitizer: reported %d warnings\n", ctx->nreported);
+    Printf("ThreadSanitizer: reported %d warnings uclock\n", ctx->nreported);
 #else
     Printf("Found %d data race(s)\n", ctx->nreported);
 #endif
@@ -880,17 +887,20 @@ int Finalize(ThreadState *thr) {
 
 #if TSAN_MEASUREMENTS
   Printf("Num locks: %u\n", atomic_load_relaxed(&ctx->num_locks));
-  Printf("Num accesses: %u\n", atomic_load_relaxed(&ctx->num_accesses));
-  Printf("Num atomic stores: %u\n", atomic_load_relaxed(&ctx->num_atomic_stores));
+  Printf("Num read locks: %u\n", atomic_load_relaxed(&ctx->num_read_locks));
+  Printf("Num accesses: %llu\n", atomic_load_relaxed(&ctx->num_accesses));
+  Printf("Num atomic stores: %llu\n", atomic_load_relaxed(&ctx->num_atomic_stores));
+  Printf("Num original accesses: %llu\n", atomic_load_relaxed(&ctx->num_original_accesses));
+  Printf("Num sampled accesses: %llu\n", atomic_load_relaxed(&ctx->num_sampled_accesses));
 #endif
 
 #if TSAN_UCLOCK_MEASUREMENTS
-  Printf("Num original acquires: %u\n", atomic_load_relaxed(&ctx->num_original_acquires));
-  Printf("Num uclock acquires: %u\n", atomic_load_relaxed(&ctx->num_uclock_acquires));
-  Printf("Num original releases: %u\n", atomic_load_relaxed(&ctx->num_original_releases));
-  Printf("Num uclock releases: %u\n", atomic_load_relaxed(&ctx->num_uclock_releases));
-  Printf("Num original incs: %u\n", atomic_load_relaxed(&ctx->num_original_incs));
-  Printf("Num uclock incs: %u\n", atomic_load_relaxed(&ctx->num_uclock_incs));
+  Printf("Num original acquires: %llu\n", atomic_load_relaxed(&ctx->num_original_acquires));
+  Printf("Num uclock acquires: %llu\n", atomic_load_relaxed(&ctx->num_uclock_acquires));
+  Printf("Num original releases: %llu\n", atomic_load_relaxed(&ctx->num_original_releases));
+  Printf("Num uclock releases: %llu\n", atomic_load_relaxed(&ctx->num_uclock_releases));
+  Printf("Num original incs: %llu\n", atomic_load_relaxed(&ctx->num_original_incs));
+  Printf("Num uclock incs: %llu\n", atomic_load_relaxed(&ctx->num_uclock_incs));
 #endif
 
   if (common_flags()->print_suppressions)

@@ -32,6 +32,10 @@ class VectorClock {
   void SetSid(Sid sid);
 #endif
 
+#if TSAN_UCLOCK_MEASUREMENTS
+  void BBREAK();
+#endif
+
   void Reset();
   void Acquire(const VectorClock* src);
   void Release(VectorClock** dstp);
@@ -59,8 +63,9 @@ class VectorClock {
   // only used by threads
   Sid sid_;
 
-  // only used by locks
+  // only used by syncs
   Sid last_released_thread_;
+  bool last_release_was_store_;
 #endif
 };
 

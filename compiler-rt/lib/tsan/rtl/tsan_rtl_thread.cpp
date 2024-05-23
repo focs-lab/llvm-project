@@ -165,7 +165,11 @@ void ThreadStart(ThreadState *thr, Tid tid, tid_t os_id,
   if (!thr->ignore_sync) {
     SlotAttachAndLock(thr);
     if (thr->tctx->sync_epoch == ctx->global_epoch)
+#if TSAN_UCLOCKS
       thr->clock.AcquireFromFork(thr->tctx->sync);
+#else
+      thr->clock.Acquire(thr->tctx->sync);
+#endif
     SlotUnlock(thr);
   }
   Free(thr->tctx->sync);
@@ -267,8 +271,11 @@ void ThreadFinish(ThreadState *thr) {
 
 #if TSAN_MEASUREMENTS
   atomic_fetch_add(&ctx->num_locks, thr->num_locks, memory_order_relaxed);
+  atomic_fetch_add(&ctx->num_read_locks, thr->num_read_locks, memory_order_relaxed);
   atomic_fetch_add(&ctx->num_accesses, thr->num_accesses, memory_order_relaxed);
   atomic_fetch_add(&ctx->num_atomic_stores, thr->num_atomic_stores, memory_order_relaxed);
+  atomic_fetch_add(&ctx->num_original_accesses, thr->num_original_accesses, memory_order_relaxed);
+  atomic_fetch_add(&ctx->num_sampled_accesses, thr->num_sampled_accesses, memory_order_relaxed);
 #endif
 
   thr->~ThreadState();

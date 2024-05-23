@@ -35,8 +35,9 @@ void VectorClock::Reset() {
 
   // non threads must not have sid
   sid_ = kFreeSid;
-  // only for locks
+  // only for syncs
   last_released_thread_ = kFreeSid;
+  last_release_was_store_ = true;
 #else
 #if !TSAN_VECTORIZE
   for (uptr i = 0; i < kThreadSlotCount; i++) {
@@ -49,6 +50,12 @@ void VectorClock::Reset() {
 #endif
 #endif
 }
+
+#if TSAN_UCLOCK_MEASUREMENTS
+void VectorClock::BBREAK() __attribute_noinline__ {
+  Printf("BREAK!\n");
+}
+#endif
 
 void VectorClock::Acquire(const VectorClock* src) {
   if (!src)
@@ -70,11 +77,28 @@ void VectorClock::Acquire(const VectorClock* src) {
 
   // Skip if the thread already knows what the lock knows
   // u_l ⊑ U_t
-  CHECK_EQ(src->sid_, kFreeSid);
+  // CHECK_EQ(src->sid_, kFreeSid);
 
   Sid last_released_thread_ = src->last_released_thread_;
-  if (src->GetUclk(last_released_thread_) <= GetUclk(last_released_thread_))
+  // bool can_skip = false;
+  if (LIKELY(src->last_release_was_store_))
+  if (LIKELY(src->GetUclk(last_released_thread_) <= GetUclk(last_released_thread_)))
+  {
+    // can_skip = true;
     return;
+#if TSAN_UCLOCK_MEASUREMENTS
+    // if skip, means the thread should know more than the sync
+    for (uptr i = 0; i < kThreadSlotCount; ++i)
+    {
+      // if the sync still knows more than the thread, there is something wrong
+      if (clk_[i] < src->clk_[i] || uclk_[i] < src->uclk_[i]) {
+        BBREAK();
+        can_skip = false;
+      }
+    }
+#endif
+  }
+  // if (can_skip) return;
 
 #if TSAN_UCLOCK_MEASUREMENTS
   // thr->num_uclock_acquires++;
@@ -93,7 +117,7 @@ void VectorClock::Acquire(const VectorClock* src) {
   }
 
   // If learnt something new about the lock, increment augmented epoch to signal that future releases will give new information
-  if (did_acquire) IncUclk();
+  if (LIKELY(did_acquire)) IncUclk();
 #else
 #if !TSAN_VECTORIZE
   for (uptr i = 0; i < kThreadSlotCount; i++)
@@ -120,11 +144,10 @@ static VectorClock* AllocClock(VectorClock** dstp) {
 void VectorClock::Release(VectorClock** dstp) {
   VectorClock* dst = AllocClock(dstp);
 
+#if TSAN_UCLOCKS
 #if TSAN_UCLOCK_MEASUREMENTS
   atomic_fetch_add(&ctx->num_original_releases, 1, memory_order_relaxed);
 #endif
-
-#if TSAN_UCLOCKS
 // Rel(t, l);
 // 	If U_t(t) != U_l(t):
 // 		C_l := C_t join C_l // Also equivalent to “C_l := C_t”. When using tree clocks, use the “MonotoneCopy” function; see TC paper
@@ -135,11 +158,11 @@ void VectorClock::Release(VectorClock** dstp) {
 // 		C_t(t)++
 // 		smp_t := 0
 
-  CHECK_EQ(dst->sid_, kFreeSid);
+  DCHECK_EQ(dst->sid_, kFreeSid);
 
   // Skip if no new information would be given to the lock
   // u_t ⊑ U_l
-  if (GetUclk(sid_) == dst->GetUclk(sid_)) return;
+  // if (GetUclk(sid_) == dst->GetUclk(sid_)) return;
 
 #if TSAN_UCLOCK_MEASUREMENTS
   atomic_fetch_add(&ctx->num_uclock_releases, 1, memory_order_relaxed);
@@ -153,6 +176,7 @@ void VectorClock::Release(VectorClock** dstp) {
 
   // The lock stores info about last released thread
   dst->last_released_thread_ = sid_;
+  dst->last_release_was_store_ = false;
 
   // Increment the epochs
   // Only increment if any events sampled since last release
@@ -170,20 +194,39 @@ void VectorClock::ReleaseStore(VectorClock** dstp) {
   VectorClock* dst = AllocClock(dstp);
 
 #if TSAN_UCLOCKS
-  // Let's do the same thing as Release
-  Release(dstp);
-  return;
+#if TSAN_UCLOCK_MEASUREMENTS
+  atomic_fetch_add(&ctx->num_original_releases, 1, memory_order_relaxed);
+#endif
+// Rel(t, l);
+// 	If U_t(t) != U_l(t):
+// 		C_l := C_t join C_l // Also equivalent to “C_l := C_t”. When using tree clocks, use the “MonotoneCopy” function; see TC paper
+// 		U_l := U_t
+// 		LR_l := t
+// 	If (smp_t):
+// 		U_t(t)++
+// 		C_t(t)++
+// 		smp_t := 0
+
+  DCHECK_EQ(dst->sid_, kFreeSid);
 
   // Skip if no new information would be given to the clock
   // u_t ⊑ U_l
   if (GetUclk(sid_) <= dst->GetUclk(sid_))
     return;
 
-  // Copy as per normal
-  *dst = *this;
+#if TSAN_UCLOCK_MEASUREMENTS
+  atomic_fetch_add(&ctx->num_uclock_releases, 1, memory_order_relaxed);
+#endif
+
+  // Join instead of store
+  for (uptr i = 0; i < kThreadSlotCount; i++) {
+    dst->clk_[i] = max(clk_[i], dst->clk_[i]);
+    dst->uclk_[i] = max(uclk_[i], dst->uclk_[i]);
+  }
 
   // The lock stores info about last released thread
   dst->last_released_thread_ = sid_;
+  dst->last_release_was_store_ = true;
 
   // Increment the epochs
   // Only increment if any events sampled since last release
@@ -206,7 +249,6 @@ void VectorClock::ReleaseStoreAtomic(VectorClock** dstp) {
 
 #if TSAN_UCLOCK_MEASUREMENTS
   atomic_fetch_add(&ctx->num_original_releases, 1, memory_order_relaxed);
-  atomic_fetch_add(&ctx->num_uclock_releases, 1, memory_order_relaxed);
 #endif
 
   // Atomic store with release order is used to synchronize between 2 threads
@@ -217,14 +259,19 @@ void VectorClock::ReleaseStoreAtomic(VectorClock** dstp) {
   // if the last released thread is the same as the current one
   // u_t ⊑ U_l
   // Check first if the atomic variable was last released to by this thread
-  if (dst->last_released_thread_ == sid_ && GetUclk(sid_) <= dst->GetUclk(sid_))
-    return;
+  // if (dst->last_released_thread_ == sid_ && GetUclk(sid_) <= dst->GetUclk(sid_))
+  //   return;
+
+#if TSAN_UCLOCK_MEASUREMENTS
+  atomic_fetch_add(&ctx->num_uclock_releases, 1, memory_order_relaxed);
+#endif
 
   // Vector clock copy on both clocks
   *dst = *this;
 
   // The lock stores info about last released thread
   dst->last_released_thread_ = sid_;
+  dst->last_release_was_store_ = true;
 
   // Increment the epochs
   // Only increment if any events sampled since last release
@@ -235,11 +282,14 @@ void VectorClock::ReleaseStoreAtomic(VectorClock** dstp) {
   //   Set(sid_, static_cast<Epoch>(c_t+1));
   //   has_sampled_ = false;
   // }
+
+  IncUclk();
 }
 
 void VectorClock::ReleaseFork(VectorClock** dstp) {
   VectorClock* dst = AllocClock(dstp);
   *dst = *this;
+  dst->last_release_was_store_ = true;
 
 #if TSAN_UCLOCK_MEASUREMENTS
   atomic_fetch_add(&ctx->num_original_releases, 1, memory_order_relaxed);
