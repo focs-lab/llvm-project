@@ -62,7 +62,6 @@ void VectorClock::Acquire(const VectorClock* src) {
     return;
 
 #if TSAN_UCLOCK_MEASUREMENTS
-  // thr->num_original_acquires++;
   atomic_fetch_add(&ctx->num_original_acquires, 1, memory_order_relaxed);
 #endif
 
@@ -80,44 +79,44 @@ void VectorClock::Acquire(const VectorClock* src) {
   // CHECK_EQ(src->sid_, kFreeSid);
 
   Sid last_released_thread_ = src->last_released_thread_;
-  // bool can_skip = false;
-  if (LIKELY(src->last_release_was_store_))
-  if (LIKELY(src->GetUclk(last_released_thread_) <= GetUclk(last_released_thread_)))
-  {
-    // can_skip = true;
-    return;
-#if TSAN_UCLOCK_MEASUREMENTS
-    // if skip, means the thread should know more than the sync
-    for (uptr i = 0; i < kThreadSlotCount; ++i)
-    {
-      // if the sync still knows more than the thread, there is something wrong
-      if (clk_[i] < src->clk_[i] || uclk_[i] < src->uclk_[i]) {
-        BBREAK();
-        can_skip = false;
-      }
-    }
-#endif
-  }
-  // if (can_skip) return;
+  if (UNLIKELY(!(src->GetUclk(last_released_thread_) <= GetUclk(last_released_thread_) && src->last_release_was_store_))) {
+
+    // bool can_skip = false;
+  //   if (LIKELY(src->last_release_was_store_))
+  //   if (LIKELY(src->GetUclk(last_released_thread_) <= GetUclk(last_released_thread_)))
+  //   {
+  //     // can_skip = true;
+  //     return;
+  // #if TSAN_UCLOCK_MEASUREMENTS
+  //     // if skip, means the thread should know more than the sync
+  //     for (uptr i = 0; i < kThreadSlotCount; ++i)
+  //     {
+  //       // if the sync still knows more than the thread, there is something wrong
+  //       if (clk_[i] < src->clk_[i] || uclk_[i] < src->uclk_[i]) {
+  //         BBREAK();
+  //         can_skip = false;
+  //       }
+  //     }
+  // #endif
+  //   }
+    // if (can_skip) return;
 
 #if TSAN_UCLOCK_MEASUREMENTS
-  // thr->num_uclock_acquires++;
-  atomic_fetch_add(&ctx->num_uclock_acquires, 1, memory_order_relaxed);
+    atomic_fetch_add(&ctx->num_uclock_acquires, 1, memory_order_relaxed);
 #endif
 
-  // Join as per normal (because checking C_l ⊑ C_t takes as much time as joining)
-  bool did_acquire = false;
-  for (uptr i = 0; i < kThreadSlotCount; i++) {
-    if (clk_[i] < src->clk_[i]) {
-      clk_[i] = src->clk_[i];
-      did_acquire = true;
+    // Join as per normal (because checking C_l ⊑ C_t takes as much time as joining)
+    bool did_acquire = false;
+    for (uptr i = 0; i < kThreadSlotCount; i++) {
+      uclk_[i] = max(uclk_[i], src->uclk_[i]);
+      Epoch sc = src->clk_[i];
+      clk_[i] = max(clk_[i], sc);
+      did_acquire |= clk_[i] == sc;
     }
-    // Also join the augmented clock
-    uclk_[i] = max(uclk_[i], src->uclk_[i]);
-  }
 
-  // If learnt something new about the lock, increment augmented epoch to signal that future releases will give new information
-  if (LIKELY(did_acquire)) IncUclk();
+    // If learnt something new about the lock, increment augmented epoch to signal that future releases will give new information
+    if (LIKELY(did_acquire)) IncUclk();
+  }
 #else
 #if !TSAN_VECTORIZE
   for (uptr i = 0; i < kThreadSlotCount; i++)
@@ -162,7 +161,7 @@ void VectorClock::Release(VectorClock** dstp) {
 
   // Skip if no new information would be given to the lock
   // u_t ⊑ U_l
-  // if (GetUclk(sid_) == dst->GetUclk(sid_)) return;
+  // if (LIKELY(GetUclk(sid_) != dst->GetUclk(sid_))) {
 
 #if TSAN_UCLOCK_MEASUREMENTS
   atomic_fetch_add(&ctx->num_uclock_releases, 1, memory_order_relaxed);
@@ -176,14 +175,8 @@ void VectorClock::Release(VectorClock** dstp) {
 
   // The lock stores info about last released thread
   dst->last_released_thread_ = sid_;
+  // Release is called by operations that do not necessarily acquire before release
   dst->last_release_was_store_ = false;
-
-  // Increment the epochs
-  // Only increment if any events sampled since last release
-  // if (has_sampled_) {
-  //   // C_t.inc, U_t.inc
-  //   IncUclk();
-  //   has_sampled_ = false;
   // }
 #else
   dst->Acquire(this);
@@ -211,8 +204,7 @@ void VectorClock::ReleaseStore(VectorClock** dstp) {
 
   // Skip if no new information would be given to the clock
   // u_t ⊑ U_l
-  if (GetUclk(sid_) <= dst->GetUclk(sid_))
-    return;
+  // if (LIKELY(GetUclk(sid_) != dst->GetUclk(sid_))) {
 
 #if TSAN_UCLOCK_MEASUREMENTS
   atomic_fetch_add(&ctx->num_uclock_releases, 1, memory_order_relaxed);
@@ -227,15 +219,6 @@ void VectorClock::ReleaseStore(VectorClock** dstp) {
   // The lock stores info about last released thread
   dst->last_released_thread_ = sid_;
   dst->last_release_was_store_ = true;
-
-  // Increment the epochs
-  // Only increment if any events sampled since last release
-  // if (has_sampled_) {
-  //   u16 u_t = static_cast<u16>(GetUclk(sid_));
-  //   SetUclk(sid_, static_cast<Epoch>(u_t+1));
-  //   u16 c_t = static_cast<u16>(Get(sid_));
-  //   Set(sid_, static_cast<Epoch>(c_t+1));
-  //   has_sampled_ = false;
   // }
 #else
   *dst = *this;
@@ -272,18 +255,6 @@ void VectorClock::ReleaseStoreAtomic(VectorClock** dstp) {
   // The lock stores info about last released thread
   dst->last_released_thread_ = sid_;
   dst->last_release_was_store_ = true;
-
-  // Increment the epochs
-  // Only increment if any events sampled since last release
-  // if (has_sampled_) {
-  //   u16 u_t = static_cast<u16>(GetUclk(sid_));
-  //   SetUclk(sid_, static_cast<Epoch>(u_t+1));
-  //   u16 c_t = static_cast<u16>(Get(sid_));
-  //   Set(sid_, static_cast<Epoch>(c_t+1));
-  //   has_sampled_ = false;
-  // }
-
-  IncUclk();
 }
 
 void VectorClock::ReleaseFork(VectorClock** dstp) {
@@ -298,12 +269,18 @@ void VectorClock::ReleaseFork(VectorClock** dstp) {
 }
 
 void VectorClock::AcquireFromFork(const VectorClock* src) {
+  // This is called after SlotAttachAndLock, which will increment the epoch of the child
+  // Maybe doing max is overkill, but need to confirm whether doing copy affects correctness
   for (uptr i = 0; i < kThreadSlotCount; i++) {
     // Also join the augmented clock
-    clk_[i] = max(clk_[i], src->clk_[i]);
-    uclk_[i] = max(uclk_[i], src->uclk_[i]);
+    // clk_[i] = max(clk_[i], src->clk_[i]);
+    // uclk_[i] = max(uclk_[i], src->uclk_[i]);
+    if (LIKELY(static_cast<Sid>(i) != sid_)) {
+      clk_[i] = src->clk_[i];
+      uclk_[i] = src->uclk_[i];
+    }
   }
-  IncUclk();
+  // IncUclk();
 }
 
 void VectorClock::AcquireJoin(const VectorClock* child) {
@@ -321,27 +298,24 @@ void VectorClock::AcquireJoin(const VectorClock* child) {
   // Skip if the thread already knows what the lock knows
   // u_l ⊑ U_t
   Sid tc = child->sid_;
-  if (child->GetUclk(tc) <= GetUclk(tc))
-    return;
+  // if (LIKELY(child->GetUclk(tc) > GetUclk(tc))) {
 
 #if TSAN_UCLOCK_MEASUREMENTS
-  // thr->num_uclock_acquires++;
   atomic_fetch_add(&ctx->num_uclock_acquires, 1, memory_order_relaxed);
 #endif
 
   // Join as per normal (because checking C_l ⊑ C_t takes as much time as joining)
   bool did_acquire = false;
   for (uptr i = 0; i < kThreadSlotCount; i++) {
-    if (clk_[i] < child->clk_[i]) {
-      clk_[i] = child->clk_[i];
-      did_acquire = true;
-    }
-    // Also join the augmented clock
     uclk_[i] = max(uclk_[i], child->uclk_[i]);
+    Epoch cc = child->clk_[i];
+    clk_[i] = max(clk_[i], cc);
+    did_acquire |= clk_[i] == cc;
   }
 
   // If learnt something new about the lock, increment augmented epoch to signal that future releases will give new information
-  if (did_acquire) IncUclk();
+  if (LIKELY(did_acquire)) IncUclk();
+  // }
 }
 #endif
 

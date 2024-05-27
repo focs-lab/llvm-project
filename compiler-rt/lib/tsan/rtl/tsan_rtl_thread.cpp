@@ -132,7 +132,7 @@ Tid ThreadCreate(ThreadState *thr, uptr pc, uptr uid, bool detached) {
   atomic_fetch_add(&ctx->num_original_incs, 1, memory_order_relaxed);
 #endif
 #if TSAN_UCLOCKS
-  if (UNLIKELY(thr->sampled))
+  // if (UNLIKELY(thr->sampled))
 #endif
       IncrementEpoch(thr);
     }
@@ -251,7 +251,7 @@ void ThreadFinish(ThreadState *thr) {
   atomic_fetch_add(&ctx->num_original_incs, 1, memory_order_relaxed);
 #endif
 #if TSAN_UCLOCKS
-  if (UNLIKELY(thr->sampled))
+  // if (UNLIKELY(thr->sampled))
 #endif
       IncrementEpoch(thr);
     }

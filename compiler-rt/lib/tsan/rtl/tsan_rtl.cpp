@@ -293,7 +293,7 @@ static TidSlot* FindSlotAndLock(ThreadState* thr)
 #if TSAN_UCLOCKS || TSAN_DISABLE_SLOTS
     // No preempting allowed. It should never be the case that a slot that is held by another thread is in the queue.
     // if (slot->thr) Printf("#%d: slot->thr: %p\n", thr->tid, slot->thr);
-    CHECK(!slot->thr);
+    DCHECK(!slot->thr);
     // This is necessary because a thread might have called IncrementEpoch when DoReset is called.
     // In this case, the thread would later detach and attach to a new slot.
     // This new slot would need to know about that increment.
@@ -322,7 +322,7 @@ void SlotAttachAndLock(ThreadState* thr) {
   thr->slot = slot;
 #if TSAN_UCLOCKS || TSAN_DISABLE_SLOTS
   // If slot preemption is disabled, the slot must be a fresh one.
-  CHECK_EQ(slot->epoch(), kEpochZero);
+  DCHECK_EQ(slot->epoch(), kEpochZero);
 #endif
   Epoch epoch = EpochInc(slot->epoch());
   CHECK(!EpochOverflow(epoch));
@@ -344,7 +344,7 @@ void SlotAttachAndLock(ThreadState* thr) {
   // TSAN_UCLOCKS || TSAN_DISABLE_SLOTS ==> no thread preempting, so each slot is held exclusively by 1 thread
   // so epoch == 1
   DPrintf("#%d: SlotAttach sid: %u, epoch: %u overflowed: %u\n", thr->tid, slot->sid, epoch, thr->fast_state.IsUclkOverflowed());
-  CHECK_EQ(epoch, 1);
+  DCHECK_EQ(epoch, 1);
 #endif
 #if TSAN_UCLOCKS
   thr->clock.SetSid(slot->sid);
@@ -409,7 +409,7 @@ void SlotLock(ThreadState* thr) SANITIZER_NO_THREAD_SAFETY_ANALYSIS {
   slot->mtx.Lock();
   thr->slot_locked = true;
 #if TSAN_UCLOCKS
-  if (LIKELY(!thr->fast_state.IsUclkOverflowed()))
+  // if (LIKELY(!thr->fast_state.IsUclkOverflowed()))
 #endif
   if (LIKELY(thr == slot->thr && thr->fast_state.epoch() != kEpochLast))
     return;
@@ -1130,7 +1130,7 @@ void TraceSwitchPartImpl(ThreadState* thr) {
     if (ctx->slot_queue.Queued(thr->slot)) {
 #if TSAN_UCLOCKS || TSAN_DISABLE_SLOTS
       // If epoch is in the queue, it must be 0.
-      CHECK_EQ(thr->slot->epoch(), kEpochZero);
+      DCHECK_EQ(thr->slot->epoch(), kEpochZero);
 #endif
       ctx->slot_queue.Remove(thr->slot);
       ctx->slot_queue.PushBack(thr->slot);

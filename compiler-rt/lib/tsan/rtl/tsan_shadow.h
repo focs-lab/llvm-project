@@ -42,9 +42,9 @@ class FastState {
   bool GetIgnoreBit() const { return part_.ignore_accesses_; }
 
 #if TSAN_UCLOCKS
-  void SetUclkOverflowed() { part_.uclk_overflowed_ = 1; }
-  void ClearUclkOverflowed() { part_.uclk_overflowed_ = 0; }
-  bool IsUclkOverflowed() const { return part_.uclk_overflowed_; }
+  ALWAYS_INLINE void UnionUclkOverflowed(Epoch epoch) { part_.uclk_overflowed_ |= (epoch > kEpochLast); }
+  ALWAYS_INLINE void ClearUclkOverflowed() { part_.uclk_overflowed_ = 0; }
+  ALWAYS_INLINE bool IsUclkOverflowed() const { return part_.uclk_overflowed_; }
 #endif
 
  private:

@@ -90,7 +90,7 @@ ALWAYS_INLINE void VectorClock::SetUclk(Sid sid, Epoch v) {
   // This should give plenty of room for slot to detach.
   // If slot is not detached even after so many "grace-period" increments, there
   // is clearly something wrong.
-  CHECK_LT(v, static_cast<u16>(kEpochOver) << 1);
+  DCHECK_LT(v, static_cast<u16>(kEpochOver) << 1);
   uclk_[static_cast<u8>(sid)] = v;
 }
 
@@ -109,7 +109,7 @@ ALWAYS_INLINE void VectorClock::SetSid(Sid sid) {
 // }
 
 ALWAYS_INLINE Epoch VectorClock::IncUclk() {
-  CHECK_NE(sid_, kFreeSid);
+  DCHECK_NE(sid_, kFreeSid);
   Epoch epoch = EpochInc(GetUclk(sid_));
   // CHECK(!EpochOverflow(epoch));
   SetUclk(sid_, epoch);

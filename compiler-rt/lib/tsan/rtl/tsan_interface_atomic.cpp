@@ -290,7 +290,7 @@ static void AtomicStore(ThreadState *thr, uptr pc, volatile T *a, T v,
   atomic_fetch_add(&ctx->num_original_incs, 1, memory_order_relaxed);
 #endif
 #if TSAN_UCLOCKS
-  if (UNLIKELY(thr->sampled))
+  // if (LIKELY(thr->sampled))
 #endif
   IncrementEpoch(thr);
 }
@@ -313,7 +313,7 @@ static T AtomicRMW(ThreadState *thr, uptr pc, volatile T *a, T v, morder mo) {
     v = F(a, v);
   }
 #if TSAN_UCLOCKS
-  if (UNLIKELY(thr->sampled))
+  // if (LIKELY(thr->sampled))
 #endif
   if (IsReleaseOrder(mo)) {
 #if TSAN_UCLOCK_MEASUREMENTS
@@ -462,7 +462,7 @@ static bool AtomicCAS(ThreadState *thr, uptr pc, volatile T *a, T *c, T v,
       thr->clock.Acquire(s->clock);
   }
 #if TSAN_UCLOCKS
-  if (UNLIKELY(thr->sampled))
+  // if (LIKELY(thr->sampled))
 #endif
   if (success && release) {
 #if TSAN_UCLOCK_MEASUREMENTS
