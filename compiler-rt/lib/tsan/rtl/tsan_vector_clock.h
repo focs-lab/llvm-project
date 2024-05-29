@@ -52,6 +52,8 @@ class VectorClock {
   void ReleaseStoreAcquire(SyncClock** dstp);
   void ReleaseAcquire(SyncClock** dstp);
 
+  void UpdateSharedLocal(Epoch epoch);
+
   void Unshare();
   bool IsShared() const;
 #else
@@ -147,6 +149,10 @@ ALWAYS_INLINE bool VectorClock::IsShared() const {
   // A lock may drop ref concurrently
   DCHECK_GE(is_shared_, clock_->IsShared());
   return is_shared_;
+}
+
+ALWAYS_INLINE void VectorClock::UpdateSharedLocal(Epoch epoch) {
+  clock_->SetLocal(epoch);
 }
 #elif TSAN_UCLOCKS
 ALWAYS_INLINE Epoch VectorClock::GetU(Sid sid) const {

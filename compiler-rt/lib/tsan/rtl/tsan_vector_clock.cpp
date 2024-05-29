@@ -107,29 +107,49 @@ void VectorClock::Acquire(const SyncClock* src) {
     }
     // if (UNLIKELY(!src->LastReleaseWasAtomic()))
     SetU(last_released_thread, u_l);
-  }
 
-  // Printf("diff: %u\n", diff);
-  Sid curr = src->clock()->head();
-
-  Epoch curr_epoch = src->clock()->Get(curr);
-  // u16 sum = 0;
-  s16 i = 0;
-  for (i = 0; i < diff; ++i) {
-    // sum += static_cast<u8>(curr);
-    curr_epoch = src->clock()->Get(curr);
-    if (curr_epoch > clock_->Get(curr)) {
-      if (UNLIKELY(IsShared())) {
-#if TSAN_OL_MEASUREMENTS
-        atomic_fetch_add(&ctx->num_acquire_deep_copies, 1, memory_order_relaxed);
-#endif
-        Unshare();
+    Sid curr = src->clock()->head();
+    Epoch curr_epoch;
+    for (s16 i = 0; i < diff; ++i) {
+  #if TSAN_OL_MEASUREMENTS
+          atomic_fetch_add(&ctx->num_acquire_traverses, 1, memory_order_relaxed);
+  #endif
+      curr_epoch = src->clock()->Get(curr);
+      if (curr_epoch > clock_->Get(curr)) {
+        if (UNLIKELY(IsShared())) {
+  #if TSAN_OL_MEASUREMENTS
+          atomic_fetch_add(&ctx->num_acquire_deep_copies, 1, memory_order_relaxed);
+  #endif
+          Unshare();
+        }
+  #if TSAN_OL_MEASUREMENTS
+    atomic_fetch_add(&ctx->num_acquire_updates, 1, memory_order_relaxed);
+  #endif
+        Set(curr, curr_epoch);
+        IncU();
       }
-      Set(curr, curr_epoch);
-      IncU();
-    }
 
-    curr = src->clock()->Next(curr);
+      curr = src->clock()->Next(curr);
+    }
+  }
+  else {
+    Epoch curr_epoch;
+    for (s16 i = 0; i < static_cast<s16>(kThreadSlotCount)-1; ++i) {
+      curr_epoch = src->clock()->Get(i);
+      if (curr_epoch > clock_->Get(i)) {
+        if (UNLIKELY(IsShared())) {
+  #if TSAN_OL_MEASUREMENTS
+          atomic_fetch_add(&ctx->num_acquire_deep_copies, 1, memory_order_relaxed);
+  #endif
+          Unshare();
+        }
+  #if TSAN_OL_MEASUREMENTS
+    atomic_fetch_add(&ctx->num_acquire_updates, 1, memory_order_relaxed);
+  #endif
+        Set(static_cast<Sid>(i), curr_epoch);
+        IncU();
+      }
+    }
   }
 
   // for (uptr i = 0; i < kThreadSlotCount; ++i) {

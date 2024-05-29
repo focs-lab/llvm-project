@@ -475,6 +475,8 @@ Context::Context()
 #if TSAN_OL_MEASUREMENTS
   atomic_store_relaxed(&num_acquires, 0);
   atomic_store_relaxed(&num_acquire_deep_copies, 0);
+  atomic_store_relaxed(&num_acquire_updates, 0);
+  atomic_store_relaxed(&num_acquire_traverses, 0);
   atomic_store_relaxed(&num_incs, 0);
   atomic_store_relaxed(&num_inc_deep_copies, 0);
   atomic_store_relaxed(&num_release_acquires, 0);
@@ -934,6 +936,8 @@ int Finalize(ThreadState *thr) {
 #if TSAN_OL_MEASUREMENTS
   Printf("Num acquires: %llu\n", atomic_load_relaxed(&ctx->num_acquires));
   Printf("Num acquire deep copies: %llu\n", atomic_load_relaxed(&ctx->num_acquire_deep_copies));
+  Printf("Num acquire updates: %llu\n", atomic_load_relaxed(&ctx->num_acquire_updates));
+  Printf("Num acquire traverses: %llu\n", atomic_load_relaxed(&ctx->num_acquire_traverses));
   Printf("Num incs: %llu\n", atomic_load_relaxed(&ctx->num_incs));
   Printf("Num inc deep copies: %llu\n", atomic_load_relaxed(&ctx->num_inc_deep_copies));
   Printf("Num relacqs: %llu\n", atomic_load_relaxed(&ctx->num_release_acquires));

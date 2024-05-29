@@ -31,6 +31,9 @@ class SharedClock {
   void Set(u8 sid, Epoch v);
   void SetOnly(u8 sid, Epoch v);
 
+  Epoch local() const;
+  void SetLocal(Epoch epoch);
+
   Sid head() const;
   void SetHead(Sid head);
   Sid Next(Sid) const;
@@ -48,6 +51,7 @@ class SharedClock {
   Sid next_[kThreadSlotCount] VECTOR_ALIGNED;
   Sid prev_[kThreadSlotCount] VECTOR_ALIGNED;
   Sid head_;
+  Epoch local_;
   atomic_uint16_t ref_cnt;
 };
 
@@ -115,6 +119,14 @@ ALWAYS_INLINE Epoch SharedClock::Get(u8 sid) const {
 ALWAYS_INLINE void SharedClock::SetOnly(u8 sid, Epoch v) {
   DCHECK_GE(v, clk_[static_cast<u8>(sid)]);
   clk_[sid] = v;
+}
+
+ALWAYS_INLINE Epoch SharedClock::local() const {
+  return local_;
+}
+
+ALWAYS_INLINE void SharedClock::SetLocal(Epoch epoch) {
+  local_ = epoch;
 }
 
 // ALWAYS_INLINE Epoch SharedClock::Inc(Sid sid) {

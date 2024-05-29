@@ -363,6 +363,8 @@ struct Context {
   atomic_uint64_t num_inc_deep_copies;
   atomic_uint64_t num_acquires;
   atomic_uint64_t num_acquire_deep_copies;
+  atomic_uint64_t num_acquire_updates;
+  atomic_uint64_t num_acquire_traverses;
   atomic_uint64_t num_release_acquires;
   atomic_uint64_t num_release_joins;
   atomic_uint64_t num_deep_copies;
