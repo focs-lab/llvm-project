@@ -132,14 +132,16 @@ ALWAYS_INLINE void SharedClock::SetOnly(u8 sid, Epoch v) {
 //   return epoch;
 // }
 
+#if !TSAN_OL_MEASUREMENTS
 ALWAYS_INLINE void SharedClock::HoldRef() {
   atomic_fetch_add(&ref_cnt, 1, memory_order_relaxed);
 }
 
 ALWAYS_INLINE void SharedClock::DropRef() {
   DCHECK_GT(atomic_load_relaxed(&ref_cnt), 0);
-  if (atomic_fetch_sub(&ref_cnt, 1, memory_order_relaxed) == 0) FreeImpl(this);
+  if (atomic_fetch_sub(&ref_cnt, 1, memory_order_relaxed) == 1) FreeImpl(this);
 }
+#endif
 
 ALWAYS_INLINE bool SharedClock::IsShared() const {
   DCHECK_GT(atomic_load_relaxed(&ref_cnt), 0);

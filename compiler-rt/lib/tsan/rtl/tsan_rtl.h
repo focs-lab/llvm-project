@@ -358,6 +358,19 @@ struct Context {
   atomic_uint64_t num_uclock_incs;
 #endif
 
+#if TSAN_OL_MEASUREMENTS
+  atomic_uint64_t num_incs;
+  atomic_uint64_t num_inc_deep_copies;
+  atomic_uint64_t num_acquires;
+  atomic_uint64_t num_acquire_deep_copies;
+  atomic_uint64_t num_release_acquires;
+  atomic_uint64_t num_release_joins;
+  atomic_uint64_t num_deep_copies;
+  atomic_uint64_t num_frees;
+  atomic_uint64_t num_holds;
+  atomic_uint64_t num_drops;
+#endif
+
   // This is used to prevent a very unlikely but very pathological behavior.
   // Since memory access handling is not synchronized with DoReset,
   // a thread running concurrently with DoReset can leave a bogus shadow value
@@ -579,7 +592,7 @@ ALWAYS_INLINE bool ShouldSample(ThreadState *thr) {
   thr->sampling_rng_state = lfsr;
 
   // 0.03 * 65536 = 1966.08
-  bool should_sample = (lfsr & 0xffff) < 6553;
+  bool should_sample = (lfsr & 0xffff) < 3276;
 #if TSAN_UCLOCKS || TSAN_OL
   if (UNLIKELY(should_sample)) thr->sampled = true;
 #endif

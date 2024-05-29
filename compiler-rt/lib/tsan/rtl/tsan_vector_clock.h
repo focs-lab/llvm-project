@@ -149,11 +149,11 @@ ALWAYS_INLINE bool VectorClock::IsShared() const {
   return is_shared_;
 }
 #elif TSAN_UCLOCKS
-ALWAYS_INLINE Epoch VectorClock::GetUclk(Sid sid) const {
+ALWAYS_INLINE Epoch VectorClock::GetU(Sid sid) const {
   return uclk_[static_cast<u8>(sid)];
 }
 
-ALWAYS_INLINE void VectorClock::SetUclk(Sid sid, Epoch v) {
+ALWAYS_INLINE void VectorClock::SetU(Sid sid, Epoch v) {
   DCHECK_GE(v, uclk_[static_cast<u8>(sid)]);
   // Epoch has 16 bits. It is ok to be above kEpochLast.
   // fast_state.uclk_overflowed_ will be true once uclk is above kEpochLast.
@@ -172,10 +172,11 @@ ALWAYS_INLINE void VectorClock::SetSid(Sid sid) {
   sid_ = sid;
 }
 
-ALWAYS_INLINE void VectorClock::IncClk() {
-  Epoch epoch = EpochInc(Get(sid_));
-  DCHECK(!EpochOverflow(epoch));
-  Set(sid_, epoch);
+ALWAYS_INLINE Epoch VectorClock::IncU() {
+  DCHECK_NE(sid_, kFreeSid);
+  Epoch epoch = EpochInc(GetU(sid_));
+  SetU(sid_, epoch);
+  return epoch;
 }
 #endif
 

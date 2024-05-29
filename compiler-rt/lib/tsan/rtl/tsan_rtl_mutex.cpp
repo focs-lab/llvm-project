@@ -562,11 +562,20 @@ void IncrementEpoch(ThreadState *thr) {
     DCHECK(thr->sampled);
     DCHECK(thr->slot->thr == thr);
 
+#if TSAN_OL_MEASUREMENTS
+  atomic_fetch_add(&ctx->num_incs, 1, memory_order_relaxed);
+#endif
+
     // inc uclk
     thr->fast_state.UnionUclkOverflowed(thr->clock.IncU());
     thr->sampled = false;
 
-    if ((thr->clock.IsShared())) thr->clock.Unshare();
+    if ((thr->clock.IsShared())) {
+#if TSAN_OL_MEASUREMENTS
+      atomic_fetch_add(&ctx->num_inc_deep_copies, 1, memory_order_relaxed);
+#endif
+      thr->clock.Unshare();
+    }
 #elif TSAN_UCLOCKS
     DCHECK(thr->sampled);
     DCHECK(thr->slot->thr == thr);

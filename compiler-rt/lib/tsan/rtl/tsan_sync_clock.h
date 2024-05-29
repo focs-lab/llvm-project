@@ -21,6 +21,7 @@ namespace __tsan {
 class SyncClock {
  public:
   SyncClock();
+  ~SyncClock();
 
   Epoch u() const;
   void SetU(Epoch u);
@@ -104,6 +105,10 @@ ALWAYS_INLINE void SyncClock::SetClock(SharedClock* clock) {
     if (clock_) clock_->DropRef();
     clock_ = clock;
     clock->HoldRef();
+}
+
+ALWAYS_INLINE SyncClock::~SyncClock() {
+  clock_->DropRef();
 }
 }  // namespace __tsan
 

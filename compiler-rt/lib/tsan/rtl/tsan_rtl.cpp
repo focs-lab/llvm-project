@@ -471,6 +471,19 @@ Context::Context()
   atomic_store_relaxed(&num_uclock_releases, 0);
   atomic_store_relaxed(&num_uclock_incs, 0);
 #endif
+
+#if TSAN_OL_MEASUREMENTS
+  atomic_store_relaxed(&num_acquires, 0);
+  atomic_store_relaxed(&num_acquire_deep_copies, 0);
+  atomic_store_relaxed(&num_incs, 0);
+  atomic_store_relaxed(&num_inc_deep_copies, 0);
+  atomic_store_relaxed(&num_release_acquires, 0);
+  atomic_store_relaxed(&num_release_joins, 0);
+  atomic_store_relaxed(&num_deep_copies, 0);
+  atomic_store_relaxed(&num_frees, 0);
+  atomic_store_relaxed(&num_holds, 0);
+  atomic_store_relaxed(&num_drops, 0);
+#endif
 }
 
 TidSlot::TidSlot() : mtx(MutexTypeSlot) {}
@@ -916,6 +929,19 @@ int Finalize(ThreadState *thr) {
   Printf("Num uclock releases: %llu\n", atomic_load_relaxed(&ctx->num_uclock_releases));
   Printf("Num original incs: %llu\n", atomic_load_relaxed(&ctx->num_original_incs));
   Printf("Num uclock incs: %llu\n", atomic_load_relaxed(&ctx->num_uclock_incs));
+#endif
+
+#if TSAN_OL_MEASUREMENTS
+  Printf("Num acquires: %llu\n", atomic_load_relaxed(&ctx->num_acquires));
+  Printf("Num acquire deep copies: %llu\n", atomic_load_relaxed(&ctx->num_acquire_deep_copies));
+  Printf("Num incs: %llu\n", atomic_load_relaxed(&ctx->num_incs));
+  Printf("Num inc deep copies: %llu\n", atomic_load_relaxed(&ctx->num_inc_deep_copies));
+  Printf("Num relacqs: %llu\n", atomic_load_relaxed(&ctx->num_release_acquires));
+  Printf("Num release joins: %llu\n", atomic_load_relaxed(&ctx->num_release_joins));
+  Printf("Num deep copies: %llu\n", atomic_load_relaxed(&ctx->num_deep_copies));
+  Printf("Num frees: %llu\n", atomic_load_relaxed(&ctx->num_frees));
+  Printf("Num holds: %llu\n", atomic_load_relaxed(&ctx->num_holds));
+  Printf("Num drops: %llu\n", atomic_load_relaxed(&ctx->num_drops));
 #endif
 
   if (common_flags()->print_suppressions)

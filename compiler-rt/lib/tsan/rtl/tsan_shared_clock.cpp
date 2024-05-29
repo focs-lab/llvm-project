@@ -15,12 +15,29 @@
 #include "tsan_mman.h"
 #include "tsan_rtl.h"
 
-#if TSAN_UCLOCK_MEASUREMENTS
-#include "tsan_rtl.h"
+namespace __tsan {
+#if TSAN_OL_MEASUREMENTS
+void SharedClock::HoldRef() {
+  atomic_fetch_add(&ctx->num_holds, 1, memory_order_relaxed);
+  atomic_fetch_add(&ref_cnt, 1, memory_order_relaxed);
+}
+
+void SharedClock::DropRef() {
+  DCHECK_GT(atomic_load_relaxed(&ref_cnt), 0);
+  atomic_fetch_add(&ctx->num_drops, 1, memory_order_relaxed);
+  if (atomic_load_relaxed(&ref_cnt) == 1) {
+    atomic_fetch_add(&ctx->num_frees, 1, memory_order_relaxed);
+    FreeImpl(this);
+    return;
+  }
+  atomic_fetch_sub(&ref_cnt, 1, memory_order_relaxed);
+}
 #endif
 
-namespace __tsan {
 SharedClock::SharedClock() {
+#if TSAN_OL_MEASUREMENTS
+  atomic_fetch_add(&ctx->num_deep_copies, 1, memory_order_relaxed);
+#endif
   atomic_store_relaxed(&ref_cnt, 1);
   for (uptr i = 0; i < kThreadSlotCount; i++) {
     clk_[i] = kEpochZero;
@@ -31,11 +48,17 @@ SharedClock::SharedClock() {
 }
 
 SharedClock::SharedClock(const SharedClock* clock) {
+#if TSAN_OL_MEASUREMENTS
+  atomic_fetch_add(&ctx->num_deep_copies, 1, memory_order_relaxed);
+#endif
   atomic_store_relaxed(&ref_cnt, 1);
   *this = *clock;
 }
 
 SharedClock::SharedClock(const SharedClock* clock_t, const SharedClock* clock_l) {
+#if TSAN_OL_MEASUREMENTS
+  atomic_fetch_add(&ctx->num_deep_copies, 1, memory_order_relaxed);
+#endif
   // CHECK(clock_l);
   atomic_store_relaxed(&ref_cnt, 1);
   *this = *clock_l;

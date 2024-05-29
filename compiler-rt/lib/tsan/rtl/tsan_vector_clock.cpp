@@ -90,6 +90,10 @@ void VectorClock::Acquire(const SyncClock* src) {
   if (!src || !src->clock()) return;
   // Printf("Acquire\n");
 
+#if TSAN_OL_MEASUREMENTS
+  atomic_fetch_add(&ctx->num_acquires, 1, memory_order_relaxed);
+#endif
+
   Sid last_released_thread = src->LastReleasedThread();
   Epoch u_l = src->u();
   Epoch u_t_lr = GetU(last_released_thread);
@@ -109,12 +113,18 @@ void VectorClock::Acquire(const SyncClock* src) {
   Sid curr = src->clock()->head();
 
   Epoch curr_epoch = src->clock()->Get(curr);
-  u16 sum = 0;
-  for (s16 i = 0; i < diff; ++i) {
-    sum += static_cast<u8>(curr);
+  // u16 sum = 0;
+  s16 i = 0;
+  for (i = 0; i < diff; ++i) {
+    // sum += static_cast<u8>(curr);
     curr_epoch = src->clock()->Get(curr);
     if (curr_epoch > clock_->Get(curr)) {
-      if (IsShared()) Unshare();
+      if (UNLIKELY(IsShared())) {
+#if TSAN_OL_MEASUREMENTS
+        atomic_fetch_add(&ctx->num_acquire_deep_copies, 1, memory_order_relaxed);
+#endif
+        Unshare();
+      }
       Set(curr, curr_epoch);
       IncU();
     }
@@ -165,11 +175,14 @@ void VectorClock::Release(SyncClock** dstp) {
   SyncClock* dst = AllocSync(dstp);
 
   // if there is no clock to join with then just shallow copy
-  if (!dst->clock()) {
+  if (UNLIKELY(!dst->clock())) {
     dst->SetClock(clock_);
     is_shared_ = true;
   }
   else {
+#if TSAN_OL_MEASUREMENTS
+  atomic_fetch_add(&ctx->num_release_joins, 1, memory_order_relaxed);
+#endif
     // Dont actually need to allocate again if it's just this sync holding the shared clock
     if (UNLIKELY(!dst->clock()->IsShared())) dst->clock()->Join(clock_);
     else {
@@ -181,7 +194,7 @@ void VectorClock::Release(SyncClock** dstp) {
 
   dst->SetLastReleasedThread(sid_);
   dst->ClearLastReleaseWasStore();
-  dst->ClearLastReleaseWasAtomic();
+  // dst->ClearLastReleaseWasAtomic();
 }
 
 void VectorClock::ReleaseStore(SyncClock** dstp) {
@@ -195,7 +208,7 @@ void VectorClock::ReleaseStore(SyncClock** dstp) {
 
   dst->SetLastReleasedThread(sid_);
   dst->SetLastReleaseWasStore();
-  dst->ClearLastReleaseWasAtomic();
+  // dst->ClearLastReleaseWasAtomic();
 }
 
 void VectorClock::ReleaseStoreAtomic(SyncClock** dstp) {
@@ -208,7 +221,7 @@ void VectorClock::ReleaseStoreAtomic(SyncClock** dstp) {
 
   dst->SetLastReleasedThread(sid_);
   dst->SetLastReleaseWasStore();
-  dst->SetLastReleaseWasAtomic();
+  // dst->SetLastReleaseWasAtomic();
 }
 
 void VectorClock::ReleaseFork(SyncClock** dstp) {
@@ -220,6 +233,9 @@ void VectorClock::ReleaseStoreAcquire(SyncClock** dstp) {
 }
 
 void VectorClock::ReleaseAcquire(SyncClock** dstp) {
+#if TSAN_OL_MEASUREMENTS
+  atomic_fetch_add(&ctx->num_release_acquires, 1, memory_order_relaxed);
+#endif
   SyncClock* dst = AllocSync(dstp);
   Acquire(dst);
   ReleaseStore(dstp);
@@ -247,7 +263,7 @@ void VectorClock::Acquire(const VectorClock* src) {
   // CHECK_EQ(src->sid_, kFreeSid);
 
   Sid last_released_thread_ = src->last_released_thread_;
-  if (UNLIKELY(!(src->GetUclk(last_released_thread_) <= GetUclk(last_released_thread_) && src->last_release_was_store_))) {
+  if (UNLIKELY(!(src->GetU(last_released_thread_) <= GetU(last_released_thread_) && src->last_release_was_store_))) {
 
     // bool can_skip = false;
   //   if (LIKELY(src->last_release_was_store_))
@@ -283,7 +299,7 @@ void VectorClock::Acquire(const VectorClock* src) {
     }
 
     // If learnt something new about the lock, increment augmented epoch to signal that future releases will give new information
-    if (LIKELY(did_acquire)) IncUclk();
+    if (LIKELY(did_acquire)) IncU();
   }
 #else
 #if !TSAN_VECTORIZE
@@ -329,7 +345,7 @@ void VectorClock::Release(VectorClock** dstp) {
 
   // Skip if no new information would be given to the lock
   // u_t ⊑ U_l
-  if (LIKELY(GetUclk(sid_) != dst->GetUclk(sid_))) {
+  if (LIKELY(GetU(sid_) != dst->GetU(sid_))) {
 
 #if TSAN_UCLOCK_MEASUREMENTS
   atomic_fetch_add(&ctx->num_uclock_releases, 1, memory_order_relaxed);
@@ -372,7 +388,7 @@ void VectorClock::ReleaseStore(VectorClock** dstp) {
 
   // Skip if no new information would be given to the clock
   // u_t ⊑ U_l
-  if (LIKELY(GetUclk(sid_) != dst->GetUclk(sid_))) {
+  if (LIKELY(GetU(sid_) != dst->GetU(sid_))) {
 
 #if TSAN_UCLOCK_MEASUREMENTS
   atomic_fetch_add(&ctx->num_uclock_releases, 1, memory_order_relaxed);
@@ -410,7 +426,7 @@ void VectorClock::ReleaseStoreAtomic(VectorClock** dstp) {
   // if the last released thread is the same as the current one
   // u_t ⊑ U_l
   // Check first if the atomic variable was last released to by this thread
-  if (dst->last_released_thread_ == sid_ && GetUclk(sid_) <= dst->GetUclk(sid_))
+  if (dst->last_released_thread_ == sid_ && GetU(sid_) <= dst->GetU(sid_))
     return;
 
 #if TSAN_UCLOCK_MEASUREMENTS
@@ -482,7 +498,7 @@ void VectorClock::AcquireJoin(const VectorClock* child) {
   }
 
   // If learnt something new about the lock, increment augmented epoch to signal that future releases will give new information
-  if (LIKELY(did_acquire)) IncUclk();
+  if (LIKELY(did_acquire)) IncU();
   // }
 }
 #endif
