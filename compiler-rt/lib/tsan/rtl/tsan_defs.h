@@ -18,11 +18,13 @@
 #include "sanitizer_common/sanitizer_mutex.h"
 #include "ubsan/ubsan_platform.h"
 
-#define TSAN_SAMPLING 0
-#define TSAN_UCLOCKS 1
+#define TSAN_SAMPLING 1
+#define TSAN_UCLOCKS 0
+#define TSAN_OL 1
 #define TSAN_DISABLE_SLOTS 0
 #define TSAN_MEASUREMENTS 0
 #define TSAN_UCLOCK_MEASUREMENTS 0
+#define TSAN_OL_MEASUREMENTS 0
 
 #ifndef TSAN_VECTORIZE
 // #  define TSAN_VECTORIZE __SSE4_2__

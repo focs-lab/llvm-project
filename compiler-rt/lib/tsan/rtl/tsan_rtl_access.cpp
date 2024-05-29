@@ -434,7 +434,7 @@ ALWAYS_INLINE USED void MemoryAccess(ThreadState* thr, uptr pc, uptr addr,
 #if TSAN_SAMPLING
   if (LIKELY(!ShouldSample(thr))) return;
 #elif TSAN_UCLOCKS
-  // thr->sampled = true;
+  thr->sampled = true;
 #endif
   RawShadow* shadow_mem = MemToShadow(addr);
   UNUSED char memBuf[4][64];
@@ -473,7 +473,7 @@ ALWAYS_INLINE USED void MemoryAccess16(ThreadState* thr, uptr pc, uptr addr,
 #if TSAN_SAMPLING
   if (LIKELY(!ShouldSample(thr))) return;
 #elif TSAN_UCLOCKS
-  // thr->sampled = true;
+  thr->sampled = true;
 #endif
   const uptr size = 16;
   FastState fast_state = thr->fast_state;
@@ -515,7 +515,7 @@ ALWAYS_INLINE USED void UnalignedMemoryAccess(ThreadState* thr, uptr pc,
 #if TSAN_SAMPLING
   if (LIKELY(!ShouldSample(thr))) return;
 #elif TSAN_UCLOCKS
-  // thr->sampled = true;
+  thr->sampled = true;
 #endif
   DCHECK_LE(size, 8);
   FastState fast_state = thr->fast_state;
@@ -609,7 +609,7 @@ static void MemoryRangeSet(uptr addr, uptr size, RawShadow val) {
 
 void MemoryResetRange(ThreadState* thr, uptr pc, uptr addr, uptr size) {
 #if TSAN_UCLOCKS
-  // thr->sampled = true;
+  thr->sampled = true;
 #endif
   uptr addr1 = RoundDown(addr, kShadowCell);
   uptr size1 = RoundUp(size + addr - addr1, kShadowCell);
@@ -618,7 +618,7 @@ void MemoryResetRange(ThreadState* thr, uptr pc, uptr addr, uptr size) {
 
 void MemoryRangeFreed(ThreadState* thr, uptr pc, uptr addr, uptr size) {
 #if TSAN_UCLOCKS
-  // thr->sampled = true;
+  thr->sampled = true;
 #endif
   // Callers must lock the slot to ensure synchronization with the reset.
   // The problem with "freed" memory is that it's not "monotonic"
@@ -665,7 +665,7 @@ void MemoryRangeFreed(ThreadState* thr, uptr pc, uptr addr, uptr size) {
 
 void MemoryRangeImitateWrite(ThreadState* thr, uptr pc, uptr addr, uptr size) {
 #if TSAN_UCLOCKS
-  // thr->sampled = true;
+  thr->sampled = true;
 #endif
   DCHECK_EQ(addr % kShadowCell, 0);
   size = RoundUp(size, kShadowCell);
@@ -688,7 +688,7 @@ bool MemoryAccessRangeOne(ThreadState* thr, RawShadow* shadow_mem, Shadow cur,
 #if TSAN_SAMPLING
   if (LIKELY(!ShouldSample(thr))) return false;
 #elif TSAN_UCLOCKS
-  // thr->sampled = true;
+  thr->sampled = true;
 #endif
   LOAD_CURRENT_SHADOW(cur, shadow_mem);
   if (LIKELY(ContainsSameAccess(shadow_mem, cur, shadow, access, typ)))
@@ -708,7 +708,7 @@ void MemoryAccessRangeT(ThreadState* thr, uptr pc, uptr addr, uptr size) {
 #if TSAN_SAMPLING
   if (LIKELY(!ShouldSample(thr))) return;
 #elif TSAN_UCLOCKS
-  // thr->sampled = true;
+  thr->sampled = true;
 #endif
   const AccessType typ =
       (is_read ? kAccessRead : kAccessWrite) | kAccessNoRodata;

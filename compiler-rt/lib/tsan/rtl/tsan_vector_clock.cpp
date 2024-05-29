@@ -13,6 +13,7 @@
 
 #include "sanitizer_common/sanitizer_placement_new.h"
 #include "tsan_mman.h"
+#include "tsan_rtl.h"
 
 #if TSAN_UCLOCK_MEASUREMENTS
 #include "tsan_rtl.h"
@@ -24,10 +25,19 @@ namespace __tsan {
 const uptr kVectorClockSize = kThreadSlotCount * sizeof(Epoch) / sizeof(m128);
 #endif
 
-VectorClock::VectorClock() { Reset(); }
+VectorClock::VectorClock() {
+  Reset();
+}
 
 void VectorClock::Reset() {
-#if TSAN_UCLOCKS
+#if TSAN_OL
+  if (UNLIKELY(clock_)) clock_->DropRef();
+  clock_ = New<SharedClock>();
+  is_shared_ = false;
+
+  // non threads must not have sid
+  sid_ = kFreeSid;
+#elif TSAN_UCLOCKS
   for (uptr i = 0; i < kThreadSlotCount; i++) {
     clk_[i] = kEpochZero;
     uclk_[i] = kEpochZero;
@@ -57,6 +67,164 @@ void VectorClock::BBREAK() __attribute_noinline__ {
 }
 #endif
 
+#if TSAN_OL
+__attribute_noinline__ void VectorClock::BBREAK() const {
+  Printf("BREAK!\n");
+}
+
+static SyncClock* AllocSync(SyncClock** dstp) {
+  if (UNLIKELY(!*dstp))
+    *dstp = New<SyncClock>();
+  return *dstp;
+}
+
+void VectorClock::Unshare() {
+  SharedClock* clock = New<SharedClock>(clock_);
+
+  clock_->DropRef();
+  clock_ = clock;
+  is_shared_ = false;
+}
+
+void VectorClock::Acquire(const SyncClock* src) {
+  if (!src || !src->clock()) return;
+  // Printf("Acquire\n");
+
+  Sid last_released_thread = src->LastReleasedThread();
+  Epoch u_l = src->u();
+  Epoch u_t_lr = GetU(last_released_thread);
+  s16 diff = static_cast<s16>(kFreeSid);
+  if (LIKELY(src->LastReleaseWasStore())) {
+    diff = static_cast<u16>(u_l) - static_cast<u16>(u_t_lr);
+    if (diff <= 0) return;
+    if (UNLIKELY(diff > static_cast<s16>(kFreeSid))) {
+      // Printf("u_l: %u, u_t: %u\n", u_l, static_cast<u16>(GetU(last_released_thread)));
+      diff = static_cast<s16>(kFreeSid);
+    }
+    // if (UNLIKELY(!src->LastReleaseWasAtomic()))
+    SetU(last_released_thread, u_l);
+  }
+
+  // Printf("diff: %u\n", diff);
+  Sid curr = src->clock()->head();
+
+  Epoch curr_epoch = src->clock()->Get(curr);
+  u16 sum = 0;
+  for (s16 i = 0; i < diff; ++i) {
+    sum += static_cast<u8>(curr);
+    curr_epoch = src->clock()->Get(curr);
+    if (curr_epoch > clock_->Get(curr)) {
+      if (IsShared()) Unshare();
+      Set(curr, curr_epoch);
+      IncU();
+    }
+
+    curr = src->clock()->Next(curr);
+  }
+
+  // for (uptr i = 0; i < kThreadSlotCount; ++i) {
+  //   if (clock_->Get(i) < src->clock()->Get(i)) {
+  //     Printf("#%u acquire %u: GG! %u, u_l: %u, u_t: %u last_released_was_store: %u last_released_was_atomic: %u diff: %d\n", sid_, last_released_thread, i, static_cast<u16>(src->u()), u_t_lr, src->LastReleaseWasStore(),src->LastReleaseWasAtomic(), diff);
+  //     Printf("%p vs %p, %d\n", clock_, src->clock(), static_cast<u16>(u_l) - static_cast<u16>(u_t_lr));
+  //     Printf("sum=%u\n", sum);
+  //     for (uptr j = 0; j < kThreadSlotCount; ++j) Printf("%u:%u ", clock_->Get(j), src->clock()->Get(j));
+  //     Printf("\n");
+  //     curr = src->clock()->head();
+  //     for (uptr j = 0; j < kThreadSlotCount-1; ++j) {
+  //       Printf("%u ", curr);
+  //       curr = src->clock()->Next(curr);
+  //     }
+  //     Printf("\n");
+  //     CHECK(0);
+  //   }
+  // }
+}
+
+void VectorClock::AcquireFromFork(const SyncClock* src) {
+  DCHECK_EQ(Get(sid_), 1);
+  // CHECK_EQ(GetU(sid_), 1);
+  DCHECK_EQ(clock_->head(), sid_);
+
+  for (uptr i = 0; i < kThreadSlotCount; ++i) {
+    if (LIKELY(static_cast<Sid>(i) != sid_)) {
+      clock_->SetOnly(i, src->clock()->Get(i));
+    }
+    // IncU();
+  }
+
+  // Get the parent thread's u epoch.
+  // SetU(src->LastReleasedThread(), src->u());
+}
+
+void VectorClock::AcquireJoin(const SyncClock* src) {
+  Acquire(src);
+}
+
+void VectorClock::Release(SyncClock** dstp) {
+  // Printf("#%u Release\n", sid_);
+  SyncClock* dst = AllocSync(dstp);
+
+  // if there is no clock to join with then just shallow copy
+  if (!dst->clock()) {
+    dst->SetClock(clock_);
+    is_shared_ = true;
+  }
+  else {
+    // Dont actually need to allocate again if it's just this sync holding the shared clock
+    if (UNLIKELY(!dst->clock()->IsShared())) dst->clock()->Join(clock_);
+    else {
+      SharedClock* joined_clock = New<SharedClock>(clock_, dst->clock());
+      dst->SetClock(joined_clock);
+      joined_clock->DropRef();  // drop a reference held by the "new" call
+    }
+  }
+
+  dst->SetLastReleasedThread(sid_);
+  dst->ClearLastReleaseWasStore();
+  dst->ClearLastReleaseWasAtomic();
+}
+
+void VectorClock::ReleaseStore(SyncClock** dstp) {
+  // Printf("#%u Release\n", sid_);
+  SyncClock* dst = AllocSync(dstp);
+
+  dst->SetClock(clock_);
+  is_shared_ = true;
+  dst->SetU(GetU(sid_));
+  DPrintf("Release u: %u\n", GetU(sid_));
+
+  dst->SetLastReleasedThread(sid_);
+  dst->SetLastReleaseWasStore();
+  dst->ClearLastReleaseWasAtomic();
+}
+
+void VectorClock::ReleaseStoreAtomic(SyncClock** dstp) {
+  SyncClock* dst = AllocSync(dstp);
+
+  dst->SetClock(clock_);
+  is_shared_ = true;
+  dst->SetU(GetU(sid_));
+  DPrintf("Release u: %u\n", GetU(sid_));
+
+  dst->SetLastReleasedThread(sid_);
+  dst->SetLastReleaseWasStore();
+  dst->SetLastReleaseWasAtomic();
+}
+
+void VectorClock::ReleaseFork(SyncClock** dstp) {
+  ReleaseStore(dstp);
+}
+
+void VectorClock::ReleaseStoreAcquire(SyncClock** dstp) {
+  CHECK(0);
+}
+
+void VectorClock::ReleaseAcquire(SyncClock** dstp) {
+  SyncClock* dst = AllocSync(dstp);
+  Acquire(dst);
+  ReleaseStore(dstp);
+}
+#else
 void VectorClock::Acquire(const VectorClock* src) {
   if (!src)
     return;
@@ -161,7 +329,7 @@ void VectorClock::Release(VectorClock** dstp) {
 
   // Skip if no new information would be given to the lock
   // u_t ⊑ U_l
-  // if (LIKELY(GetUclk(sid_) != dst->GetUclk(sid_))) {
+  if (LIKELY(GetUclk(sid_) != dst->GetUclk(sid_))) {
 
 #if TSAN_UCLOCK_MEASUREMENTS
   atomic_fetch_add(&ctx->num_uclock_releases, 1, memory_order_relaxed);
@@ -177,7 +345,7 @@ void VectorClock::Release(VectorClock** dstp) {
   dst->last_released_thread_ = sid_;
   // Release is called by operations that do not necessarily acquire before release
   dst->last_release_was_store_ = false;
-  // }
+  }
 #else
   dst->Acquire(this);
 #endif
@@ -204,7 +372,7 @@ void VectorClock::ReleaseStore(VectorClock** dstp) {
 
   // Skip if no new information would be given to the clock
   // u_t ⊑ U_l
-  // if (LIKELY(GetUclk(sid_) != dst->GetUclk(sid_))) {
+  if (LIKELY(GetUclk(sid_) != dst->GetUclk(sid_))) {
 
 #if TSAN_UCLOCK_MEASUREMENTS
   atomic_fetch_add(&ctx->num_uclock_releases, 1, memory_order_relaxed);
@@ -219,7 +387,7 @@ void VectorClock::ReleaseStore(VectorClock** dstp) {
   // The lock stores info about last released thread
   dst->last_released_thread_ = sid_;
   dst->last_release_was_store_ = true;
-  // }
+  }
 #else
   *dst = *this;
 #endif
@@ -242,8 +410,8 @@ void VectorClock::ReleaseStoreAtomic(VectorClock** dstp) {
   // if the last released thread is the same as the current one
   // u_t ⊑ U_l
   // Check first if the atomic variable was last released to by this thread
-  // if (dst->last_released_thread_ == sid_ && GetUclk(sid_) <= dst->GetUclk(sid_))
-  //   return;
+  if (dst->last_released_thread_ == sid_ && GetUclk(sid_) <= dst->GetUclk(sid_))
+    return;
 
 #if TSAN_UCLOCK_MEASUREMENTS
   atomic_fetch_add(&ctx->num_uclock_releases, 1, memory_order_relaxed);
@@ -388,5 +556,6 @@ void VectorClock::ReleaseAcquire(VectorClock** dstp) {
 #endif
 #endif
 }
+#endif
 
 }  // namespace __tsan

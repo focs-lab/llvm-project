@@ -61,8 +61,13 @@ struct SyncVar {
   atomic_uint32_t flags;
   u32 next;  // in MetaMap
   DDMutex dd;
+#if TSAN_OL
+  SyncClock *read_clock;
+  SyncClock *clock;
+#else
   VectorClock *read_clock;  // Used for rw mutexes only.
   VectorClock *clock;
+#endif
 
   void Init(ThreadState *thr, uptr pc, uptr addr, bool save_stack);
   void Reset();

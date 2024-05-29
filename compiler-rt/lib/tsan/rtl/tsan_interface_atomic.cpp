@@ -230,6 +230,10 @@ static T AtomicLoad(ThreadState *thr, uptr pc, const volatile T *a, morder mo) {
                  kAccessRead | kAccessAtomic);
     return NoTsanAtomicLoad(a, mo);
   }
+#if TSAN_MEASUREMENTS
+  // dont need to count relaxed load
+  thr->num_atomic_loads++;
+#endif
   // Don't create sync object if it does not exist yet. For example, an atomic
   // pointer is initialized to nullptr and then periodically acquire-loaded.
   T v = NoTsanAtomicLoad(a, mo);
@@ -279,7 +283,7 @@ static void AtomicStore(ThreadState *thr, uptr pc, volatile T *a, T v,
   {
     auto s = ctx->metamap.GetSyncOrCreate(thr, pc, (uptr)a, false);
     Lock lock(&s->mtx);
-#if TSAN_UCLOCKS
+#if TSAN_UCLOCKS || TSAN_OL
     thr->clock.ReleaseStoreAtomic(&s->clock);
 #else
     thr->clock.ReleaseStore(&s->clock);
@@ -289,8 +293,8 @@ static void AtomicStore(ThreadState *thr, uptr pc, volatile T *a, T v,
 #if TSAN_UCLOCK_MEASUREMENTS
   atomic_fetch_add(&ctx->num_original_incs, 1, memory_order_relaxed);
 #endif
-#if TSAN_UCLOCKS
-  // if (LIKELY(thr->sampled))
+#if (TSAN_UCLOCKS || TSAN_OL) && TSAN_SAMPLING
+  if (UNLIKELY(thr->sampled))
 #endif
   IncrementEpoch(thr);
 }
@@ -312,8 +316,8 @@ static T AtomicRMW(ThreadState *thr, uptr pc, volatile T *a, T v, morder mo) {
       thr->clock.Acquire(s->clock);
     v = F(a, v);
   }
-#if TSAN_UCLOCKS
-  // if (LIKELY(thr->sampled))
+#if (TSAN_UCLOCKS || TSAN_OL) && TSAN_SAMPLING
+  if (UNLIKELY(thr->sampled))
 #endif
   if (IsReleaseOrder(mo)) {
 #if TSAN_UCLOCK_MEASUREMENTS
@@ -461,8 +465,8 @@ static bool AtomicCAS(ThreadState *thr, uptr pc, volatile T *a, T *c, T v,
     else if (IsAcquireOrder(mo))
       thr->clock.Acquire(s->clock);
   }
-#if TSAN_UCLOCKS
-  // if (LIKELY(thr->sampled))
+#if (TSAN_UCLOCKS || TSAN_OL) && TSAN_SAMPLING
+  if (UNLIKELY(thr->sampled))
 #endif
   if (success && release) {
 #if TSAN_UCLOCK_MEASUREMENTS

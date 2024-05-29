@@ -108,7 +108,11 @@ int ThreadCount(ThreadState *thr) {
 }
 
 struct OnCreatedArgs {
+#if TSAN_OL
+  SyncClock *sync;
+#else
   VectorClock *sync;
+#endif
   uptr sync_epoch;
   StackID stack;
 };
@@ -131,8 +135,8 @@ Tid ThreadCreate(ThreadState *thr, uptr pc, uptr uid, bool detached) {
 #if TSAN_UCLOCK_MEASUREMENTS
   atomic_fetch_add(&ctx->num_original_incs, 1, memory_order_relaxed);
 #endif
-#if TSAN_UCLOCKS
-  // if (UNLIKELY(thr->sampled))
+#if (TSAN_UCLOCKS || TSAN_OL) && TSAN_SAMPLING
+  if (UNLIKELY(thr->sampled))
 #endif
       IncrementEpoch(thr);
     }
@@ -165,7 +169,7 @@ void ThreadStart(ThreadState *thr, Tid tid, tid_t os_id,
   if (!thr->ignore_sync) {
     SlotAttachAndLock(thr);
     if (thr->tctx->sync_epoch == ctx->global_epoch)
-#if TSAN_UCLOCKS
+#if TSAN_UCLOCKS || TSAN_OL
       thr->clock.AcquireFromFork(thr->tctx->sync);
 #else
       thr->clock.Acquire(thr->tctx->sync);
@@ -250,8 +254,8 @@ void ThreadFinish(ThreadState *thr) {
 #if TSAN_UCLOCK_MEASUREMENTS
   atomic_fetch_add(&ctx->num_original_incs, 1, memory_order_relaxed);
 #endif
-#if TSAN_UCLOCKS
-  // if (UNLIKELY(thr->sampled))
+#if (TSAN_UCLOCKS || TSAN_OL) && TSAN_SAMPLING
+  if (UNLIKELY(thr->sampled))
 #endif
       IncrementEpoch(thr);
     }
@@ -273,9 +277,13 @@ void ThreadFinish(ThreadState *thr) {
   atomic_fetch_add(&ctx->num_locks, thr->num_locks, memory_order_relaxed);
   atomic_fetch_add(&ctx->num_read_locks, thr->num_read_locks, memory_order_relaxed);
   atomic_fetch_add(&ctx->num_accesses, thr->num_accesses, memory_order_relaxed);
+  atomic_fetch_add(&ctx->num_atomic_loads, thr->num_atomic_loads, memory_order_relaxed);
   atomic_fetch_add(&ctx->num_atomic_stores, thr->num_atomic_stores, memory_order_relaxed);
   atomic_fetch_add(&ctx->num_original_accesses, thr->num_original_accesses, memory_order_relaxed);
   atomic_fetch_add(&ctx->num_sampled_accesses, thr->num_sampled_accesses, memory_order_relaxed);
+
+  u8 max_slot_id = atomic_load_relaxed(&ctx->max_slot_id);
+  while (!atomic_compare_exchange_strong(&ctx->max_slot_id, &max_slot_id, max(max_slot_id, thr->max_slot_id), memory_order_relaxed));
 #endif
 
   thr->~ThreadState();
@@ -317,7 +325,11 @@ Tid ThreadConsumeTid(ThreadState *thr, uptr pc, uptr uid) {
 }
 
 struct JoinArg {
+#if TSAN_OL
+  SyncClock *sync;
+#else
   VectorClock *sync;
+#endif
   uptr sync_epoch;
 };
 

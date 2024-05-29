@@ -49,6 +49,7 @@ set(TSAN_SOURCES
   tsan_symbolize.cpp
   tsan_sync.cpp
   tsan_vector_clock.cpp
+  tsan_shared_clock.cpp
   )
 
 set(TSAN_CXX_SOURCES

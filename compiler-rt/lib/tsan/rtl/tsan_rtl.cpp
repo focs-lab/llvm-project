@@ -133,7 +133,7 @@ void TraceResetForTesting() {
 }
 
 static void DoResetImpl(uptr epoch) {
-  // CHECK(0);
+  Printf("DoResetImpl\n");
   ThreadRegistryLock lock0(&ctx->thread_registry);
   Lock lock1(&ctx->slot_mtx);
   CHECK_EQ(ctx->global_epoch, epoch);
@@ -271,7 +271,7 @@ static TidSlot* FindSlotAndLock(ThreadState* thr)
           break;
 
         if (slot->epoch() != kEpochLast) {
-#if !(TSAN_UCLOCKS || TSAN_DISABLE_SLOTS)
+#if !(TSAN_UCLOCKS || TSAN_DISABLE_SLOTS || TSAN_OL)
 // If we are disabling slots, no slots will be pushed back into the queue.
 // So, each slot is used exclusively by 1 thread.
 // There should be no more need to check if the slot is exhausted because it should be a fresh slot.
@@ -290,7 +290,7 @@ static TidSlot* FindSlotAndLock(ThreadState* thr)
     slot->mtx.Lock();
     CHECK(!thr->slot_locked);
     thr->slot_locked = true;
-#if TSAN_UCLOCKS || TSAN_DISABLE_SLOTS
+#if TSAN_UCLOCKS || TSAN_DISABLE_SLOTS || TSAN_OL
     // No preempting allowed. It should never be the case that a slot that is held by another thread is in the queue.
     // if (slot->thr) Printf("#%d: slot->thr: %p\n", thr->tid, slot->thr);
     DCHECK(!slot->thr);
@@ -316,11 +316,14 @@ static TidSlot* FindSlotAndLock(ThreadState* thr)
 void SlotAttachAndLock(ThreadState* thr) {
   TidSlot* slot = FindSlotAndLock(thr);
   DPrintf("#%d: SlotAttach: slot=%u\n", thr->tid, static_cast<int>(slot->sid));
+#if TSAN_MEASUREMENTS
+  thr->max_slot_id = max(thr->max_slot_id, static_cast<u8>(slot->sid));
+#endif
   CHECK(!slot->thr);
   CHECK(!thr->slot);
   slot->thr = thr;
   thr->slot = slot;
-#if TSAN_UCLOCKS || TSAN_DISABLE_SLOTS
+#if TSAN_UCLOCKS || TSAN_DISABLE_SLOTS || TSAN_OL
   // If slot preemption is disabled, the slot must be a fresh one.
   DCHECK_EQ(slot->epoch(), kEpochZero);
 #endif
@@ -329,7 +332,7 @@ void SlotAttachAndLock(ThreadState* thr) {
   slot->SetEpoch(epoch);
   thr->fast_state.SetSid(slot->sid);
   thr->fast_state.SetEpoch(epoch);
-#if TSAN_UCLOCKS
+#if TSAN_UCLOCKS || TSAN_OL
   thr->fast_state.ClearUclkOverflowed();    // new slot, no more overflowed uclk
 #endif
   if (thr->slot_epoch != ctx->global_epoch) {
@@ -340,15 +343,19 @@ void SlotAttachAndLock(ThreadState* thr) {
     thr->last_sleep_clock.Reset();
 #endif
   }
-#if TSAN_UCLOCKS || TSAN_DISABLE_SLOTS
-  // TSAN_UCLOCKS || TSAN_DISABLE_SLOTS ==> no thread preempting, so each slot is held exclusively by 1 thread
+#if TSAN_UCLOCKS || TSAN_DISABLE_SLOTS || TSAN_OL
+  // TSAN_UCLOCKS || TSAN_DISABLE_SLOTS || TSAN_OL ==> no thread preempting, so each slot is held exclusively by 1 thread
   // so epoch == 1
   DPrintf("#%d: SlotAttach sid: %u, epoch: %u overflowed: %u\n", thr->tid, slot->sid, epoch, thr->fast_state.IsUclkOverflowed());
   DCHECK_EQ(epoch, 1);
 #endif
-#if TSAN_UCLOCKS
+#if TSAN_OL
   thr->clock.SetSid(slot->sid);
-  thr->clock.SetUclk(slot->sid, epoch);   // epoch would be either 1 or 2. It doesnt make a difference because it is a fresh slot.
+  thr->clock.SetU(slot->sid, static_cast<Epoch>(static_cast<u8>(slot->sid) + 1));
+  if (thr->clock.IsShared()) thr->clock.Unshare();
+#elif TSAN_UCLOCKS
+  thr->clock.SetSid(slot->sid);
+  thr->clock.SetU(slot->sid, epoch);   // epoch would be either 1 or 2. It doesnt make a difference because it is a fresh slot.
 #endif
   thr->clock.Set(slot->sid, epoch);
   slot->journal.PushBack({thr->tid, epoch});
@@ -382,7 +389,7 @@ static void SlotDetachImpl(ThreadState* thr, bool exiting) {
     }
     return;
   }
-#if TSAN_UCLOCKS
+#if TSAN_UCLOCKS || TSAN_OL
   CHECK(exiting || thr->fast_state.epoch() == kEpochLast || thr->fast_state.IsUclkOverflowed());
 #else
   CHECK(exiting || thr->fast_state.epoch() == kEpochLast);
@@ -408,8 +415,8 @@ void SlotLock(ThreadState* thr) SANITIZER_NO_THREAD_SAFETY_ANALYSIS {
   TidSlot* slot = thr->slot;
   slot->mtx.Lock();
   thr->slot_locked = true;
-#if TSAN_UCLOCKS
-  // if (LIKELY(!thr->fast_state.IsUclkOverflowed()))
+#if TSAN_UCLOCKS || TSAN_OL
+  if (LIKELY(!thr->fast_state.IsUclkOverflowed()))
 #endif
   if (LIKELY(thr == slot->thr && thr->fast_state.epoch() != kEpochLast))
     return;
@@ -449,9 +456,11 @@ Context::Context()
   atomic_store_relaxed(&num_locks, 0);
   atomic_store_relaxed(&num_read_locks, 0);
   atomic_store_relaxed(&num_accesses, 0);
+  atomic_store_relaxed(&num_atomic_loads, 0);
   atomic_store_relaxed(&num_atomic_stores, 0);
   atomic_store_relaxed(&num_original_accesses, 0);
   atomic_store_relaxed(&num_sampled_accesses, 0);
+  atomic_store_relaxed(&max_slot_id, 0);
 #endif
 
 #if TSAN_UCLOCK_MEASUREMENTS
@@ -502,7 +511,7 @@ ThreadState::ThreadState(Tid tid)
 #endif
 
 #if TSAN_MEASUREMENTS
-  num_locks = num_read_locks = num_accesses = num_atomic_stores = num_original_accesses = num_sampled_accesses = 0;
+  num_locks = num_read_locks = num_accesses = num_atomic_loads = num_atomic_stores = num_original_accesses = num_sampled_accesses = max_slot_id = 0;
 #endif
 }
 
@@ -869,9 +878,13 @@ int Finalize(ThreadState *thr) {
   atomic_fetch_add(&ctx->num_locks, thr->num_locks, memory_order_relaxed);
   atomic_fetch_add(&ctx->num_read_locks, thr->num_read_locks, memory_order_relaxed);
   atomic_fetch_add(&ctx->num_accesses, thr->num_accesses, memory_order_relaxed);
+  atomic_fetch_add(&ctx->num_atomic_loads, thr->num_atomic_loads, memory_order_relaxed);
   atomic_fetch_add(&ctx->num_atomic_stores, thr->num_atomic_stores, memory_order_relaxed);
   atomic_fetch_add(&ctx->num_original_accesses, thr->num_original_accesses, memory_order_relaxed);
   atomic_fetch_add(&ctx->num_sampled_accesses, thr->num_sampled_accesses, memory_order_relaxed);
+
+  u8 max_slot_id = atomic_load_relaxed(&ctx->max_slot_id);
+  while (!atomic_compare_exchange_strong(&ctx->max_slot_id, &max_slot_id, max(max_slot_id, thr->max_slot_id), memory_order_relaxed));
 #endif
 
   ThreadFinalize(thr);
@@ -889,9 +902,11 @@ int Finalize(ThreadState *thr) {
   Printf("Num locks: %u\n", atomic_load_relaxed(&ctx->num_locks));
   Printf("Num read locks: %u\n", atomic_load_relaxed(&ctx->num_read_locks));
   Printf("Num accesses: %llu\n", atomic_load_relaxed(&ctx->num_accesses));
+  Printf("Num atomic loads: %llu\n", atomic_load_relaxed(&ctx->num_atomic_loads));
   Printf("Num atomic stores: %llu\n", atomic_load_relaxed(&ctx->num_atomic_stores));
   Printf("Num original accesses: %llu\n", atomic_load_relaxed(&ctx->num_original_accesses));
   Printf("Num sampled accesses: %llu\n", atomic_load_relaxed(&ctx->num_sampled_accesses));
+  Printf("Max slot id: %u\n", atomic_load_relaxed(&ctx->max_slot_id));
 #endif
 
 #if TSAN_UCLOCK_MEASUREMENTS
@@ -1128,7 +1143,7 @@ void TraceSwitchPartImpl(ThreadState* thr) {
     // in SlotAttachAndLock it become kEpochLast.
     // No slots should be still in the queue after attached.
     if (ctx->slot_queue.Queued(thr->slot)) {
-#if TSAN_UCLOCKS || TSAN_DISABLE_SLOTS
+#if TSAN_UCLOCKS || TSAN_DISABLE_SLOTS || TSAN_OL
       // If epoch is in the queue, it must be 0.
       DCHECK_EQ(thr->slot->epoch(), kEpochZero);
 #endif

@@ -178,7 +178,7 @@ struct ThreadState {
 #if TSAN_SAMPLING
   u32 sampling_rng_state;
 #endif
-#if TSAN_UCLOCKS
+#if TSAN_UCLOCKS || TSAN_OL
   bool sampled;
 #endif
 
@@ -186,9 +186,11 @@ struct ThreadState {
   u32 num_locks;
   u32 num_read_locks;
   u32 num_accesses;
+  u32 num_atomic_loads;
   u32 num_atomic_stores;
   u32 num_original_accesses;
   u32 num_sampled_accesses;
+  u8 max_slot_id;
 #endif
 
   VectorClock clock;
@@ -283,7 +285,11 @@ class ThreadContext final : public ThreadContextBase {
   ~ThreadContext();
   ThreadState *thr;
   StackID creation_stack_id;
+#if TSAN_OL
+  SyncClock* sync;
+#else
   VectorClock *sync;
+#endif
   uptr sync_epoch;
   Trace trace;
 
@@ -336,9 +342,11 @@ struct Context {
   atomic_uint32_t num_locks;
   atomic_uint32_t num_read_locks;
   atomic_uint64_t num_accesses;
+  atomic_uint64_t num_atomic_loads;
   atomic_uint64_t num_atomic_stores;
   atomic_uint64_t num_original_accesses;
   atomic_uint64_t num_sampled_accesses;
+  atomic_uint8_t max_slot_id;
 #endif
 
 #if TSAN_UCLOCK_MEASUREMENTS
@@ -571,8 +579,8 @@ ALWAYS_INLINE bool ShouldSample(ThreadState *thr) {
   thr->sampling_rng_state = lfsr;
 
   // 0.03 * 65536 = 1966.08
-  bool should_sample = (lfsr & 0xffff) < 0x10000;
-#if TSAN_UCLOCKS
+  bool should_sample = (lfsr & 0xffff) < 6553;
+#if TSAN_UCLOCKS || TSAN_OL
   if (UNLIKELY(should_sample)) thr->sampled = true;
 #endif
 
