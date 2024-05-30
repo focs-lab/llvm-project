@@ -18,9 +18,10 @@
 #include "sanitizer_common/sanitizer_mutex.h"
 #include "ubsan/ubsan_platform.h"
 
+#define TSAN_EMPTY 0
 #define TSAN_SAMPLING 1
 #define TSAN_UCLOCKS 0
-#define TSAN_OL 0
+#define TSAN_OL 1
 #define TSAN_DISABLE_SLOTS 0
 #define TSAN_MEASUREMENTS 0
 #define TSAN_UCLOCK_MEASUREMENTS 0
@@ -74,6 +75,9 @@ constexpr Epoch kEpochOver = static_cast<Epoch>(1 << kEpochBits);
 constexpr Epoch kEpochLast = static_cast<Epoch>((1 << kEpochBits) - 1);
 
 inline Epoch EpochInc(Epoch epoch) {
+#if TSAN_EMPTY
+  return epoch;
+#endif
   return static_cast<Epoch>(static_cast<u16>(epoch) + 1);
 }
 

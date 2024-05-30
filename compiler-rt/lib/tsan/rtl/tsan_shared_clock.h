@@ -29,6 +29,7 @@ class SharedClock {
   void Set(Sid sid, Epoch v);
   Epoch Get(u8 sid) const;
   void Set(u8 sid, Epoch v);
+  void SetOnly(Sid sid, Epoch v);
   void SetOnly(u8 sid, Epoch v);
 
   Sid head() const;
@@ -110,6 +111,10 @@ ALWAYS_INLINE void SharedClock::Set(u8 sid, Epoch v) {
 
 ALWAYS_INLINE Epoch SharedClock::Get(u8 sid) const {
   return clk_[sid];
+}
+
+ALWAYS_INLINE void SharedClock::SetOnly(Sid sid, Epoch v) {
+  SetOnly(static_cast<u8>(sid), v);
 }
 
 ALWAYS_INLINE void SharedClock::SetOnly(u8 sid, Epoch v) {

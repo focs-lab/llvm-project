@@ -567,7 +567,7 @@ void IncrementEpoch(ThreadState *thr) {
 #endif
 
     // inc uclk
-    thr->fast_state.UnionUclkOverflowed(thr->clock.IncU());
+    // thr->fast_state.UnionUclkOverflowed(thr->clock.IncU());
     thr->sampled = false;
 
 //     if ((thr->clock.IsShared())) {
@@ -586,6 +586,7 @@ void IncrementEpoch(ThreadState *thr) {
     Sid sid = thr->fast_state.sid();
 #if TSAN_OL
     thr->clock.SetLocal(epoch);
+    // thr->clock.Set(sid, epoch);
 #else
     thr->clock.Set(sid, epoch);
 #endif
