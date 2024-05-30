@@ -52,7 +52,14 @@ class VectorClock {
   void ReleaseStoreAcquire(SyncClock** dstp);
   void ReleaseAcquire(SyncClock** dstp);
 
-  void UpdateSharedLocal(Epoch epoch);
+  Epoch local() const;
+  void SetLocal(Epoch epoch);
+
+  Epoch acquired() const;
+  void SetAcquired(Epoch epoch);
+
+  Sid acquired_sid() const;
+  void SetAcquiredSid(Sid sid);
 
   void Unshare();
   bool IsShared() const;
@@ -77,7 +84,12 @@ class VectorClock {
 #if TSAN_OL
   Epoch uclk_[kThreadSlotCount] VECTOR_ALIGNED;
   SharedClock* clock_;
+  Epoch local_;
+  Epoch acquired_;
+  Sid acquired_sid_;
   bool is_shared_;
+
+  void AcquireToDirty(Sid sid, Epoch epoch);
 #else
   Epoch clk_[kThreadSlotCount] VECTOR_ALIGNED;
 #if TSAN_UCLOCKS
@@ -151,8 +163,28 @@ ALWAYS_INLINE bool VectorClock::IsShared() const {
   return is_shared_;
 }
 
-ALWAYS_INLINE void VectorClock::UpdateSharedLocal(Epoch epoch) {
-  clock_->SetLocal(epoch);
+ALWAYS_INLINE Epoch VectorClock::local() const {
+  return local_;
+}
+
+ALWAYS_INLINE void VectorClock::SetLocal(Epoch epoch) {
+  local_ = epoch;
+}
+
+ALWAYS_INLINE Epoch VectorClock::acquired() const {
+  return acquired_;
+}
+
+ALWAYS_INLINE void VectorClock::SetAcquired(Epoch epoch) {
+  acquired_ = epoch;
+}
+
+ALWAYS_INLINE Sid VectorClock::acquired_sid() const {
+  return acquired_sid_;
+}
+
+ALWAYS_INLINE void VectorClock::SetAcquiredSid(Sid sid) {
+  acquired_sid_ = sid;
 }
 #elif TSAN_UCLOCKS
 ALWAYS_INLINE Epoch VectorClock::GetU(Sid sid) const {

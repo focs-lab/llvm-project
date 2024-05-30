@@ -9,7 +9,7 @@
 // This file is a part of ThreadSanitizer (TSan), a race detector.
 //
 //===----------------------------------------------------------------------===//
-#include "tsan_vector_clock.h"
+#include "tsan_shared_clock.h"
 
 #include "sanitizer_common/sanitizer_placement_new.h"
 #include "tsan_mman.h"

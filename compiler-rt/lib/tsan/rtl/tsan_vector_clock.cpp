@@ -37,6 +37,10 @@ void VectorClock::Reset() {
 
   // non threads must not have sid
   sid_ = kFreeSid;
+
+  local_ = kEpochZero;
+  acquired_sid_ = kFreeSid;
+  acquired_ = kEpochZero;
 #elif TSAN_UCLOCKS
   for (uptr i = 0; i < kThreadSlotCount; i++) {
     clk_[i] = kEpochZero;
@@ -84,6 +88,17 @@ void VectorClock::Unshare() {
   clock_->DropRef();
   clock_ = clock;
   is_shared_ = false;
+
+  // Copy the dirty epochs to the clock
+  // clock_->Set(sid_, local_);
+  if (LIKELY(acquired_sid_ != kFreeSid))
+    clock_->Set(acquired_sid_, acquired_);
+  IncU();
+  // IncU();
+
+  // Clear the dirty epochs
+  acquired_sid_ = kFreeSid;
+  acquired_ = kEpochZero;
 }
 
 void VectorClock::Acquire(const SyncClock* src) {
@@ -94,11 +109,11 @@ void VectorClock::Acquire(const SyncClock* src) {
   atomic_fetch_add(&ctx->num_acquires, 1, memory_order_relaxed);
 #endif
 
-  Sid last_released_thread = src->LastReleasedThread();
-  Epoch u_l = src->u();
-  Epoch u_t_lr = GetU(last_released_thread);
-  s16 diff = static_cast<s16>(kFreeSid);
   if (LIKELY(src->LastReleaseWasStore())) {
+    Sid last_released_thread = src->LastReleasedThread();
+    Epoch u_l = src->u();
+    Epoch u_t_lr = GetU(last_released_thread);
+    s16 diff = static_cast<s16>(kFreeSid);
     diff = static_cast<u16>(u_l) - static_cast<u16>(u_t_lr);
     if (diff <= 0) return;
     if (UNLIKELY(diff > static_cast<s16>(kFreeSid))) {
@@ -111,20 +126,38 @@ void VectorClock::Acquire(const SyncClock* src) {
     Sid curr = src->clock()->head();
     Epoch curr_epoch;
     for (s16 i = 0; i < diff; ++i) {
-  #if TSAN_OL_MEASUREMENTS
-          atomic_fetch_add(&ctx->num_acquire_traverses, 1, memory_order_relaxed);
-  #endif
+#if TSAN_OL_MEASUREMENTS
+      atomic_fetch_add(&ctx->num_acquire_traverses, 1, memory_order_relaxed);
+#endif
       curr_epoch = src->clock()->Get(curr);
+      if (UNLIKELY(curr == last_released_thread))
+        curr_epoch = src->local();
+      else if (UNLIKELY(curr == src->acquired_sid()))
+        curr_epoch = src->acquired();
+
       if (curr_epoch > clock_->Get(curr)) {
         if (UNLIKELY(IsShared())) {
-  #if TSAN_OL_MEASUREMENTS
-          atomic_fetch_add(&ctx->num_acquire_deep_copies, 1, memory_order_relaxed);
-  #endif
-          Unshare();
+          if (LIKELY(acquired_sid_ == kFreeSid)) {
+            acquired_sid_ = curr;
+            acquired_ = curr_epoch;
+            curr = src->clock()->Next(curr);
+            continue;
+          }
+          else if (curr == acquired_sid_) {
+            if (curr_epoch > acquired_) acquired_ = curr_epoch;
+            curr = src->clock()->Next(curr);
+            continue;
+          }
+          else {
+#if TSAN_OL_MEASUREMENTS
+              atomic_fetch_add(&ctx->num_acquire_deep_copies, 1, memory_order_relaxed);
+#endif
+            Unshare();
+          }
         }
-  #if TSAN_OL_MEASUREMENTS
-    atomic_fetch_add(&ctx->num_acquire_updates, 1, memory_order_relaxed);
-  #endif
+#if TSAN_OL_MEASUREMENTS
+          atomic_fetch_add(&ctx->num_acquire_updates, 1, memory_order_relaxed);
+#endif
         Set(curr, curr_epoch);
         IncU();
       }
@@ -138,14 +171,14 @@ void VectorClock::Acquire(const SyncClock* src) {
       curr_epoch = src->clock()->Get(i);
       if (curr_epoch > clock_->Get(i)) {
         if (UNLIKELY(IsShared())) {
-  #if TSAN_OL_MEASUREMENTS
+#if TSAN_OL_MEASUREMENTS
           atomic_fetch_add(&ctx->num_acquire_deep_copies, 1, memory_order_relaxed);
-  #endif
+#endif
           Unshare();
         }
-  #if TSAN_OL_MEASUREMENTS
+#if TSAN_OL_MEASUREMENTS
     atomic_fetch_add(&ctx->num_acquire_updates, 1, memory_order_relaxed);
-  #endif
+#endif
         Set(static_cast<Sid>(i), curr_epoch);
         IncU();
       }
@@ -197,7 +230,11 @@ void VectorClock::Release(SyncClock** dstp) {
   // if there is no clock to join with then just shallow copy
   if (UNLIKELY(!dst->clock())) {
     dst->SetClock(clock_);
+    dst->SetLocal(local_);
+    dst->SetAcquired(acquired_);
+    dst->SetAcquiredSid(acquired_sid_);
     is_shared_ = true;
+    dst->SetLastReleaseWasStore();
   }
   else {
 #if TSAN_OL_MEASUREMENTS
@@ -210,10 +247,12 @@ void VectorClock::Release(SyncClock** dstp) {
       dst->SetClock(joined_clock);
       joined_clock->DropRef();  // drop a reference held by the "new" call
     }
+
+    if (local_ > dst->clock()->Get(sid_)) dst->clock()->Set(sid_, local_);
+    dst->ClearLastReleaseWasStore();
   }
 
   dst->SetLastReleasedThread(sid_);
-  dst->ClearLastReleaseWasStore();
   // dst->ClearLastReleaseWasAtomic();
 }
 
@@ -222,6 +261,9 @@ void VectorClock::ReleaseStore(SyncClock** dstp) {
   SyncClock* dst = AllocSync(dstp);
 
   dst->SetClock(clock_);
+  dst->SetLocal(local_);
+  dst->SetAcquired(acquired_);
+  dst->SetAcquiredSid(acquired_sid_);
   is_shared_ = true;
   dst->SetU(GetU(sid_));
   DPrintf("Release u: %u\n", GetU(sid_));
@@ -235,6 +277,9 @@ void VectorClock::ReleaseStoreAtomic(SyncClock** dstp) {
   SyncClock* dst = AllocSync(dstp);
 
   dst->SetClock(clock_);
+  dst->SetLocal(local_);
+  dst->SetAcquired(acquired_);
+  dst->SetAcquiredSid(acquired_sid_);
   is_shared_ = true;
   dst->SetU(GetU(sid_));
   DPrintf("Release u: %u\n", GetU(sid_));
