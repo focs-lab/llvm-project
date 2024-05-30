@@ -353,9 +353,10 @@ void SlotAttachAndLock(ThreadState* thr) {
   // Unshare uses the old sid so it must come before updating sid
   if (thr->clock.IsShared()) thr->clock.Unshare();
   if (thr->clock.GetSid() != kFreeSid) thr->clock.Set(thr->clock.GetSid(), thr->clock.local());
+  thr->clock.SetLocal(epoch);
+
   thr->clock.SetSid(slot->sid);
   thr->clock.SetU(slot->sid, static_cast<Epoch>(static_cast<u8>(slot->sid) + 1));
-  thr->clock.SetLocal(epoch);
 #elif TSAN_UCLOCKS
   thr->clock.SetSid(slot->sid);
   thr->clock.SetU(slot->sid, epoch);   // epoch would be either 1 or 2. It doesnt make a difference because it is a fresh slot.

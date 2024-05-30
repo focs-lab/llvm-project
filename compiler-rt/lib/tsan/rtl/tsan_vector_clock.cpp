@@ -109,11 +109,26 @@ void VectorClock::Acquire(const SyncClock* src) {
   atomic_fetch_add(&ctx->num_acquires, 1, memory_order_relaxed);
 #endif
 
+  if (LIKELY(src->LastReleaseWasStore())) {
     Sid last_released_thread = src->LastReleasedThread();
+
+    if (last_released_thread == sid_) return;
+
+    // Do it at the start to prevent accidentally early returning due to things like diff == 0
+    if (src->local() > Get(last_released_thread)) {
+      if (UNLIKELY(IsShared())) {
+#if TSAN_OL_MEASUREMENTS
+        atomic_fetch_add(&ctx->num_acquire_deep_copies, 1, memory_order_relaxed);
+#endif
+        Unshare();
+      }
+      Set(last_released_thread, src->local());
+      IncU();
+    }
+
     Epoch u_l = src->u();
     Epoch u_t_lr = GetU(last_released_thread);
     s16 diff = static_cast<u16>(u_l) - static_cast<u16>(u_t_lr);
-  if (LIKELY(src->LastReleaseWasStore())) {
     if (diff <= 0) return;
     if (UNLIKELY(diff > static_cast<s16>(kFreeSid))) {
       diff = static_cast<s16>(kFreeSid);
@@ -127,6 +142,10 @@ void VectorClock::Acquire(const SyncClock* src) {
 #if TSAN_OL_MEASUREMENTS
       atomic_fetch_add(&ctx->num_acquire_traverses, 1, memory_order_relaxed);
 #endif
+      if (UNLIKELY(curr == last_released_thread)) {
+        curr = src->clock()->Next(curr);
+        continue;
+      }
       curr_epoch = src->clock()->Get(curr);
       // else if (UNLIKELY(curr == src->acquired_sid()))
       //   curr_epoch = src->acquired();
@@ -160,17 +179,6 @@ void VectorClock::Acquire(const SyncClock* src) {
 
       curr = src->clock()->Next(curr);
     }
-
-    if (src->local() > Get(last_released_thread)) {
-      if (UNLIKELY(IsShared())) {
-#if TSAN_OL_MEASUREMENTS
-        atomic_fetch_add(&ctx->num_acquire_deep_copies, 1, memory_order_relaxed);
-#endif
-        Unshare();
-      }
-      Set(last_released_thread, src->local());
-      IncU();
-    }
   }
   else {
     Epoch curr_epoch;
@@ -192,26 +200,26 @@ void VectorClock::Acquire(const SyncClock* src) {
     }
   }
 
-  for (uptr i = 0; i < kThreadSlotCount; ++i) {
-    Epoch src_curr_epoch = src->clock()->Get(i);
-    Epoch my_curr_epoch = clock_->Get(i);
-    if (src->LastReleaseWasStore())
-    if (static_cast<Sid>(i) == last_released_thread) src_curr_epoch = src->local();
-    if (static_cast<Sid>(i) == sid_) my_curr_epoch = local_;
-    if (my_curr_epoch < src_curr_epoch) {
-      Printf("#%u acquire %u: GG! %u, %u:%u, u_l: %u, u_t: %u last_released_was_store: %u last_released_was_atomic: %u diff: %d\n", sid_, last_released_thread, i, my_curr_epoch, src_curr_epoch, static_cast<u16>(src->u()), u_t_lr, src->LastReleaseWasStore(),src->LastReleaseWasAtomic(), diff);
-      Printf("%p vs %p, %d\n", clock_, src->clock(), static_cast<u16>(u_l) - static_cast<u16>(u_t_lr));
-      // for (uptr j = 0; j < kThreadSlotCount; ++j) Printf("%u:%u ", clock_->Get(j), src->clock()->Get(j));
-      Printf("\n");
-      // Sid curr = src->clock()->head();
-      // for (uptr j = 0; j < kThreadSlotCount-1; ++j) {
-      //   Printf("%u ", curr);
-      //   curr = src->clock()->Next(curr);
-      // }
-      Printf("\n");
-      CHECK(0);
-    }
-  }
+  // for (uptr i = 0; i < kThreadSlotCount; ++i) {
+  //   Epoch src_curr_epoch = src->clock()->Get(i);
+  //   Epoch my_curr_epoch = clock_->Get(i);
+  //   if (src->LastReleaseWasStore())
+  //   if (static_cast<Sid>(i) == last_released_thread) src_curr_epoch = src->local();
+  //   if (static_cast<Sid>(i) == sid_) my_curr_epoch = local_;
+  //   if (my_curr_epoch < src_curr_epoch) {
+  //     Printf("#%u acquire %u: GG! %u, %u:%u, u_l: %u, u_t: %u last_released_was_store: %u last_released_was_atomic: %u diff: %d\n", sid_, last_released_thread, i, my_curr_epoch, src_curr_epoch, static_cast<u16>(src->u()), u_t_lr, src->LastReleaseWasStore(),src->LastReleaseWasAtomic(), diff);
+  //     Printf("%p vs %p, %d\n", clock_, src->clock(), static_cast<u16>(u_l) - static_cast<u16>(u_t_lr));
+  //     // for (uptr j = 0; j < kThreadSlotCount; ++j) Printf("%u:%u ", clock_->Get(j), src->clock()->Get(j));
+  //     Printf("\n");
+  //     // Sid curr = src->clock()->head();
+  //     // for (uptr j = 0; j < kThreadSlotCount-1; ++j) {
+  //     //   Printf("%u ", curr);
+  //     //   curr = src->clock()->Next(curr);
+  //     // }
+  //     Printf("\n");
+  //     CHECK(0);
+  //   }
+  // }
 }
 
 void VectorClock::AcquireFromFork(const SyncClock* src) {
@@ -220,7 +228,9 @@ void VectorClock::AcquireFromFork(const SyncClock* src) {
   DCHECK_EQ(clock_->head(), sid_);
 
   for (uptr i = 0; i < kThreadSlotCount; ++i) {
-    if (LIKELY(static_cast<Sid>(i) != sid_)) {
+    if (UNLIKELY(static_cast<Sid>(i) == src->LastReleasedThread()))
+      clock_->SetOnly(i, src->local());
+    else if (LIKELY(static_cast<Sid>(i) != sid_)) {
       clock_->SetOnly(i, src->clock()->Get(i));
     }
     // IncU();
