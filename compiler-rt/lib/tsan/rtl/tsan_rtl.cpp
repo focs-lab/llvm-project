@@ -133,7 +133,7 @@ void TraceResetForTesting() {
 }
 
 static void DoResetImpl(uptr epoch) {
-  Printf("DoResetImpl\n");
+  DPrintf("DoResetImpl\n");
   ThreadRegistryLock lock0(&ctx->thread_registry);
   Lock lock1(&ctx->slot_mtx);
   CHECK_EQ(ctx->global_epoch, epoch);
@@ -489,6 +489,8 @@ Context::Context()
   atomic_store_relaxed(&num_frees, 0);
   atomic_store_relaxed(&num_holds, 0);
   atomic_store_relaxed(&num_drops, 0);
+  atomic_store_relaxed(&total_acquire_ns, 0);
+  atomic_store_relaxed(&total_release_ns, 0);
 #endif
 }
 
@@ -531,6 +533,12 @@ ThreadState::ThreadState(Tid tid)
 
 #if TSAN_MEASUREMENTS
   num_locks = num_read_locks = num_accesses = num_atomic_loads = num_atomic_stores = num_original_accesses = num_sampled_accesses = max_slot_id = 0;
+#endif
+
+#if TSAN_OL
+  SlotAttachAndLock(this);
+  clock.Reset();
+  SlotDetach(this);
 #endif
 }
 
@@ -950,6 +958,8 @@ int Finalize(ThreadState *thr) {
   Printf("Num frees: %llu\n", atomic_load_relaxed(&ctx->num_frees));
   Printf("Num holds: %llu\n", atomic_load_relaxed(&ctx->num_holds));
   Printf("Num drops: %llu\n", atomic_load_relaxed(&ctx->num_drops));
+  Printf("Total acquire ns: %llu\n", atomic_load_relaxed(&ctx->total_acquire_ns));
+  Printf("Total release ns: %llu\n", atomic_load_relaxed(&ctx->total_release_ns));
 #endif
 
   if (common_flags()->print_suppressions)

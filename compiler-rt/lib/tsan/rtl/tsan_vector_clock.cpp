@@ -14,6 +14,7 @@
 #include "sanitizer_common/sanitizer_placement_new.h"
 #include "tsan_mman.h"
 #include "tsan_rtl.h"
+#include <time.h>
 
 #if TSAN_UCLOCK_MEASUREMENTS
 #include "tsan_rtl.h"
@@ -32,6 +33,7 @@ VectorClock::VectorClock() {
 void VectorClock::Reset() {
 #if TSAN_OL
   if (UNLIKELY(clock_)) clock_->DropRef();
+  // we dont actually have to allocate until there is actually a need to d
   clock_ = New<SharedClock>();
   is_shared_ = false;
 
@@ -107,6 +109,9 @@ void VectorClock::Acquire(const SyncClock* src) {
 
 #if TSAN_OL_MEASUREMENTS
   atomic_fetch_add(&ctx->num_acquires, 1, memory_order_relaxed);
+  struct timespec ts;
+  timespec_get(&ts, TIME_UTC);
+  u64 start_time_ns = ts.tv_sec * 1000000000 + ts.tv_nsec;
 #endif
 
   if (LIKELY(src->LastReleaseWasStore())) {
@@ -200,6 +205,12 @@ void VectorClock::Acquire(const SyncClock* src) {
     }
   }
 
+#if TSAN_OL_MEASUREMENTS
+  timespec_get(&ts, TIME_UTC);
+  u64 end_time_ns = ts.tv_sec * 1000000000 + ts.tv_nsec;
+  auto dt = end_time_ns - start_time_ns;
+  atomic_fetch_add(&ctx->total_acquire_ns, dt, memory_order_relaxed);
+#endif
   // for (uptr i = 0; i < kThreadSlotCount; ++i) {
   //   Epoch src_curr_epoch = src->clock()->Get(i);
   //   Epoch my_curr_epoch = clock_->Get(i);
@@ -636,7 +647,6 @@ void VectorClock::ReleaseStoreAcquire(VectorClock** dstp) {
 #if TSAN_EMPTY
   return;
 #endif
-  CHECK(0);
   VectorClock* dst = AllocClock(dstp);
 #if !TSAN_VECTORIZE
   for (uptr i = 0; i < kThreadSlotCount; i++) {

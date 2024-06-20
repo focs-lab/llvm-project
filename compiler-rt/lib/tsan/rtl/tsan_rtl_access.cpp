@@ -433,7 +433,7 @@ ALWAYS_INLINE USED void MemoryAccess(ThreadState* thr, uptr pc, uptr addr,
                                      uptr size, AccessType typ) {
 #if TSAN_SAMPLING
   if (LIKELY(!ShouldSample(thr))) return;
-#elif TSAN_UCLOCKS
+#elif TSAN_UCLOCKS || TSAN_OL
   thr->sampled = true;
 #endif
   RawShadow* shadow_mem = MemToShadow(addr);
@@ -472,7 +472,7 @@ ALWAYS_INLINE USED void MemoryAccess16(ThreadState* thr, uptr pc, uptr addr,
                                        AccessType typ) {
 #if TSAN_SAMPLING
   if (LIKELY(!ShouldSample(thr))) return;
-#elif TSAN_UCLOCKS
+#elif TSAN_UCLOCKS || TSAN_OL
   thr->sampled = true;
 #endif
   const uptr size = 16;
@@ -514,7 +514,7 @@ ALWAYS_INLINE USED void UnalignedMemoryAccess(ThreadState* thr, uptr pc,
                                               AccessType typ) {
 #if TSAN_SAMPLING
   if (LIKELY(!ShouldSample(thr))) return;
-#elif TSAN_UCLOCKS
+#elif TSAN_UCLOCKS || TSAN_OL
   thr->sampled = true;
 #endif
   DCHECK_LE(size, 8);
@@ -608,7 +608,7 @@ static void MemoryRangeSet(uptr addr, uptr size, RawShadow val) {
 }
 
 void MemoryResetRange(ThreadState* thr, uptr pc, uptr addr, uptr size) {
-#if TSAN_UCLOCKS
+#if TSAN_UCLOCKS || TSAN_OL
   thr->sampled = true;
 #endif
   uptr addr1 = RoundDown(addr, kShadowCell);
@@ -617,7 +617,7 @@ void MemoryResetRange(ThreadState* thr, uptr pc, uptr addr, uptr size) {
 }
 
 void MemoryRangeFreed(ThreadState* thr, uptr pc, uptr addr, uptr size) {
-#if TSAN_UCLOCKS
+#if TSAN_UCLOCKS || TSAN_OL
   thr->sampled = true;
 #endif
   // Callers must lock the slot to ensure synchronization with the reset.
@@ -664,7 +664,7 @@ void MemoryRangeFreed(ThreadState* thr, uptr pc, uptr addr, uptr size) {
 }
 
 void MemoryRangeImitateWrite(ThreadState* thr, uptr pc, uptr addr, uptr size) {
-#if TSAN_UCLOCKS
+#if TSAN_UCLOCKS || TSAN_OL
   thr->sampled = true;
 #endif
   DCHECK_EQ(addr % kShadowCell, 0);
@@ -687,7 +687,7 @@ bool MemoryAccessRangeOne(ThreadState* thr, RawShadow* shadow_mem, Shadow cur,
                           AccessType typ) {
 #if TSAN_SAMPLING
   if (LIKELY(!ShouldSample(thr))) return false;
-#elif TSAN_UCLOCKS
+#elif TSAN_UCLOCKS || TSAN_OL
   thr->sampled = true;
 #endif
   LOAD_CURRENT_SHADOW(cur, shadow_mem);
@@ -707,7 +707,7 @@ template <bool is_read>
 void MemoryAccessRangeT(ThreadState* thr, uptr pc, uptr addr, uptr size) {
 #if TSAN_SAMPLING
   if (LIKELY(!ShouldSample(thr))) return;
-#elif TSAN_UCLOCKS
+#elif TSAN_UCLOCKS || TSAN_OL
   thr->sampled = true;
 #endif
   const AccessType typ =

@@ -371,6 +371,8 @@ struct Context {
   atomic_uint64_t num_frees;
   atomic_uint64_t num_holds;
   atomic_uint64_t num_drops;
+  atomic_uint64_t total_acquire_ns;
+  atomic_uint64_t total_release_ns;
 #endif
 
   // This is used to prevent a very unlikely but very pathological behavior.
@@ -583,6 +585,7 @@ void OnUserFree(ThreadState *thr, uptr pc, uptr p, bool write);
 
 #if TSAN_SAMPLING
 ALWAYS_INLINE bool ShouldSample(ThreadState *thr) {
+  return false;
   // thr->sampled = true;
   // return true;
   // https://en.wikipedia.org/wiki/Linear-feedback_shift_register#Galois_LFSRs
@@ -594,7 +597,7 @@ ALWAYS_INLINE bool ShouldSample(ThreadState *thr) {
   thr->sampling_rng_state = lfsr;
 
   // 0.03 * 65536 = 1966.08
-  bool should_sample = (lfsr & 0xffff) < 3276;
+  bool should_sample = (lfsr & 0xffff) < 8;
 #if TSAN_UCLOCKS || TSAN_OL
   if (UNLIKELY(should_sample)) thr->sampled = true;
 #endif
