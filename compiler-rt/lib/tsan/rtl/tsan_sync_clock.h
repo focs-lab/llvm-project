@@ -131,9 +131,10 @@ ALWAYS_INLINE SharedClock* SyncClock::clock() const {
 }
 
 ALWAYS_INLINE void SyncClock::SetClock(SharedClock* clock) {
-    if (clock_) clock_->DropRef();
-    clock_ = clock;
-    clock->HoldRef();
+  if (clock_ == clock) return;
+  if (clock_) clock_->DropRef();
+  clock_ = clock;
+  clock->HoldRef();
 }
 }  // namespace __tsan
 

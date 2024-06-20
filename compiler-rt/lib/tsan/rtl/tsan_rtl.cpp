@@ -534,12 +534,6 @@ ThreadState::ThreadState(Tid tid)
 #if TSAN_MEASUREMENTS
   num_locks = num_read_locks = num_accesses = num_atomic_loads = num_atomic_stores = num_original_accesses = num_sampled_accesses = max_slot_id = 0;
 #endif
-
-#if TSAN_OL
-  SlotAttachAndLock(this);
-  clock.Reset();
-  SlotDetach(this);
-#endif
 }
 
 #if !SANITIZER_GO

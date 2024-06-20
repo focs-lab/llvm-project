@@ -49,7 +49,7 @@ class SharedClock {
   Sid next_[kThreadSlotCount] VECTOR_ALIGNED;
   Sid prev_[kThreadSlotCount] VECTOR_ALIGNED;
   Sid head_;
-  atomic_uint16_t ref_cnt;
+  atomic_uint32_t ref_cnt;
 };
 
 ALWAYS_INLINE void SharedClock::SetHead(Sid head) {

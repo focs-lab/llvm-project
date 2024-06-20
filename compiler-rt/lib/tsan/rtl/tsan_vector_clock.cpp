@@ -33,7 +33,6 @@ VectorClock::VectorClock() {
 void VectorClock::Reset() {
 #if TSAN_OL
   if (UNLIKELY(clock_)) clock_->DropRef();
-  // we dont actually have to allocate until there is actually a need to d
   clock_ = New<SharedClock>();
   is_shared_ = false;
 
