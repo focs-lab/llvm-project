@@ -568,7 +568,7 @@ void IncrementEpoch(ThreadState *thr) {
 
     // inc uclk
     // thr->fast_state.UnionUclkOverflowed(thr->clock.IncU());
-    thr->sampled = false;
+    thr->SetSampled(false);
 
 //     if ((thr->clock.IsShared())) {
 // #if TSAN_OL_MEASUREMENTS
@@ -580,7 +580,7 @@ void IncrementEpoch(ThreadState *thr) {
     DCHECK(thr->sampled);
     DCHECK(thr->slot->thr == thr);
     thr->fast_state.UnionUclkOverflowed(thr->clock.IncU());
-    thr->sampled = false;
+    thr->SetSampled(false);
 #endif
 
     Sid sid = thr->fast_state.sid();

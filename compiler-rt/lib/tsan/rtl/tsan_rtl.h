@@ -180,6 +180,10 @@ struct ThreadState {
 #endif
 #if TSAN_UCLOCKS || TSAN_OL
   bool sampled;
+  void SetSampled(bool smp) {
+    sampled = smp;
+    clock.SetSampled(smp);
+  }
 #endif
 
 #if TSAN_MEASUREMENTS
@@ -585,8 +589,8 @@ void OnUserFree(ThreadState *thr, uptr pc, uptr p, bool write);
 
 #if TSAN_SAMPLING
 ALWAYS_INLINE bool ShouldSample(ThreadState *thr) {
-  return false;
-  // thr->sampled = true;
+  // return false;
+  // thr->SetSampled(true);
   // return true;
   // https://en.wikipedia.org/wiki/Linear-feedback_shift_register#Galois_LFSRs
   // https://users.ece.cmu.edu/~koopman/lfsr/32.txt
@@ -597,9 +601,9 @@ ALWAYS_INLINE bool ShouldSample(ThreadState *thr) {
   thr->sampling_rng_state = lfsr;
 
   // 0.03 * 65536 = 1966.08
-  bool should_sample = (lfsr & 0xffff) < 8;
+  bool should_sample = (lfsr & 0xffff) < 2000;
 #if TSAN_UCLOCKS || TSAN_OL
-  if (UNLIKELY(should_sample)) thr->sampled = true;
+  if (UNLIKELY(should_sample)) thr->SetSampled(true);
 #endif
 
 #if TSAN_MEASUREMENTS

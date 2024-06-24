@@ -527,7 +527,7 @@ ThreadState::ThreadState(Tid tid)
   // Printf("Seed: %lu\n", seed);
   sampling_rng_state = seed;
 #endif
-#if TSAN_UCLOCKS
+#if TSAN_UCLOCKS || TSAN_OL
   sampled = false;
 #endif
 

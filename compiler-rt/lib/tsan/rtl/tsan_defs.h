@@ -20,6 +20,7 @@
 
 #define TSAN_EMPTY 0
 #define TSAN_SAMPLING 1
+#define TSAN_SKIP_MEMORY_EVENTS 0
 #define TSAN_UCLOCKS 0
 #define TSAN_OL 1
 #define TSAN_DISABLE_SLOTS 0

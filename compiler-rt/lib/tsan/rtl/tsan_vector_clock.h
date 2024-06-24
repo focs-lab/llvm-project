@@ -53,6 +53,7 @@ class VectorClock {
   void ReleaseAcquire(SyncClock** dstp);
 
   Epoch local() const;
+  Epoch local_for_release() const;
   void SetLocal(Epoch epoch);
 
   Epoch acquired() const;
@@ -73,9 +74,16 @@ class VectorClock {
   void ReleaseFork(VectorClock** dstp);
   void AcquireFromFork(const VectorClock* src);
   void AcquireJoin(const VectorClock* src);
+
+  Epoch local_for_release() const;
 #endif
   void ReleaseStoreAcquire(VectorClock** dstp);
   void ReleaseAcquire(VectorClock** dstp);
+#endif
+
+#if TSAN_UCLOCKS || TSAN_OL
+  bool sampled() const;
+  void SetSampled(bool sampled);
 #endif
 
   VectorClock& operator=(const VectorClock& other);
@@ -100,6 +108,7 @@ class VectorClock {
 #if TSAN_UCLOCKS || TSAN_OL
   // only used by threads
   Sid sid_;
+  bool sampled_;
 #endif
 
 #if TSAN_UCLOCKS
@@ -167,6 +176,14 @@ ALWAYS_INLINE Epoch VectorClock::local() const {
   return local_;
 }
 
+ALWAYS_INLINE Epoch VectorClock::local_for_release() const {
+  CHECK_GT(local_, kEpochZero);
+  // if (UNLIKELY(sampled_)) return local;
+  // not sure if this optimization is actually useful, but i want to avoid if statements
+  // if sampled then send e, else send e-1
+  return static_cast<Epoch>(static_cast<u16>(local_) - !sampled_);
+}
+
 ALWAYS_INLINE void VectorClock::SetLocal(Epoch epoch) {
   local_ = epoch;
 }
@@ -187,6 +204,15 @@ ALWAYS_INLINE void VectorClock::SetAcquiredSid(Sid sid) {
   acquired_sid_ = sid;
 }
 #elif TSAN_UCLOCKS
+ALWAYS_INLINE Epoch VectorClock::local_for_release() const {
+  Epoch local = Get(sid_);
+  CHECK_GT(local, kEpochZero);
+  // if (UNLIKELY(sampled_)) return local;
+  // not sure if this optimization is actually useful, but i want to avoid if statements
+  // if sampled then send e, else send e-1
+  return static_cast<Epoch>(static_cast<u16>(local) - !sampled_);
+}
+
 ALWAYS_INLINE Epoch VectorClock::GetU(Sid sid) const {
   return uclk_[static_cast<u8>(sid)];
 }
@@ -215,6 +241,16 @@ ALWAYS_INLINE Epoch VectorClock::IncU() {
   Epoch epoch = EpochInc(GetU(sid_));
   SetU(sid_, epoch);
   return epoch;
+}
+#endif
+
+#if TSAN_UCLOCKS || TSAN_OL
+ALWAYS_INLINE bool VectorClock::sampled() const {
+  return sampled_;
+}
+
+ALWAYS_INLINE void VectorClock::SetSampled(bool sampled) {
+  sampled_ = sampled;
 }
 #endif
 
