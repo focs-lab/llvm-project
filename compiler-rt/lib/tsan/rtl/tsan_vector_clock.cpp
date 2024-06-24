@@ -370,7 +370,6 @@ void VectorClock::Acquire(const VectorClock* src) {
   // u_l ⊑ U_t
   // CHECK_EQ(src->sid_, kFreeSid);
 
-  bool did_acquire = false;
   Sid src_last_released_thread = src->last_released_thread_;
 
   // we will do the acquire if last release wasnt store (barriers), or the sync knows more than this thread
@@ -401,6 +400,8 @@ void VectorClock::Acquire(const VectorClock* src) {
 #endif
 
     // Join as per normal (because checking C_l ⊑ C_t takes as much time as joining)
+    bool did_acquire = false;
+#if !TSAN_VECTORIZE
     for (uptr i = 0; i < kThreadSlotCount; i++) {
       uclk_[i] = max(uclk_[i], src->uclk_[i]);
       Epoch sc = src->clk_[i];
@@ -409,6 +410,28 @@ void VectorClock::Acquire(const VectorClock* src) {
       // im trying to avoid if statements
       did_acquire |= clk_[i] == sc;
     }
+#else
+    m128* __restrict vdst = reinterpret_cast<m128*>(clk_);
+    m128 const* __restrict vsrc = reinterpret_cast<m128 const*>(src->clk_);
+    m128* __restrict vudst = reinterpret_cast<m128*>(uclk_);
+    m128 const* __restrict vusrc = reinterpret_cast<m128 const*>(src->uclk_);
+    for (uptr i = 0; i < kVectorClockSize; i++) {
+      m128 s = _mm_load_si128(&vsrc[i]);
+      m128 d = _mm_load_si128(&vdst[i]);
+      m128 m = _mm_max_epu16(s, d);
+      _mm_store_si128(&vdst[i], m);
+
+      m128 su = _mm_load_si128(&vusrc[i]);
+      m128 du = _mm_load_si128(&vudst[i]);
+      m128 mu = _mm_max_epu16(su, du);
+      _mm_store_si128(&vudst[i], mu);
+
+      // if all are the same, then diff will be all zeros, and that means we didnt acquire anything
+      // in other words, if not all zeros, means we acquired something
+      m128 diff = _mm_xor_si128(d, m);
+      did_acquire |= !_mm_test_all_zeros(diff, diff);
+    }
+#endif
 
     // If learnt something new about the lock, increment augmented epoch to signal that future releases will give new information
     if (LIKELY(did_acquire)) IncU();
@@ -467,10 +490,28 @@ void VectorClock::Release(VectorClock** dstp) {
 #endif
 
     // Join as per normal
+#if !TSAN_VECTORIZE
     for (uptr i = 0; i < kThreadSlotCount; i++) {
       dst->clk_[i] = max(clk_[i], dst->clk_[i]);
       dst->uclk_[i] = max(uclk_[i], dst->uclk_[i]);
     }
+#else
+    m128* __restrict vdst = reinterpret_cast<m128*>(dst->clk_);
+    m128 const* __restrict vsrc = reinterpret_cast<m128 const*>(clk_);
+    m128* __restrict vudst = reinterpret_cast<m128*>(dst->uclk_);
+    m128 const* __restrict vusrc = reinterpret_cast<m128 const*>(uclk_);
+    for (uptr i = 0; i < kVectorClockSize; i++) {
+      m128 s = _mm_load_si128(&vsrc[i]);
+      m128 d = _mm_load_si128(&vdst[i]);
+      m128 m = _mm_max_epu16(s, d);
+      _mm_store_si128(&vdst[i], m);
+
+      m128 su = _mm_load_si128(&vusrc[i]);
+      m128 du = _mm_load_si128(&vudst[i]);
+      m128 mu = _mm_max_epu16(su, du);
+      _mm_store_si128(&vudst[i], mu);
+    }
+#endif
 
     // Don't need to do max, it wouldnt make sense for the lock to know more about the thread than itself
     dst->Set(sid_, local_for_release());
@@ -526,10 +567,28 @@ void VectorClock::ReleaseStore(VectorClock** dstp) {
 #endif
 
     // Join instead of store
+#if !TSAN_VECTORIZE
     for (uptr i = 0; i < kThreadSlotCount; i++) {
       dst->clk_[i] = max(clk_[i], dst->clk_[i]);
       dst->uclk_[i] = max(uclk_[i], dst->uclk_[i]);
     }
+#else
+    m128* __restrict vdst = reinterpret_cast<m128*>(dst->clk_);
+    m128 const* __restrict vsrc = reinterpret_cast<m128 const*>(clk_);
+    m128* __restrict vudst = reinterpret_cast<m128*>(dst->uclk_);
+    m128 const* __restrict vusrc = reinterpret_cast<m128 const*>(uclk_);
+    for (uptr i = 0; i < kVectorClockSize; i++) {
+      m128 s = _mm_load_si128(&vsrc[i]);
+      m128 d = _mm_load_si128(&vdst[i]);
+      m128 m = _mm_max_epu16(s, d);
+      _mm_store_si128(&vdst[i], m);
+
+      m128 su = _mm_load_si128(&vusrc[i]);
+      m128 du = _mm_load_si128(&vudst[i]);
+      m128 mu = _mm_max_epu16(su, du);
+      _mm_store_si128(&vudst[i], mu);
+    }
+#endif
 
     // dont need to do max, it wouldnt make sense for the lock to know more about the thread than itself
     dst->Set(sid_, local_for_release());
@@ -614,6 +673,7 @@ void VectorClock::AcquireFromFork(const VectorClock* src) {
   // This is called after SlotAttachAndLock, which will increment the epoch of the child
   // Maybe doing max is overkill, but need to confirm whether doing copy affects correctness
   Epoch my_c = Get(sid_), my_u = GetU(sid_);
+#if !TSAN_VECTORIZE
   for (uptr i = 0; i < kThreadSlotCount; i++) {
     // Also join the augmented clock
     // clk_[i] = max(clk_[i], src->clk_[i]);
@@ -621,6 +681,18 @@ void VectorClock::AcquireFromFork(const VectorClock* src) {
     clk_[i] = src->clk_[i];
     uclk_[i] = src->uclk_[i];
   }
+#else
+  m128* __restrict vdst = reinterpret_cast<m128*>(clk_);
+  m128 const* __restrict vsrc = reinterpret_cast<m128 const*>(src->clk_);
+  m128* __restrict vudst = reinterpret_cast<m128*>(uclk_);
+  m128 const* __restrict vusrc = reinterpret_cast<m128 const*>(src->clk_);
+  for (uptr i = 0; i < kVectorClockSize; i++) {
+    m128 s = _mm_load_si128(&vsrc[i]);
+    _mm_store_si128(&vdst[i], s);
+    m128 su = _mm_load_si128(&vusrc[i]);
+    _mm_store_si128(&vudst[i], su);
+  }
+#endif
 
   // we dont want to replace our own info from what's in src
   Set(sid_, my_c);
@@ -652,12 +724,35 @@ void VectorClock::AcquireJoin(const VectorClock* child) {
 
     // Join as per normal (because checking C_l ⊑ C_t takes as much time as joining)
     bool did_acquire = false;
+#if !TSAN_VECTORIZE
     for (uptr i = 0; i < kThreadSlotCount; i++) {
       uclk_[i] = max(uclk_[i], child->uclk_[i]);
       Epoch cc = child->clk_[i];
       clk_[i] = max(clk_[i], cc);
       did_acquire |= clk_[i] == cc;
     }
+#else
+    m128* __restrict vdst = reinterpret_cast<m128*>(clk_);
+    m128 const* __restrict vsrc = reinterpret_cast<m128 const*>(child->clk_);
+    m128* __restrict vudst = reinterpret_cast<m128*>(uclk_);
+    m128 const* __restrict vusrc = reinterpret_cast<m128 const*>(child->uclk_);
+    for (uptr i = 0; i < kVectorClockSize; i++) {
+      m128 s = _mm_load_si128(&vsrc[i]);
+      m128 d = _mm_load_si128(&vdst[i]);
+      m128 m = _mm_max_epu16(s, d);
+      _mm_store_si128(&vdst[i], m);
+
+      m128 su = _mm_load_si128(&vusrc[i]);
+      m128 du = _mm_load_si128(&vudst[i]);
+      m128 mu = _mm_max_epu16(su, du);
+      _mm_store_si128(&vudst[i], mu);
+
+      // if all in max are the same as all in dst, then diff will be all zeros, and that means we didnt acquire anything
+      // in other words, if not all zeros, means we acquired something
+      m128 diff = _mm_xor_si128(d, m);
+      did_acquire |= !_mm_test_all_zeros(diff, diff);
+    }
+#endif
 
     // If learnt something new about the lock, increment augmented epoch to signal that future releases will give new information
     if (LIKELY(did_acquire)) IncU();
@@ -670,10 +765,23 @@ VectorClock& VectorClock::operator=(const VectorClock& other) {
   return *this;
 #endif
 #if TSAN_UCLOCKS
+#if !TSAN_VECTORIZE
   for (uptr i = 0; i < kThreadSlotCount; i++) {
     clk_[i] = other.clk_[i];
     uclk_[i] = other.uclk_[i];
   }
+#else
+  m128* __restrict vdst = reinterpret_cast<m128*>(clk_);
+  m128 const* __restrict vsrc = reinterpret_cast<m128 const*>(other.clk_);
+  m128* __restrict vudst = reinterpret_cast<m128*>(uclk_);
+  m128 const* __restrict vusrc = reinterpret_cast<m128 const*>(other.uclk_);
+  for (uptr i = 0; i < kVectorClockSize; i++) {
+    m128 s = _mm_load_si128(&vsrc[i]);
+    _mm_store_si128(&vdst[i], s);
+    m128 su = _mm_load_si128(&vusrc[i]);
+    _mm_store_si128(&vudst[i], su);
+  }
+#endif
 #else
 #if !TSAN_VECTORIZE
   for (uptr i = 0; i < kThreadSlotCount; i++)
