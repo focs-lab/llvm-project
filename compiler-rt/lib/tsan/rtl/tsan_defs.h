@@ -19,17 +19,18 @@
 #include "ubsan/ubsan_platform.h"
 
 #define TSAN_EMPTY 0
-#define TSAN_SAMPLING 0
+#define TSAN_SAMPLING 1
 #define TSAN_SKIP_MEMORY_EVENTS 0
 #define TSAN_UCLOCKS 1
 #define TSAN_OL 0
-#define TSAN_DISABLE_SLOTS 0
+#define TSAN_DISABLE_SLOTS 1
 #define TSAN_MEASUREMENTS 0
 #define TSAN_UCLOCK_MEASUREMENTS 0
 #define TSAN_OL_MEASUREMENTS 0
+#define TSAN_SETTING_NAME "TSAN-OL"
 
 #ifndef TSAN_VECTORIZE
-#  define TSAN_VECTORIZE __SSE4_2__
+// #  define TSAN_VECTORIZE 1 // __SSE4_2__
 #endif
 
 #if TSAN_VECTORIZE

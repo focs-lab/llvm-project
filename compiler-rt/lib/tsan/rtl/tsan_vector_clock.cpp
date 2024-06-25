@@ -116,7 +116,6 @@ void VectorClock::Acquire(const SyncClock* src) {
 
   if (LIKELY(src->LastReleaseWasStore())) {
     Sid last_released_thread = src->LastReleasedThread();
-
     if (last_released_thread == sid_) return;
 
     // Do it at the start to prevent accidentally early returning due to things like diff == 0
@@ -152,23 +151,9 @@ void VectorClock::Acquire(const SyncClock* src) {
         continue;
       }
       curr_epoch = src->clock()->Get(curr);
-      // else if (UNLIKELY(curr == src->acquired_sid()))
-      //   curr_epoch = src->acquired();
 
       if (curr_epoch > clock_->Get(curr)) {
         if (UNLIKELY(IsShared())) {
-          // if (LIKELY(acquired_sid_ == kFreeSid)) {
-          //   acquired_sid_ = curr;
-          //   acquired_ = curr_epoch;
-          //   curr = src->clock()->Next(curr);
-          //   continue;
-          // }
-          // else if (curr == acquired_sid_) {
-          //   if (curr_epoch > acquired_) acquired_ = curr_epoch;
-          //   curr = src->clock()->Next(curr);
-          //   continue;
-          // }
-          // else {
 #if TSAN_OL_MEASUREMENTS
               atomic_fetch_add(&ctx->num_acquire_deep_copies, 1, memory_order_relaxed);
 #endif

@@ -180,7 +180,7 @@ struct ThreadState {
 #endif
 #if TSAN_UCLOCKS || TSAN_OL
   bool sampled;
-  void SetSampled(bool smp) {
+  ALWAYS_INLINE void SetSampled(bool smp) {
     sampled = smp;
     clock.SetSampled(smp);
   }
@@ -589,19 +589,16 @@ void OnUserFree(ThreadState *thr, uptr pc, uptr p, bool write);
 
 #if TSAN_SAMPLING
 ALWAYS_INLINE bool ShouldSample(ThreadState *thr) {
-  // return false;
-  // thr->SetSampled(true);
   // return true;
-  // https://en.wikipedia.org/wiki/Linear-feedback_shift_register#Galois_LFSRs
-  // https://users.ece.cmu.edu/~koopman/lfsr/32.txt
-  u32 lfsr = thr->sampling_rng_state;
-  u8 lsb = lfsr & 1u;
-  lfsr >>= 1;
-  lfsr ^= (-lsb) & 0x80000057u;
-  thr->sampling_rng_state = lfsr;
+  // Refer to compiler-rt/lib/gwp_asan/guarded_pool_allocator.cpp
+  u32 rng_state = thr->sampling_rng_state;
+  rng_state ^= rng_state << 13;
+  rng_state ^= rng_state >> 17;
+  rng_state ^= rng_state << 5;
+  thr->sampling_rng_state = rng_state;
 
   // 0.03 * 65536 = 1966.08
-  bool should_sample = (lfsr & 0xffff) < 2000;
+  bool should_sample = (rng_state & 0xffff) < 2000;
 #if TSAN_UCLOCKS || TSAN_OL
   if (UNLIKELY(should_sample)) thr->SetSampled(true);
 #endif
