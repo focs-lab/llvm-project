@@ -520,12 +520,7 @@ ThreadState::ThreadState(Tid tid)
   shadow_stack_end = shadow_stack + kInitStackSize;
 
 #if TSAN_SAMPLING
-  uptr seed = 0;
-  seed = (uptr) &seed;
-  seed = (seed >> 12) & 0xfff;
-  if (seed == 0) seed = 0x1234;   // lfsr start state cannot be 0
-  // Printf("Seed: %lu\n", seed);
-  sampling_rng_state = seed;
+  sampling_rng_state = flags()->sampling_rng_seed;
 #endif
 #if TSAN_UCLOCKS || TSAN_OL
   sampled = false;
@@ -913,7 +908,8 @@ int Finalize(ThreadState *thr) {
   if (ctx->nreported) {
     failed = true;
 #if !SANITIZER_GO
-    Printf("ThreadSanitizer: reported %d warnings uclock\n", ctx->nreported);
+#define TSAN_STRINGIFY(s) #s
+    Printf("ThreadSanitizer: reported %d warnings " TSAN_SETTING_NAME "\n", ctx->nreported);
 #else
     Printf("Found %d data race(s)\n", ctx->nreported);
 #endif
