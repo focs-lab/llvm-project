@@ -167,7 +167,11 @@ NOINLINE void DoReportRace(ThreadState* thr, RawShadow* shadow_mem, Shadow cur,
     old = Shadow(LoadShadow(&shadow_mem[1]));
   // This prevents trapping on this address in future.
   for (uptr i = 0; i < kShadowCnt; i++)
+#if TSAN_SAMPLING
+    StoreShadow(&shadow_mem[i], Shadow::kEmpty);
+#else
     StoreShadow(&shadow_mem[i], i == 0 ? Shadow::kRodata : Shadow::kEmpty);
+#endif
   // See the comment in MemoryRangeFreed as to why the slot is locked
   // for free memory accesses. ReportRace must not be called with
   // the slot locked because of the fork. But MemoryRangeFreed is not
@@ -246,10 +250,12 @@ bool CheckRaces(ThreadState* thr, RawShadow* shadow_mem, Shadow cur,
   // the current access info, so we are done.
   if (LIKELY(stored))
     return false;
+#if TSAN_SAMPLING
   if (LIKELY(!should_sample)) {
     StoreShadow(shadow_mem, Shadow::kEmpty);
     return false;
   }
+#endif
   // Choose a random candidate slot and replace it.
   uptr index =
       atomic_load_relaxed(&thr->trace_pos) / sizeof(Event) % kShadowCnt;
@@ -479,7 +485,7 @@ ALWAYS_INLINE USED void MemoryAccess(ThreadState* thr, uptr pc, uptr addr,
   // bool should_sample = true;
   RawShadow* shadow_mem = MemToShadow(addr);
 #if TSAN_SAMPLING
-  if (LoadShadow(shadow_mem) == Shadow::kEmpty) return;
+  if (LIKELY(!should_sample) && LoadShadow(shadow_mem) == Shadow::kEmpty) return;
 #endif
   UNUSED char memBuf[4][64];
   DPrintf2("#%d: Access: %d@%d %p/%zd typ=0x%x {%s, %s, %s, %s}\n", thr->tid,
@@ -532,7 +538,7 @@ ALWAYS_INLINE USED void MemoryAccess16(ThreadState* thr, uptr pc, uptr addr,
   Shadow cur(fast_state, 0, 8, typ);
   RawShadow* shadow_mem = MemToShadow(addr);
 #if TSAN_SAMPLING
-  if (LoadShadow(shadow_mem) == Shadow::kEmpty) return;
+  if (LIKELY(!should_sample) && LoadShadow(shadow_mem) == Shadow::kEmpty) return;
 #endif
   bool traced = false;
   {
@@ -552,7 +558,7 @@ ALWAYS_INLINE USED void MemoryAccess16(ThreadState* thr, uptr pc, uptr addr,
 SECOND:
   shadow_mem += kShadowCnt;
 #if TSAN_SAMPLING
-  if (LoadShadow(shadow_mem) == Shadow::kEmpty) return;
+  if (LIKELY(!should_sample) && LoadShadow(shadow_mem) == Shadow::kEmpty) return;
 #endif
   LOAD_CURRENT_SHADOW(cur, shadow_mem);
   if (LIKELY(ContainsSameAccess(shadow_mem, cur, shadow, access, typ)))
@@ -589,7 +595,7 @@ ALWAYS_INLINE USED void UnalignedMemoryAccess(ThreadState* thr, uptr pc,
     return;
   RawShadow* shadow_mem = MemToShadow(addr);
 #if TSAN_SAMPLING
-  if (LoadShadow(shadow_mem) == Shadow::kEmpty) return;
+  if (LIKELY(!should_sample) && LoadShadow(shadow_mem) == Shadow::kEmpty) return;
 #endif
   bool traced = false;
   uptr size1 = Min<uptr>(size, RoundUp(addr + 1, kShadowCell) - addr);
@@ -614,7 +620,7 @@ SECOND:
     return;
   shadow_mem += kShadowCnt;
 #if TSAN_SAMPLING
-  if (LoadShadow(shadow_mem) == Shadow::kEmpty) return;
+  if (LIKELY(!should_sample) && LoadShadow(shadow_mem) == Shadow::kEmpty) return;
 #endif
   Shadow cur(fast_state, 0, size2, typ);
   LOAD_CURRENT_SHADOW(cur, shadow_mem);
@@ -784,7 +790,7 @@ bool MemoryAccessRangeOne(ThreadState* thr, RawShadow* shadow_mem, Shadow cur,
   thr->SetSampled(true);
 #endif
 #if TSAN_SAMPLING
-  if (LoadShadow(shadow_mem) == Shadow::kEmpty) return false;
+  if (LIKELY(!should_sample) && LoadShadow(shadow_mem) == Shadow::kEmpty) return false;
 #endif
   LOAD_CURRENT_SHADOW(cur, shadow_mem);
   if (LIKELY(ContainsSameAccess(shadow_mem, cur, shadow, access, typ)))
@@ -816,7 +822,7 @@ void MemoryAccessRangeT(ThreadState* thr, uptr pc, uptr addr, uptr size) {
       (is_read ? kAccessRead : kAccessWrite) | kAccessNoRodata;
   RawShadow* shadow_mem = MemToShadow(addr);
 #if TSAN_SAMPLING
-  if (LoadShadow(shadow_mem) == Shadow::kEmpty) return;
+  if (LIKELY(!should_sample) && LoadShadow(shadow_mem) == Shadow::kEmpty) return;
 #endif
   DPrintf2("#%d: MemoryAccessRange: @%p %p size=%d is_read=%d\n", thr->tid,
            (void*)pc, (void*)addr, (int)size, is_read);
