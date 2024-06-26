@@ -784,7 +784,7 @@ bool MemoryAccessRangeOne(ThreadState* thr, RawShadow* shadow_mem, Shadow cur,
                           AccessType typ) {
 #endif
 #if TSAN_SAMPLING
-  if ((!ShouldSample(thr))) return;
+  if ((!ShouldSample(thr))) return false;
 #elif TSAN_NEW_SAMPLING
   // bool should_sample = ShouldSample(thr);
 #elif TSAN_UCLOCKS || TSAN_OL
