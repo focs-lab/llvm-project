@@ -297,10 +297,25 @@ void VectorClock::ReleaseStore(SyncClock** dstp) {
   // dst->ClearLastReleaseWasAtomic();
 }
 
+ALWAYS_INLINE void SyncClock::CopyClock(SharedClock* clock) {
+  if (clock_ && clock_->IsShared()) {
+    clock_->DropRef();
+    clock_ = New<SharedClock>(clock);
+  }
+  else if (!clock_) {
+    clock_ = New<SharedClock>(clock);
+  }
+  else {
+    *clock_ = *clock;
+  }
+}
+
 void VectorClock::ReleaseStoreAtomic(SyncClock** dstp) {
   SyncClock* dst = AllocSync(dstp);
 
-  dst->SetClock(clock_);
+  // TODO: it might be better to not share the clock
+  // dst->SetClock(clock_);
+  dst->CopyClock(clock_);
   dst->SetU(GetU(sid_));
 
   dst->SetLocal(local_for_release());
@@ -327,7 +342,7 @@ void VectorClock::ReleaseAcquire(SyncClock** dstp) {
 #endif
   SyncClock* dst = AllocSync(dstp);
   Acquire(dst);
-  ReleaseStore(dstp);
+  ReleaseStoreAtomic(dstp);
 }
 #else
 void VectorClock::Acquire(const VectorClock* src) {

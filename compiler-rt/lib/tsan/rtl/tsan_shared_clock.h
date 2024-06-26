@@ -152,6 +152,17 @@ ALWAYS_INLINE bool SharedClock::IsShared() const {
   DCHECK_GT(atomic_load_relaxed(&ref_cnt), 0);
   return atomic_load_relaxed(&ref_cnt) != 1;
 }
+
+ALWAYS_INLINE SharedClock& SharedClock::operator=(const SharedClock& other) {
+  for (uptr i = 0; i < kThreadSlotCount; i++) {
+    clk_[i] = other.clk_[i];
+    next_[i] = other.next_[i];
+    prev_[i] = other.prev_[i];
+  }
+  head_ = other.head_;
+
+  return *this;
+}
 }  // namespace __tsan
 
 #endif  // TSAN_SHARED_CLOCK_H
