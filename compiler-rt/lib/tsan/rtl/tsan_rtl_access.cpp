@@ -167,7 +167,7 @@ NOINLINE void DoReportRace(ThreadState* thr, RawShadow* shadow_mem, Shadow cur,
     old = Shadow(LoadShadow(&shadow_mem[1]));
   // This prevents trapping on this address in future.
   for (uptr i = 0; i < kShadowCnt; i++)
-#if TSAN_SAMPLING
+#if TSAN_NEW_SAMPLING
     StoreShadow(&shadow_mem[i], Shadow::kEmpty);
 #else
     StoreShadow(&shadow_mem[i], i == 0 ? Shadow::kRodata : Shadow::kEmpty);
@@ -209,7 +209,7 @@ bool ContainsSameAccess(RawShadow* s, Shadow cur, int unused0, int unused1,
 
 ALWAYS_INLINE
 bool CheckRaces(ThreadState* thr, RawShadow* shadow_mem, Shadow cur,
-#if TSAN_SAMPLING
+#if TSAN_NEW_SAMPLING
                 int unused0, int unused1, AccessType typ, bool should_sample) {
 #else
                 int unused0, int unused1, AccessType typ) {
@@ -219,7 +219,7 @@ bool CheckRaces(ThreadState* thr, RawShadow* shadow_mem, Shadow cur,
     RawShadow* sp = &shadow_mem[idx];
     Shadow old(LoadShadow(sp));
     if (LIKELY(old.raw() == Shadow::kEmpty)) {
-#if TSAN_SAMPLING
+#if TSAN_NEW_SAMPLING
       if (UNLIKELY(should_sample))
 #endif
       if (!(typ & kAccessCheckOnly) && !stored)
@@ -229,7 +229,7 @@ bool CheckRaces(ThreadState* thr, RawShadow* shadow_mem, Shadow cur,
     if (LIKELY(!(cur.access() & old.access())))
       continue;
     if (LIKELY(cur.sid() == old.sid())) {
-#if TSAN_SAMPLING
+#if TSAN_NEW_SAMPLING
       if (UNLIKELY(should_sample))
 #endif
       if (!(typ & kAccessCheckOnly) &&
@@ -250,7 +250,7 @@ bool CheckRaces(ThreadState* thr, RawShadow* shadow_mem, Shadow cur,
   // the current access info, so we are done.
   if (LIKELY(stored))
     return false;
-#if TSAN_SAMPLING
+#if TSAN_NEW_SAMPLING
   if (LIKELY(!should_sample)) {
     StoreShadow(shadow_mem, Shadow::kEmpty);
     return false;
@@ -335,7 +335,7 @@ NOINLINE void DoReportRaceV(ThreadState* thr, RawShadow* shadow_mem, Shadow cur,
 
 ALWAYS_INLINE
 bool CheckRaces(ThreadState* thr, RawShadow* shadow_mem, Shadow cur,
-#if TSAN_SAMPLING
+#if TSAN_NEW_SAMPLING
                 m128 shadow, m128 access, AccessType typ, bool should_sample) {
 #else
                 m128 shadow, m128 access, AccessType typ) {
@@ -359,7 +359,7 @@ bool CheckRaces(ThreadState* thr, RawShadow* shadow_mem, Shadow cur,
     goto SHARED;
 
 STORE : {
-#if TSAN_SAMPLING
+#if TSAN_NEW_SAMPLING
   // If we are not sampling, and it is a write event, then evict everything
   // if (LIKELY(!should_sample) && (typ & kAccessWrite)) {
     // StoreShadow(&shadow_mem[0], Shadow::kEmpty);
@@ -371,7 +371,7 @@ STORE : {
 #endif
   if (typ & kAccessCheckOnly)
     return false;
-#if TSAN_SAMPLING
+#if TSAN_NEW_SAMPLING
   // if (!should_sample) return false;
   RawShadow to_store = cur.raw();
   // if ((typ & kAccessWrite) && !should_sample) to_store = Shadow::kEmpty;
@@ -399,7 +399,7 @@ STORE : {
     if (UNLIKELY(index == 0))
       index = (atomic_load_relaxed(&thr->trace_pos) / 2) % 16;
   }
-#if TSAN_SAMPLING
+#if TSAN_NEW_SAMPLING
   // if (LIKELY(!should_sample))
   //   StoreShadow(&shadow_mem[index / 4], Shadow::kEmpty);
   // else
@@ -477,14 +477,14 @@ NOINLINE void TraceRestartMemoryAccess(ThreadState* thr, uptr pc, uptr addr,
 ALWAYS_INLINE USED void MemoryAccess(ThreadState* thr, uptr pc, uptr addr,
                                      uptr size, AccessType typ) {
 #if TSAN_SAMPLING
-  // if ((!ShouldSample(thr))) return;
+  if ((!ShouldSample(thr))) return;
+#elif TSAN_NEW_SAMPLING
   bool should_sample = ShouldSample(thr);
 #elif TSAN_UCLOCKS || TSAN_OL
   thr->SetSampled(true);
 #endif
-  // bool should_sample = true;
   RawShadow* shadow_mem = MemToShadow(addr);
-#if TSAN_SAMPLING
+#if TSAN_NEW_SAMPLING
   if (LIKELY(!should_sample) && LoadShadow(shadow_mem) == Shadow::kEmpty) return;
 #endif
   UNUSED char memBuf[4][64];
@@ -506,7 +506,7 @@ ALWAYS_INLINE USED void MemoryAccess(ThreadState* thr, uptr pc, uptr addr,
     return;
   if (!TryTraceMemoryAccess(thr, pc, addr, size, typ))
     return TraceRestartMemoryAccess(thr, pc, addr, size, typ);
-#if TSAN_SAMPLING
+#if TSAN_NEW_SAMPLING
   CheckRaces(thr, shadow_mem, cur, shadow, access, typ, should_sample);
 #else
   CheckRaces(thr, shadow_mem, cur, shadow, access, typ);
@@ -525,19 +525,19 @@ void RestartMemoryAccess16(ThreadState* thr, uptr pc, uptr addr,
 ALWAYS_INLINE USED void MemoryAccess16(ThreadState* thr, uptr pc, uptr addr,
                                        AccessType typ) {
 #if TSAN_SAMPLING
-  // if (LIKELY(!ShouldSample(thr))) return;
+  if ((!ShouldSample(thr))) return;
+#elif TSAN_NEW_SAMPLING
   bool should_sample = ShouldSample(thr);
 #elif TSAN_UCLOCKS || TSAN_OL
   thr->SetSampled(true);
 #endif
-  // bool should_sample = true;
   const uptr size = 16;
   FastState fast_state = thr->fast_state;
   if (UNLIKELY(fast_state.GetIgnoreBit()))
     return;
   Shadow cur(fast_state, 0, 8, typ);
   RawShadow* shadow_mem = MemToShadow(addr);
-#if TSAN_SAMPLING
+#if TSAN_NEW_SAMPLING
   if (LIKELY(!should_sample) && LoadShadow(shadow_mem) == Shadow::kEmpty) return;
 #endif
   bool traced = false;
@@ -548,7 +548,7 @@ ALWAYS_INLINE USED void MemoryAccess16(ThreadState* thr, uptr pc, uptr addr,
     if (!TryTraceMemoryAccessRange(thr, pc, addr, size, typ))
       return RestartMemoryAccess16(thr, pc, addr, typ);
     traced = true;
-#if TSAN_SAMPLING
+#if TSAN_NEW_SAMPLING
     if (UNLIKELY(CheckRaces(thr, shadow_mem, cur, shadow, access, typ, should_sample)))
 #else
     if (UNLIKELY(CheckRaces(thr, shadow_mem, cur, shadow, access, typ)))
@@ -557,7 +557,7 @@ ALWAYS_INLINE USED void MemoryAccess16(ThreadState* thr, uptr pc, uptr addr,
   }
 SECOND:
   shadow_mem += kShadowCnt;
-#if TSAN_SAMPLING
+#if TSAN_NEW_SAMPLING
   if (LIKELY(!should_sample) && LoadShadow(shadow_mem) == Shadow::kEmpty) return;
 #endif
   LOAD_CURRENT_SHADOW(cur, shadow_mem);
@@ -565,7 +565,7 @@ SECOND:
     return;
   if (!traced && !TryTraceMemoryAccessRange(thr, pc, addr, size, typ))
     return RestartMemoryAccess16(thr, pc, addr, typ);
-#if TSAN_SAMPLING
+#if TSAN_NEW_SAMPLING
   CheckRaces(thr, shadow_mem, cur, shadow, access, typ, should_sample);
 #else
   CheckRaces(thr, shadow_mem, cur, shadow, access, typ);
@@ -583,18 +583,18 @@ ALWAYS_INLINE USED void UnalignedMemoryAccess(ThreadState* thr, uptr pc,
                                               uptr addr, uptr size,
                                               AccessType typ) {
 #if TSAN_SAMPLING
-  // if (LIKELY(!ShouldSample(thr))) return;
+  if ((!ShouldSample(thr))) return;
+#elif TSAN_NEW_SAMPLING
   bool should_sample = ShouldSample(thr);
 #elif TSAN_UCLOCKS || TSAN_OL
   thr->SetSampled(true);
 #endif
-  // bool should_sample = true;
   DCHECK_LE(size, 8);
   FastState fast_state = thr->fast_state;
   if (UNLIKELY(fast_state.GetIgnoreBit()))
     return;
   RawShadow* shadow_mem = MemToShadow(addr);
-#if TSAN_SAMPLING
+#if TSAN_NEW_SAMPLING
   if (LIKELY(!should_sample) && LoadShadow(shadow_mem) == Shadow::kEmpty) return;
 #endif
   bool traced = false;
@@ -607,7 +607,7 @@ ALWAYS_INLINE USED void UnalignedMemoryAccess(ThreadState* thr, uptr pc,
     if (!TryTraceMemoryAccessRange(thr, pc, addr, size, typ))
       return RestartUnalignedMemoryAccess(thr, pc, addr, size, typ);
     traced = true;
-#if TSAN_SAMPLING
+#if TSAN_NEW_SAMPLING
     if (UNLIKELY(CheckRaces(thr, shadow_mem, cur, shadow, access, typ, should_sample)))
 #else
     if (UNLIKELY(CheckRaces(thr, shadow_mem, cur, shadow, access, typ)))
@@ -619,7 +619,7 @@ SECOND:
   if (LIKELY(size2 == 0))
     return;
   shadow_mem += kShadowCnt;
-#if TSAN_SAMPLING
+#if TSAN_NEW_SAMPLING
   if (LIKELY(!should_sample) && LoadShadow(shadow_mem) == Shadow::kEmpty) return;
 #endif
   Shadow cur(fast_state, 0, size2, typ);
@@ -628,7 +628,7 @@ SECOND:
     return;
   if (!traced && !TryTraceMemoryAccessRange(thr, pc, addr, size, typ))
     return RestartUnalignedMemoryAccess(thr, pc, addr, size, typ);
-#if TSAN_SAMPLING
+#if TSAN_NEW_SAMPLING
   CheckRaces(thr, shadow_mem, cur, shadow, access, typ, should_sample);
 #else
   CheckRaces(thr, shadow_mem, cur, shadow, access, typ);
@@ -733,7 +733,7 @@ void MemoryRangeFreed(ThreadState* thr, uptr pc, uptr addr, uptr size) {
       static_cast<u32>(Shadow::FreedInfo(cur.sid(), cur.epoch())), 0, 0);
   for (; size; size -= kShadowCell, shadow_mem += kShadowCnt) {
     const m128 shadow = _mm_load_si128((m128*)shadow_mem);
-#if TSAN_SAMPLING
+#if TSAN_NEW_SAMPLING
     if (UNLIKELY(CheckRaces(thr, shadow_mem, cur, shadow, access, typ, true)))
 #else
     if (UNLIKELY(CheckRaces(thr, shadow_mem, cur, shadow, access, typ)))
@@ -743,7 +743,7 @@ void MemoryRangeFreed(ThreadState* thr, uptr pc, uptr addr, uptr size) {
   }
 #else
   for (; size; size -= kShadowCell, shadow_mem += kShadowCnt) {
-#if TSAN_SAMPLING
+#if TSAN_NEW_SAMPLING
     if (UNLIKELY(CheckRaces(thr, shadow_mem, cur, 0, 0, typ, true)))
 #else
     if (UNLIKELY(CheckRaces(thr, shadow_mem, cur, 0, 0, typ)))
@@ -778,24 +778,25 @@ void MemoryRangeImitateWriteOrResetRange(ThreadState* thr, uptr pc, uptr addr,
 
 ALWAYS_INLINE
 bool MemoryAccessRangeOne(ThreadState* thr, RawShadow* shadow_mem, Shadow cur,
-#if TSAN_SAMPLING
+#if TSAN_NEW_SAMPLING
                           AccessType typ, bool should_sample) {
 #else
                           AccessType typ) {
 #endif
 #if TSAN_SAMPLING
-  // if (LIKELY(!ShouldSample(thr))) return false;
+  if ((!ShouldSample(thr))) return;
+#elif TSAN_NEW_SAMPLING
   // bool should_sample = ShouldSample(thr);
 #elif TSAN_UCLOCKS || TSAN_OL
   thr->SetSampled(true);
 #endif
-#if TSAN_SAMPLING
+#if TSAN_NEW_SAMPLING
   if (LIKELY(!should_sample) && LoadShadow(shadow_mem) == Shadow::kEmpty) return false;
 #endif
   LOAD_CURRENT_SHADOW(cur, shadow_mem);
   if (LIKELY(ContainsSameAccess(shadow_mem, cur, shadow, access, typ)))
     return false;
-#if TSAN_SAMPLING
+#if TSAN_NEW_SAMPLING
   return CheckRaces(thr, shadow_mem, cur, shadow, access, typ, should_sample);
 #else
   return CheckRaces(thr, shadow_mem, cur, shadow, access, typ);
@@ -812,16 +813,16 @@ NOINLINE void RestartMemoryAccessRange(ThreadState* thr, uptr pc, uptr addr,
 template <bool is_read>
 void MemoryAccessRangeT(ThreadState* thr, uptr pc, uptr addr, uptr size) {
 #if TSAN_SAMPLING
-  // if (LIKELY(!ShouldSample(thr))) return;
+  if ((!ShouldSample(thr))) return;
+#elif TSAN_NEW_SAMPLING
   bool should_sample = ShouldSample(thr);
 #elif TSAN_UCLOCKS || TSAN_OL
   thr->SetSampled(true);
 #endif
-  // bool should_sample = true;
   const AccessType typ =
       (is_read ? kAccessRead : kAccessWrite) | kAccessNoRodata;
   RawShadow* shadow_mem = MemToShadow(addr);
-#if TSAN_SAMPLING
+#if TSAN_NEW_SAMPLING
   if (LIKELY(!should_sample) && LoadShadow(shadow_mem) == Shadow::kEmpty) return;
 #endif
   DPrintf2("#%d: MemoryAccessRange: @%p %p size=%d is_read=%d\n", thr->tid,
@@ -870,7 +871,7 @@ void MemoryAccessRangeT(ThreadState* thr, uptr pc, uptr addr, uptr size) {
     uptr size1 = Min(size, RoundUp(addr, kShadowCell) - addr);
     size -= size1;
     Shadow cur(fast_state, addr, size1, typ);
-#if TSAN_SAMPLING
+#if TSAN_NEW_SAMPLING
     if (UNLIKELY(MemoryAccessRangeOne(thr, shadow_mem, cur, typ, should_sample)))
 #else
     if (UNLIKELY(MemoryAccessRangeOne(thr, shadow_mem, cur, typ)))
@@ -881,7 +882,7 @@ void MemoryAccessRangeT(ThreadState* thr, uptr pc, uptr addr, uptr size) {
   // Handle middle part, if any.
   Shadow cur(fast_state, 0, kShadowCell, typ);
   for (; size >= kShadowCell; size -= kShadowCell, shadow_mem += kShadowCnt) {
-#if TSAN_SAMPLING
+#if TSAN_NEW_SAMPLING
     if (UNLIKELY(MemoryAccessRangeOne(thr, shadow_mem, cur, typ, should_sample)))
 #else
     if (UNLIKELY(MemoryAccessRangeOne(thr, shadow_mem, cur, typ)))
@@ -891,7 +892,7 @@ void MemoryAccessRangeT(ThreadState* thr, uptr pc, uptr addr, uptr size) {
   // Handle ending, if any.
   if (UNLIKELY(size)) {
     Shadow cur(fast_state, 0, size, typ);
-#if TSAN_SAMPLING
+#if TSAN_NEW_SAMPLING
     if (UNLIKELY(MemoryAccessRangeOne(thr, shadow_mem, cur, typ, should_sample)))
 #else
     if (UNLIKELY(MemoryAccessRangeOne(thr, shadow_mem, cur, typ)))
