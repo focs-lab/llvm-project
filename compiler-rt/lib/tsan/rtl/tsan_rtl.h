@@ -370,11 +370,19 @@ struct Context {
   atomic_uint64_t num_acquire_updates;
   atomic_uint64_t num_acquire_traverses;
   atomic_uint64_t num_release_acquires;
+  atomic_uint64_t num_releases;
   atomic_uint64_t num_release_joins;
+  atomic_uint64_t num_atomic_store_releases;
+  atomic_uint64_t num_release_shallow_copies;
+  atomic_uint64_t num_release_deep_copies;
+  atomic_uint64_t num_release_traverses;
+  atomic_uint64_t num_release_updates;
   atomic_uint64_t num_deep_copies;
   atomic_uint64_t num_frees;
   atomic_uint64_t num_holds;
   atomic_uint64_t num_drops;
+  atomic_uint64_t num_original_incs;
+  atomic_uint64_t num_ol_incs;
   atomic_uint64_t total_acquire_ns;
   atomic_uint64_t total_release_ns;
 #endif

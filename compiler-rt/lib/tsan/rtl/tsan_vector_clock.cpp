@@ -16,9 +16,6 @@
 #include "tsan_rtl.h"
 #include <time.h>
 
-#if TSAN_UCLOCK_MEASUREMENTS
-#include "tsan_rtl.h"
-#endif
 
 namespace __tsan {
 
@@ -114,9 +111,6 @@ void VectorClock::Acquire(const SyncClock* src) {
 
 #if TSAN_OL_MEASUREMENTS
   atomic_fetch_add(&ctx->num_acquires, 1, memory_order_relaxed);
-  struct timespec ts;
-  timespec_get(&ts, TIME_UTC);
-  u64 start_time_ns = ts.tv_sec * 1000000000 + ts.tv_nsec;
 #endif
 
   if (LIKELY(src->LastReleaseWasStore())) {
@@ -195,12 +189,6 @@ void VectorClock::Acquire(const SyncClock* src) {
     }
   }
 
-#if TSAN_OL_MEASUREMENTS
-  timespec_get(&ts, TIME_UTC);
-  u64 end_time_ns = ts.tv_sec * 1000000000 + ts.tv_nsec;
-  auto dt = end_time_ns - start_time_ns;
-  atomic_fetch_add(&ctx->total_acquire_ns, dt, memory_order_relaxed);
-#endif
   // for (uptr i = 0; i < kThreadSlotCount; ++i) {
   //   Epoch src_curr_epoch = src->clock()->Get(i);
   //   Epoch my_curr_epoch = clock_->Get(i);
@@ -248,9 +236,15 @@ void VectorClock::AcquireJoin(const SyncClock* src) {
 void VectorClock::Release(SyncClock** dstp) {
   // Printf("#%u Release\n", sid_);
   SyncClock* dst = AllocSync(dstp);
+#if TSAN_OL_MEASUREMENTS
+  atomic_fetch_add(&ctx->num_releases, 1, memory_order_relaxed);
+#endif
 
   // if there is no clock to join with then just shallow copy
   if (UNLIKELY(!dst->clock())) {
+#if TSAN_OL_MEASUREMENTS
+    atomic_fetch_add(&ctx->num_release_shallow_copies, 1, memory_order_relaxed);
+#endif
     dst->SetClock(clock_);
     dst->SetU(GetU(sid_));
 
@@ -264,11 +258,14 @@ void VectorClock::Release(SyncClock** dstp) {
   }
   else {
 #if TSAN_OL_MEASUREMENTS
-  atomic_fetch_add(&ctx->num_release_joins, 1, memory_order_relaxed);
+    atomic_fetch_add(&ctx->num_release_joins, 1, memory_order_relaxed);
 #endif
     // Dont actually need to allocate again if it's just this sync holding the shared clock
     if (UNLIKELY(!dst->clock()->IsShared())) dst->clock()->Join(clock_);
     else {
+#if TSAN_OL_MEASUREMENTS
+      atomic_fetch_add(&ctx->num_release_deep_copies, 1, memory_order_relaxed);
+#endif
       SharedClock* joined_clock = New<SharedClock>(clock_, dst->clock());
       dst->SetClock(joined_clock);
       joined_clock->DropRef();  // drop a reference held by the "new" call
@@ -287,6 +284,10 @@ void VectorClock::Release(SyncClock** dstp) {
 
 void VectorClock::ReleaseStore(SyncClock** dstp) {
   // Printf("#%u Release\n", sid_);
+#if TSAN_OL_MEASUREMENTS
+  atomic_fetch_add(&ctx->num_releases, 1, memory_order_relaxed);
+  atomic_fetch_add(&ctx->num_release_shallow_copies, 1, memory_order_relaxed);
+#endif
   SyncClock* dst = AllocSync(dstp);
 
   dst->SetClock(clock_);
@@ -306,13 +307,13 @@ ALWAYS_INLINE void SyncClock::CopyClock(SharedClock* clock, Sid sid, Epoch u) {
   if (clock_ && clock_->IsShared()) {
     clock_->DropRef();
 #if TSAN_OL_MEASUREMENTS
-    atomic_fetch_add(&ctx->num_acquire_deep_copies, 1, memory_order_relaxed);
+    atomic_fetch_add(&ctx->num_release_deep_copies, 1, memory_order_relaxed);
 #endif
     clock_ = New<SharedClock>(clock);
   }
   else if (!clock_) {
 #if TSAN_OL_MEASUREMENTS
-    atomic_fetch_add(&ctx->num_acquire_deep_copies, 1, memory_order_relaxed);
+    atomic_fetch_add(&ctx->num_release_deep_copies, 1, memory_order_relaxed);
 #endif
     clock_ = New<SharedClock>(clock);
   }
@@ -321,26 +322,32 @@ ALWAYS_INLINE void SyncClock::CopyClock(SharedClock* clock, Sid sid, Epoch u) {
     u16 du = static_cast<u16>(u) - static_cast<u16>(u_);
     Sid curr = clock->head();
     for (u8 i = 0; i < du; ++i) {
+#if TSAN_OL_MEASUREMENTS
+      atomic_fetch_add(&ctx->num_release_traverses, 1, memory_order_relaxed);
+#endif
       Epoch curr_epoch = clock->Get(curr);
       cs[i] = curr_epoch;
       curr = clock->Next(curr);
     }
     for (s8 i = du-1; i >= 0; --i) {
 #if TSAN_OL_MEASUREMENTS
-      atomic_fetch_add(&ctx->num_acquire_updates, 1, memory_order_relaxed);
+      atomic_fetch_add(&ctx->num_release_updates, 1, memory_order_relaxed);
 #endif
       clock_->Set(curr, cs[i]);
     }
   }
   else {
 #if TSAN_OL_MEASUREMENTS
-    atomic_fetch_add(&ctx->num_acquire_deep_copies, 1, memory_order_relaxed);
+    atomic_fetch_add(&ctx->num_release_deep_copies, 1, memory_order_relaxed);
 #endif
     *clock_ = *clock;
   }
 }
 
 void VectorClock::ReleaseStoreAtomic(SyncClock** dstp) {
+#if TSAN_OL_MEASUREMENTS
+      atomic_fetch_add(&ctx->num_atomic_store_releases, 1, memory_order_relaxed);
+#endif
   SyncClock* dst = AllocSync(dstp);
 
   Epoch u = GetU(sid_);

@@ -316,9 +316,6 @@ static TidSlot* FindSlotAndLock(ThreadState* thr)
 void SlotAttachAndLock(ThreadState* thr) {
   TidSlot* slot = FindSlotAndLock(thr);
   DPrintf("#%d: SlotAttach: slot=%u\n", thr->tid, static_cast<int>(slot->sid));
-#if TSAN_MEASUREMENTS
-  thr->max_slot_id = max(thr->max_slot_id, static_cast<u8>(slot->sid));
-#endif
   CHECK(!slot->thr);
   CHECK(!thr->slot);
   slot->thr = thr;
@@ -485,10 +482,18 @@ Context::Context()
   atomic_store_relaxed(&num_inc_deep_copies, 0);
   atomic_store_relaxed(&num_release_acquires, 0);
   atomic_store_relaxed(&num_release_joins, 0);
+  atomic_store_relaxed(&num_releases, 0);
+  atomic_store_relaxed(&num_atomic_store_releases, 0);
+  atomic_store_relaxed(&num_release_shallow_copies, 0);
+  atomic_store_relaxed(&num_release_deep_copies, 0);
+  atomic_store_relaxed(&num_release_traverses, 0);
+  atomic_store_relaxed(&num_release_updates, 0);
   atomic_store_relaxed(&num_deep_copies, 0);
   atomic_store_relaxed(&num_frees, 0);
   atomic_store_relaxed(&num_holds, 0);
   atomic_store_relaxed(&num_drops, 0);
+  atomic_store_relaxed(&num_original_incs, 0);
+  atomic_store_relaxed(&num_ol_incs, 0);
   atomic_store_relaxed(&total_acquire_ns, 0);
   atomic_store_relaxed(&total_release_ns, 0);
 #endif
@@ -898,9 +903,6 @@ int Finalize(ThreadState *thr) {
   atomic_fetch_add(&ctx->num_atomic_stores, thr->num_atomic_stores, memory_order_relaxed);
   atomic_fetch_add(&ctx->num_original_accesses, thr->num_original_accesses, memory_order_relaxed);
   atomic_fetch_add(&ctx->num_sampled_accesses, thr->num_sampled_accesses, memory_order_relaxed);
-
-  u8 max_slot_id = atomic_load_relaxed(&ctx->max_slot_id);
-  while (!atomic_compare_exchange_strong(&ctx->max_slot_id, &max_slot_id, max(max_slot_id, thr->max_slot_id), memory_order_relaxed));
 #endif
 
   ThreadFinalize(thr);
@@ -916,40 +918,47 @@ int Finalize(ThreadState *thr) {
   }
 
 #if TSAN_MEASUREMENTS
-  Printf("Num locks: %u\n", atomic_load_relaxed(&ctx->num_locks));
-  Printf("Num read locks: %u\n", atomic_load_relaxed(&ctx->num_read_locks));
-  Printf("Num accesses: %llu\n", atomic_load_relaxed(&ctx->num_accesses));
-  Printf("Num atomic loads: %llu\n", atomic_load_relaxed(&ctx->num_atomic_loads));
-  Printf("Num atomic stores: %llu\n", atomic_load_relaxed(&ctx->num_atomic_stores));
-  Printf("Num original accesses: %llu\n", atomic_load_relaxed(&ctx->num_original_accesses));
-  Printf("Num sampled accesses: %llu\n", atomic_load_relaxed(&ctx->num_sampled_accesses));
-  Printf("Max slot id: %u\n", atomic_load_relaxed(&ctx->max_slot_id));
+  Printf("[BASE] Num locks: %u\n", atomic_load_relaxed(&ctx->num_locks));
+  Printf("[BASE] Num read locks: %u\n", atomic_load_relaxed(&ctx->num_read_locks));
+  Printf("[BASE] Num accesses: %llu\n", atomic_load_relaxed(&ctx->num_accesses));
+  Printf("[BASE] Num atomic loads: %llu\n", atomic_load_relaxed(&ctx->num_atomic_loads));
+  Printf("[BASE] Num atomic stores: %llu\n", atomic_load_relaxed(&ctx->num_atomic_stores));
+  Printf("[BASE] Num original accesses: %llu\n", atomic_load_relaxed(&ctx->num_original_accesses));
+  Printf("[BASE] Num sampled accesses: %llu\n", atomic_load_relaxed(&ctx->num_sampled_accesses));
 #endif
 
 #if TSAN_UCLOCK_MEASUREMENTS
-  Printf("Num original acquires: %llu\n", atomic_load_relaxed(&ctx->num_original_acquires));
-  Printf("Num uclock acquires: %llu\n", atomic_load_relaxed(&ctx->num_uclock_acquires));
-  Printf("Num original releases: %llu\n", atomic_load_relaxed(&ctx->num_original_releases));
-  Printf("Num uclock releases: %llu\n", atomic_load_relaxed(&ctx->num_uclock_releases));
-  Printf("Num original incs: %llu\n", atomic_load_relaxed(&ctx->num_original_incs));
-  Printf("Num uclock incs: %llu\n", atomic_load_relaxed(&ctx->num_uclock_incs));
+  Printf("[UCLOCKS] Num original acquires: %llu\n", atomic_load_relaxed(&ctx->num_original_acquires));
+  Printf("[UCLOCKS] Num uclock acquires: %llu\n", atomic_load_relaxed(&ctx->num_uclock_acquires));
+  Printf("[UCLOCKS] Num original releases: %llu\n", atomic_load_relaxed(&ctx->num_original_releases));
+  Printf("[UCLOCKS] Num uclock releases: %llu\n", atomic_load_relaxed(&ctx->num_uclock_releases));
+  Printf("[UCLOCKS] Num original incs: %llu\n", atomic_load_relaxed(&ctx->num_original_incs));
+  Printf("[UCLOCKS] Num uclock incs: %llu\n", atomic_load_relaxed(&ctx->num_uclock_incs));
 #endif
 
 #if TSAN_OL_MEASUREMENTS
-  Printf("Num acquires: %llu\n", atomic_load_relaxed(&ctx->num_acquires));
-  Printf("Num acquire deep copies: %llu\n", atomic_load_relaxed(&ctx->num_acquire_deep_copies));
-  Printf("Num acquire updates: %llu\n", atomic_load_relaxed(&ctx->num_acquire_updates));
-  Printf("Num acquire traverses: %llu\n", atomic_load_relaxed(&ctx->num_acquire_traverses));
-  Printf("Num incs: %llu\n", atomic_load_relaxed(&ctx->num_incs));
-  Printf("Num inc deep copies: %llu\n", atomic_load_relaxed(&ctx->num_inc_deep_copies));
-  Printf("Num relacqs: %llu\n", atomic_load_relaxed(&ctx->num_release_acquires));
-  Printf("Num release joins: %llu\n", atomic_load_relaxed(&ctx->num_release_joins));
-  Printf("Num deep copies: %llu\n", atomic_load_relaxed(&ctx->num_deep_copies));
-  Printf("Num frees: %llu\n", atomic_load_relaxed(&ctx->num_frees));
-  Printf("Num holds: %llu\n", atomic_load_relaxed(&ctx->num_holds));
-  Printf("Num drops: %llu\n", atomic_load_relaxed(&ctx->num_drops));
-  Printf("Total acquire ns: %llu\n", atomic_load_relaxed(&ctx->total_acquire_ns));
-  Printf("Total release ns: %llu\n", atomic_load_relaxed(&ctx->total_release_ns));
+  Printf("[OL] Num acquires: %llu\n", atomic_load_relaxed(&ctx->num_acquires));
+  Printf("[OL] Num acquire deep copies: %llu\n", atomic_load_relaxed(&ctx->num_acquire_deep_copies));
+  Printf("[OL] Num acquire updates: %llu\n", atomic_load_relaxed(&ctx->num_acquire_updates));
+  Printf("[OL] Num acquire traverses: %llu\n", atomic_load_relaxed(&ctx->num_acquire_traverses));
+  Printf("[OL] Num incs: %llu\n", atomic_load_relaxed(&ctx->num_incs));
+  Printf("[OL] Num inc deep copies: %llu\n", atomic_load_relaxed(&ctx->num_inc_deep_copies));
+
+  Printf("[OL] Num relacqs: %llu\n", atomic_load_relaxed(&ctx->num_release_acquires));
+  Printf("[OL] Num releases: %llu\n", atomic_load_relaxed(&ctx->num_releases));
+  Printf("[OL] Num release joins: %llu\n", atomic_load_relaxed(&ctx->num_release_joins));
+  Printf("[OL] Num atomic store releases: %llu\n", atomic_load_relaxed(&ctx->num_atomic_store_releases));
+  Printf("[OL] Num release shallow copies: %llu\n", atomic_load_relaxed(&ctx->num_release_shallow_copies));
+  Printf("[OL] Num release deep copies: %llu\n", atomic_load_relaxed(&ctx->num_release_deep_copies));
+  Printf("[OL] Num release traverses: %llu\n", atomic_load_relaxed(&ctx->num_release_traverses));
+  Printf("[OL] Num release updates: %llu\n", atomic_load_relaxed(&ctx->num_release_updates));
+
+  Printf("[OL] Num deep copies: %llu\n", atomic_load_relaxed(&ctx->num_deep_copies));
+  Printf("[OL] Num frees: %llu\n", atomic_load_relaxed(&ctx->num_frees));
+  Printf("[OL] Num holds: %llu\n", atomic_load_relaxed(&ctx->num_holds));
+  Printf("[OL] Num drops: %llu\n", atomic_load_relaxed(&ctx->num_drops));
+  Printf("[OL] Num original incs: %llu\n", atomic_load_relaxed(&ctx->num_original_incs));
+  Printf("[OL] Num OL incs: %llu\n", atomic_load_relaxed(&ctx->num_ol_incs));
 #endif
 
   if (common_flags()->print_suppressions)

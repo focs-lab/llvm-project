@@ -132,7 +132,7 @@ Tid ThreadCreate(ThreadState *thr, uptr pc, uptr uid, bool detached) {
       thr->clock.ReleaseStore(&arg.sync);
 #endif
       arg.sync_epoch = ctx->global_epoch;
-#if TSAN_UCLOCK_MEASUREMENTS
+#if TSAN_UCLOCK_MEASUREMENTS || TSAN_OL_MEASUREMENTS
   atomic_fetch_add(&ctx->num_original_incs, 1, memory_order_relaxed);
 #endif
 #if (TSAN_UCLOCKS || TSAN_OL) && TSAN_SAMPLING
@@ -257,7 +257,7 @@ void ThreadFinish(ThreadState *thr) {
     if (!thr->tctx->detached) {
       thr->clock.ReleaseStore(&thr->tctx->sync);
       thr->tctx->sync_epoch = ctx->global_epoch;
-#if TSAN_UCLOCK_MEASUREMENTS
+#if TSAN_UCLOCK_MEASUREMENTS || TSAN_OL_MEASUREMENTS
   atomic_fetch_add(&ctx->num_original_incs, 1, memory_order_relaxed);
 #endif
 #if (TSAN_UCLOCKS || TSAN_OL) && TSAN_SAMPLING
@@ -287,9 +287,6 @@ void ThreadFinish(ThreadState *thr) {
   atomic_fetch_add(&ctx->num_atomic_stores, thr->num_atomic_stores, memory_order_relaxed);
   atomic_fetch_add(&ctx->num_original_accesses, thr->num_original_accesses, memory_order_relaxed);
   atomic_fetch_add(&ctx->num_sampled_accesses, thr->num_sampled_accesses, memory_order_relaxed);
-
-  u8 max_slot_id = atomic_load_relaxed(&ctx->max_slot_id);
-  while (!atomic_compare_exchange_strong(&ctx->max_slot_id, &max_slot_id, max(max_slot_id, thr->max_slot_id), memory_order_relaxed));
 #endif
 
   thr->~ThreadState();

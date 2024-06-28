@@ -25,12 +25,11 @@ void SharedClock::HoldRef() {
 void SharedClock::DropRef() {
   DCHECK_GT(atomic_load_relaxed(&ref_cnt), 0);
   atomic_fetch_add(&ctx->num_drops, 1, memory_order_relaxed);
-  if (atomic_load_relaxed(&ref_cnt) == 1) {
+  if (atomic_fetch_sub(&ref_cnt, 1, memory_order_relaxed) == 1) {
     atomic_fetch_add(&ctx->num_frees, 1, memory_order_relaxed);
     FreeImpl(this);
     return;
   }
-  atomic_fetch_sub(&ref_cnt, 1, memory_order_relaxed);
 }
 #endif
 

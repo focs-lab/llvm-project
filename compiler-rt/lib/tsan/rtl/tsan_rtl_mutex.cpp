@@ -254,14 +254,14 @@ int MutexUnlock(ThreadState *thr, uptr pc, uptr addr, u32 flagz) {
         ctx->dd->MutexBeforeUnlock(&cb, &s->dd, true);
       }
     }
+#if TSAN_UCLOCK_MEASUREMENTS || TSAN_OL_MEASUREMENTS
+  if (released)
+    atomic_fetch_add(&ctx->num_original_incs, 1, memory_order_relaxed);
+#endif
 #if (TSAN_UCLOCKS || TSAN_OL) && TSAN_SAMPLING
   if (UNLIKELY(thr->sampled))
 #endif
     if (released) {
-#if TSAN_UCLOCK_MEASUREMENTS
-  // thr->num_original_incs++;
-  atomic_fetch_add(&ctx->num_original_incs, 1, memory_order_relaxed);
-#endif
       IncrementEpoch(thr);
     }
   }
@@ -362,14 +362,14 @@ void MutexReadUnlock(ThreadState *thr, uptr pc, uptr addr) {
         ctx->dd->MutexBeforeUnlock(&cb, &s->dd, false);
       }
     }
+#if TSAN_UCLOCK_MEASUREMENTS || TSAN_OL_MEASUREMENTS
+  if (released)
+    atomic_fetch_add(&ctx->num_original_incs, 1, memory_order_relaxed);
+#endif
 #if (TSAN_UCLOCKS || TSAN_OL) && TSAN_SAMPLING
   if (UNLIKELY(thr->sampled))
 #endif
     if (released) {
-#if TSAN_UCLOCK_MEASUREMENTS
-  // thr->num_original_incs++;
-  atomic_fetch_add(&ctx->num_original_incs, 1, memory_order_relaxed);
-#endif
       IncrementEpoch(thr);
     }
   }
@@ -424,14 +424,15 @@ void MutexReadOrWriteUnlock(ThreadState *thr, uptr pc, uptr addr) {
         ctx->dd->MutexBeforeUnlock(&cb, &s->dd, write);
       }
     }
+#if TSAN_UCLOCK_MEASUREMENTS || TSAN_OL_MEASUREMENTS
+  // thr->num_original_incs++;
+  if (released)
+    atomic_fetch_add(&ctx->num_original_incs, 1, memory_order_relaxed);
+#endif
 #if (TSAN_UCLOCKS || TSAN_OL) && TSAN_SAMPLING
   if (UNLIKELY(thr->sampled))
 #endif
     if (released) {
-#if TSAN_UCLOCK_MEASUREMENTS
-  // thr->num_original_incs++;
-  atomic_fetch_add(&ctx->num_original_incs, 1, memory_order_relaxed);
-#endif
       IncrementEpoch(thr);
     }
   }
@@ -498,7 +499,7 @@ void Release(ThreadState *thr, uptr pc, uptr addr) {
     Lock lock(&s->mtx);
     thr->clock.Release(&s->clock);
   }
-#if TSAN_UCLOCK_MEASUREMENTS
+#if TSAN_UCLOCK_MEASUREMENTS || TSAN_OL_MEASUREMENTS
   // thr->num_original_incs++;
   atomic_fetch_add(&ctx->num_original_incs, 1, memory_order_relaxed);
 #endif
@@ -518,7 +519,7 @@ void ReleaseStore(ThreadState *thr, uptr pc, uptr addr) {
     Lock lock(&s->mtx);
     thr->clock.ReleaseStore(&s->clock);
   }
-#if TSAN_UCLOCK_MEASUREMENTS
+#if TSAN_UCLOCK_MEASUREMENTS || TSAN_OL_MEASUREMENTS
   // thr->num_original_incs++;
   atomic_fetch_add(&ctx->num_original_incs, 1, memory_order_relaxed);
 #endif
@@ -538,7 +539,7 @@ void ReleaseStoreAcquire(ThreadState *thr, uptr pc, uptr addr) {
     Lock lock(&s->mtx);
     thr->clock.ReleaseStoreAcquire(&s->clock);
   }
-#if TSAN_UCLOCK_MEASUREMENTS
+#if TSAN_UCLOCK_MEASUREMENTS || TSAN_OL_MEASUREMENTS
   // thr->num_original_incs++;
   atomic_fetch_add(&ctx->num_original_incs, 1, memory_order_relaxed);
 #endif
@@ -550,8 +551,10 @@ void ReleaseStoreAcquire(ThreadState *thr, uptr pc, uptr addr) {
 
 void IncrementEpoch(ThreadState *thr) {
 #if TSAN_UCLOCK_MEASUREMENTS
-  // thr->num_uclock_incs++;
   atomic_fetch_add(&ctx->num_uclock_incs, 1, memory_order_relaxed);
+#endif
+#if TSAN_OL_MEASUREMENTS
+  atomic_fetch_add(&ctx->num_ol_incs, 1, memory_order_relaxed);
 #endif
   DCHECK(!thr->ignore_sync);
   DCHECK(thr->slot_locked);
