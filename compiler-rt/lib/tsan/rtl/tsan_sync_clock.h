@@ -48,7 +48,7 @@ class SyncClock {
 
   SharedClock* clock() const;
   void SetClock(SharedClock* clock);
-  void CopyClock(SharedClock* clock);
+  void CopyClock(SharedClock* clock, Sid sid, Epoch u);
 
   SyncClock& operator=(const SyncClock& other);
 
