@@ -176,6 +176,10 @@ void ThreadStart(ThreadState *thr, Tid tid, tid_t os_id,
 #endif
     SlotUnlock(thr);
   }
+#if TSAN_OL
+  if (LIKELY(thr->tctx->sync && thr->tctx->sync->clock()))
+    thr->tctx->sync->clock()->DropRef();
+#endif
   Free(thr->tctx->sync);
 
   uptr stk_addr = 0;
@@ -349,6 +353,9 @@ void ThreadJoin(ThreadState *thr, uptr pc, Tid tid) {
       thr->clock.Acquire(arg.sync);
 #endif
   }
+#if TSAN_OL
+  if (LIKELY(arg.sync && arg.sync->clock())) arg.sync->clock()->DropRef();
+#endif
   Free(arg.sync);
 }
 
@@ -367,7 +374,13 @@ void ThreadDetach(ThreadState *thr, uptr pc, Tid tid) {
   ctx->thread_registry.DetachThread(tid, thr);
 }
 
-void ThreadContext::OnDetached(void *arg) { Free(sync); }
+void ThreadContext::OnDetached(void *arg) {
+#if TSAN_OL
+  if (LIKELY(sync && sync->clock()))
+    sync->clock()->DropRef();
+#endif
+  Free(sync);
+}
 
 void ThreadNotJoined(ThreadState *thr, uptr pc, Tid tid, uptr uid) {
   CHECK_GT(tid, 0);

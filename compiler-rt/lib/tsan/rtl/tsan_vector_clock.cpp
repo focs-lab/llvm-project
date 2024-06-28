@@ -78,6 +78,11 @@ __attribute_noinline__ void VectorClock::BBREAK() const {
   Printf("BREAK!\n");
 }
 
+VectorClock::~VectorClock() {
+  DCHECK(clock_);
+  clock_->DropRef();
+}
+
 static SyncClock* AllocSync(SyncClock** dstp) {
   if (UNLIKELY(!*dstp))
     *dstp = New<SyncClock>();

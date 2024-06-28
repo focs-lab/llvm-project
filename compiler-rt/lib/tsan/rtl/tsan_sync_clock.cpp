@@ -24,6 +24,6 @@ SyncClock::SyncClock() {
 }
 
 SyncClock::~SyncClock() {
-  clock_->DropRef();
+  if (LIKELY(clock_)) clock_->DropRef();
 }
 }

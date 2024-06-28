@@ -22,6 +22,9 @@ namespace __tsan {
 class VectorClock {
  public:
   VectorClock();
+#if TSAN_OL
+  ~VectorClock();
+#endif
 
   Epoch Get(Sid sid) const;
   void Set(Sid sid, Epoch v);

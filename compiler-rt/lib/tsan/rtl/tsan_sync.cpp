@@ -37,6 +37,10 @@ void SyncVar::Reset() {
   last_lock.Reset();
   recursion = 0;
   atomic_store_relaxed(&flags, 0);
+#if TSAN_OL
+  if (LIKELY(clock && clock->clock())) clock->clock()->DropRef();
+  if (LIKELY(read_clock && read_clock->clock())) read_clock->clock()->DropRef();
+#endif
   Free(clock);
   Free(read_clock);
 }
@@ -175,10 +179,16 @@ void MetaMap::ResetClocks() {
   internal_allocator()->InitCache(&cache);
   sync_alloc_.ForEach([&](SyncVar *s) {
     if (s->clock) {
+#if TSAN_OL
+  if (LIKELY(s->clock->clock())) s->clock->clock()->DropRef();
+#endif
       InternalFree(s->clock, &cache);
       s->clock = nullptr;
     }
     if (s->read_clock) {
+#if TSAN_OL
+  if (LIKELY(s->read_clock->clock())) s->read_clock->clock()->DropRef();
+#endif
       InternalFree(s->read_clock, &cache);
       s->read_clock = nullptr;
     }
