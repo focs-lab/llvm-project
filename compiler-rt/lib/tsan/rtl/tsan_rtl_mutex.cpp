@@ -560,6 +560,10 @@ void IncrementEpoch(ThreadState *thr) {
   DCHECK(thr->slot_locked);
 
   Epoch epoch = EpochInc(thr->fast_state.epoch());
+#if TSAN_OL_MEASUREMENTS
+  u64 max_local = atomic_load_relaxed(&ctx->max_local);
+  while (!atomic_compare_exchange_strong(&ctx->max_local, &max_local, max(max_local, static_cast<u64>(epoch)), memory_order_relaxed));
+#endif
   if (!EpochOverflow(epoch)) {
 #if TSAN_OL
     DCHECK(thr->sampled);
@@ -570,7 +574,6 @@ void IncrementEpoch(ThreadState *thr) {
 #endif
 
     // inc uclk
-    // thr->fast_state.UnionUclkOverflowed(thr->clock.IncU());
     thr->SetSampled(false);
 
 //     if ((thr->clock.IsShared())) {
@@ -588,6 +591,7 @@ void IncrementEpoch(ThreadState *thr) {
 
     Sid sid = thr->fast_state.sid();
 #if TSAN_OL
+    thr->fast_state.UnionUclkOverflowed(thr->clock.GetU(sid));
     thr->clock.SetLocal(epoch);
     // thr->clock.Set(sid, epoch);
 #else

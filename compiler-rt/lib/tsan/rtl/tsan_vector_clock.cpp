@@ -125,8 +125,15 @@ void VectorClock::Acquire(const SyncClock* src) {
 #endif
         Unshare();
       }
+#if TSAN_OL_MEASUREMENTS
+      atomic_fetch_add(&ctx->num_acquire_ll_updates, 1, memory_order_relaxed);
+#endif
       Set(last_released_thread, src->local());
       IncU();
+#if TSAN_OL_MEASUREMENTS
+  u64 max_u = atomic_load_relaxed(&ctx->max_u);
+  while (!atomic_compare_exchange_strong(&ctx->max_u, &max_u, max(max_u, static_cast<u64>(GetU(sid_))), memory_order_relaxed));
+#endif
     }
 
     Epoch u_l = src->u();
@@ -143,7 +150,7 @@ void VectorClock::Acquire(const SyncClock* src) {
     Epoch curr_epoch;
     for (s16 i = 0; i < diff; ++i) {
 #if TSAN_OL_MEASUREMENTS
-      atomic_fetch_add(&ctx->num_acquire_traverses, 1, memory_order_relaxed);
+      atomic_fetch_add(&ctx->num_acquire_ll_traverses, 1, memory_order_relaxed);
 #endif
       if (UNLIKELY(curr == last_released_thread)) {
         curr = src->clock()->Next(curr);
@@ -154,13 +161,13 @@ void VectorClock::Acquire(const SyncClock* src) {
       if (curr_epoch > clock_->Get(curr)) {
         if (UNLIKELY(IsShared())) {
 #if TSAN_OL_MEASUREMENTS
-              atomic_fetch_add(&ctx->num_acquire_deep_copies, 1, memory_order_relaxed);
+            atomic_fetch_add(&ctx->num_acquire_deep_copies, 1, memory_order_relaxed);
 #endif
             Unshare();
           // }
         }
 #if TSAN_OL_MEASUREMENTS
-          atomic_fetch_add(&ctx->num_acquire_updates, 1, memory_order_relaxed);
+        atomic_fetch_add(&ctx->num_acquire_ll_updates, 1, memory_order_relaxed);
 #endif
         Set(curr, curr_epoch);
         IncU();
@@ -171,7 +178,11 @@ void VectorClock::Acquire(const SyncClock* src) {
   }
   else {
     Epoch curr_epoch;
+    // kThreadSlotCount-1 because we ignore the kFreeSid slot
     for (s16 i = 0; i < static_cast<s16>(kThreadSlotCount)-1; ++i) {
+#if TSAN_OL_MEASUREMENTS
+      atomic_fetch_add(&ctx->num_acquire_arr_traverses, 1, memory_order_relaxed);
+#endif
       curr_epoch = src->clock()->Get(i);
       if (curr_epoch > clock_->Get(i)) {
         if (UNLIKELY(IsShared())) {
@@ -181,13 +192,18 @@ void VectorClock::Acquire(const SyncClock* src) {
           Unshare();
         }
 #if TSAN_OL_MEASUREMENTS
-    atomic_fetch_add(&ctx->num_acquire_updates, 1, memory_order_relaxed);
+        atomic_fetch_add(&ctx->num_acquire_ll_updates, 1, memory_order_relaxed);
 #endif
         Set(static_cast<Sid>(i), curr_epoch);
         IncU();
       }
     }
   }
+
+#if TSAN_OL_MEASUREMENTS
+  u64 max_u = atomic_load_relaxed(&ctx->max_u);
+  while (!atomic_compare_exchange_strong(&ctx->max_u, &max_u, max(max_u, static_cast<u64>(GetU(sid_))), memory_order_relaxed));
+#endif
 
   // for (uptr i = 0; i < kThreadSlotCount; ++i) {
   //   Epoch src_curr_epoch = src->clock()->Get(i);
@@ -212,11 +228,18 @@ void VectorClock::Acquire(const SyncClock* src) {
 }
 
 void VectorClock::AcquireFromFork(const SyncClock* src) {
+#if TSAN_OL_MEASUREMENTS
+  atomic_fetch_add(&ctx->num_acquires, 1, memory_order_relaxed);
+#endif
   DCHECK_EQ(Get(sid_), 1);
   // CHECK_EQ(GetU(sid_), 1);
   DCHECK_EQ(clock_->head(), sid_);
 
   for (uptr i = 0; i < kThreadSlotCount; ++i) {
+#if TSAN_OL_MEASUREMENTS
+    atomic_fetch_add(&ctx->num_acquire_arr_traverses, 1, memory_order_relaxed);
+    atomic_fetch_add(&ctx->num_acquire_arr_updates, 1, memory_order_relaxed);
+#endif
     if (UNLIKELY(static_cast<Sid>(i) == src->LastReleasedThread()))
       clock_->SetOnly(i, src->local());
     else if (LIKELY(static_cast<Sid>(i) != sid_)) {
@@ -271,11 +294,27 @@ void VectorClock::Release(SyncClock** dstp) {
       joined_clock->DropRef();  // drop a reference held by the "new" call
 
       // after doing deep copy, update the local epoch in the clock
-      if (dst->local() > dst->clock()->Get(dst->LastReleasedThread())) dst->clock()->SetOnly(dst->LastReleasedThread(), dst->local());
+#if TSAN_OL_MEASUREMENTS
+      atomic_fetch_add(&ctx->num_release_arr_traverses, 2, memory_order_relaxed);
+#endif
+      if (dst->local() > dst->clock()->Get(dst->LastReleasedThread())) {
+#if TSAN_OL_MEASUREMENTS
+        atomic_fetch_add(&ctx->num_release_arr_updates, 1, memory_order_relaxed);
+#endif
+        dst->clock()->SetOnly(dst->LastReleasedThread(), dst->local());
+      }
     }
 
     // remember that the thread should release its local epoch to the sync too
-    if (local_for_release() > dst->clock()->Get(sid_)) dst->clock()->SetOnly(sid_, local_for_release());
+#if TSAN_OL_MEASUREMENTS
+    atomic_fetch_add(&ctx->num_release_arr_traverses, 2, memory_order_relaxed);
+#endif
+    if (local_for_release() > dst->clock()->Get(sid_)) {
+#if TSAN_OL_MEASUREMENTS
+      atomic_fetch_add(&ctx->num_release_arr_updates, 1, memory_order_relaxed);
+#endif
+      dst->clock()->SetOnly(sid_, local_for_release());
+    }
     dst->ClearLastReleaseWasStore();
   }
 
@@ -323,7 +362,7 @@ ALWAYS_INLINE void SyncClock::CopyClock(SharedClock* clock, Sid sid, Epoch u) {
     Sid curr = clock->head();
     for (u8 i = 0; i < du; ++i) {
 #if TSAN_OL_MEASUREMENTS
-      atomic_fetch_add(&ctx->num_release_traverses, 1, memory_order_relaxed);
+      atomic_fetch_add(&ctx->num_release_ll_traverses, 1, memory_order_relaxed);
 #endif
       Epoch curr_epoch = clock->Get(curr);
       cs[i] = curr_epoch;
@@ -331,7 +370,7 @@ ALWAYS_INLINE void SyncClock::CopyClock(SharedClock* clock, Sid sid, Epoch u) {
     }
     for (s8 i = du-1; i >= 0; --i) {
 #if TSAN_OL_MEASUREMENTS
-      atomic_fetch_add(&ctx->num_release_updates, 1, memory_order_relaxed);
+      atomic_fetch_add(&ctx->num_release_ll_updates, 1, memory_order_relaxed);
 #endif
       clock_->Set(curr, cs[i]);
     }
@@ -346,7 +385,7 @@ ALWAYS_INLINE void SyncClock::CopyClock(SharedClock* clock, Sid sid, Epoch u) {
 
 void VectorClock::ReleaseStoreAtomic(SyncClock** dstp) {
 #if TSAN_OL_MEASUREMENTS
-      atomic_fetch_add(&ctx->num_atomic_store_releases, 1, memory_order_relaxed);
+  atomic_fetch_add(&ctx->num_atomic_store_releases, 1, memory_order_relaxed);
 #endif
   SyncClock* dst = AllocSync(dstp);
 

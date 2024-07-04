@@ -476,8 +476,10 @@ Context::Context()
 #if TSAN_OL_MEASUREMENTS
   atomic_store_relaxed(&num_acquires, 0);
   atomic_store_relaxed(&num_acquire_deep_copies, 0);
-  atomic_store_relaxed(&num_acquire_updates, 0);
-  atomic_store_relaxed(&num_acquire_traverses, 0);
+  atomic_store_relaxed(&num_acquire_arr_updates, 0);
+  atomic_store_relaxed(&num_acquire_arr_traverses, 0);
+  atomic_store_relaxed(&num_acquire_ll_updates, 0);
+  atomic_store_relaxed(&num_acquire_ll_traverses, 0);
   atomic_store_relaxed(&num_incs, 0);
   atomic_store_relaxed(&num_inc_deep_copies, 0);
   atomic_store_relaxed(&num_release_acquires, 0);
@@ -486,8 +488,10 @@ Context::Context()
   atomic_store_relaxed(&num_atomic_store_releases, 0);
   atomic_store_relaxed(&num_release_shallow_copies, 0);
   atomic_store_relaxed(&num_release_deep_copies, 0);
-  atomic_store_relaxed(&num_release_traverses, 0);
-  atomic_store_relaxed(&num_release_updates, 0);
+  atomic_store_relaxed(&num_release_arr_traverses, 0);
+  atomic_store_relaxed(&num_release_arr_updates, 0);
+  atomic_store_relaxed(&num_release_ll_traverses, 0);
+  atomic_store_relaxed(&num_release_ll_updates, 0);
   atomic_store_relaxed(&num_deep_copies, 0);
   atomic_store_relaxed(&num_frees, 0);
   atomic_store_relaxed(&num_holds, 0);
@@ -939,8 +943,10 @@ int Finalize(ThreadState *thr) {
 #if TSAN_OL_MEASUREMENTS
   Printf("[OL] Num acquires: %llu\n", atomic_load_relaxed(&ctx->num_acquires));
   Printf("[OL] Num acquire deep copies: %llu\n", atomic_load_relaxed(&ctx->num_acquire_deep_copies));
-  Printf("[OL] Num acquire updates: %llu\n", atomic_load_relaxed(&ctx->num_acquire_updates));
-  Printf("[OL] Num acquire traverses: %llu\n", atomic_load_relaxed(&ctx->num_acquire_traverses));
+  Printf("[OL] Num acquire arr updates: %llu\n", atomic_load_relaxed(&ctx->num_acquire_arr_updates));
+  Printf("[OL] Num acquire ll updates: %llu\n", atomic_load_relaxed(&ctx->num_acquire_ll_updates));
+  Printf("[OL] Num acquire arr traverses: %llu\n", atomic_load_relaxed(&ctx->num_acquire_arr_traverses));
+  Printf("[OL] Num acquire ll traverses: %llu\n", atomic_load_relaxed(&ctx->num_acquire_ll_traverses));
   Printf("[OL] Num incs: %llu\n", atomic_load_relaxed(&ctx->num_incs));
   Printf("[OL] Num inc deep copies: %llu\n", atomic_load_relaxed(&ctx->num_inc_deep_copies));
 
@@ -950,8 +956,10 @@ int Finalize(ThreadState *thr) {
   Printf("[OL] Num atomic store releases: %llu\n", atomic_load_relaxed(&ctx->num_atomic_store_releases));
   Printf("[OL] Num release shallow copies: %llu\n", atomic_load_relaxed(&ctx->num_release_shallow_copies));
   Printf("[OL] Num release deep copies: %llu\n", atomic_load_relaxed(&ctx->num_release_deep_copies));
-  Printf("[OL] Num release traverses: %llu\n", atomic_load_relaxed(&ctx->num_release_traverses));
-  Printf("[OL] Num release updates: %llu\n", atomic_load_relaxed(&ctx->num_release_updates));
+  Printf("[OL] Num release arr traverses: %llu\n", atomic_load_relaxed(&ctx->num_release_arr_traverses));
+  Printf("[OL] Num release ll traverses: %llu\n", atomic_load_relaxed(&ctx->num_release_ll_traverses));
+  Printf("[OL] Num release arr updates: %llu\n", atomic_load_relaxed(&ctx->num_release_arr_updates));
+  Printf("[OL] Num release ll updates: %llu\n", atomic_load_relaxed(&ctx->num_release_ll_updates));
 
   Printf("[OL] Num deep copies: %llu\n", atomic_load_relaxed(&ctx->num_deep_copies));
   Printf("[OL] Num frees: %llu\n", atomic_load_relaxed(&ctx->num_frees));
@@ -959,6 +967,9 @@ int Finalize(ThreadState *thr) {
   Printf("[OL] Num drops: %llu\n", atomic_load_relaxed(&ctx->num_drops));
   Printf("[OL] Num original incs: %llu\n", atomic_load_relaxed(&ctx->num_original_incs));
   Printf("[OL] Num OL incs: %llu\n", atomic_load_relaxed(&ctx->num_ol_incs));
+
+  Printf("[OL] Max local: %llu\n", atomic_load_relaxed(&ctx->max_local));
+  Printf("[OL] Max u: %llu\n", atomic_load_relaxed(&ctx->max_u));
 #endif
 
   if (common_flags()->print_suppressions)
