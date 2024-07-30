@@ -358,6 +358,7 @@ ALWAYS_INLINE void SyncClock::CopyClock(SharedClock* clock, Sid sid, Epoch u) {
   }
   else if (last_released_thread_ == sid && static_cast<u16>(u) - static_cast<u16>(u_) <= 16) {
     Epoch cs[16];
+    Sid sids[16];
     u16 du = static_cast<u16>(u) - static_cast<u16>(u_);
     Sid curr = clock->head();
     for (u8 i = 0; i < du; ++i) {
@@ -366,13 +367,14 @@ ALWAYS_INLINE void SyncClock::CopyClock(SharedClock* clock, Sid sid, Epoch u) {
 #endif
       Epoch curr_epoch = clock->Get(curr);
       cs[i] = curr_epoch;
+      sids[i] = curr;
       curr = clock->Next(curr);
     }
     for (s8 i = du-1; i >= 0; --i) {
 #if TSAN_OL_MEASUREMENTS
       atomic_fetch_add(&ctx->num_release_ll_updates, 1, memory_order_relaxed);
 #endif
-      clock_->Set(curr, cs[i]);
+      clock_->Set(sids[i], cs[i]);
     }
   }
   else {
