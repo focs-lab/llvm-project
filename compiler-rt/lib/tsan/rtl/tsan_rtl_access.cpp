@@ -238,6 +238,7 @@ bool CheckRaces(ThreadState* thr, RawShadow* shadow_mem, Shadow cur,
 ALWAYS_INLINE
 bool ContainsSameAccess(RawShadow* unused0, Shadow unused1, m128 shadow,
                         m128 access, AccessType typ) {
+  return false;
   // Note: we could check if there is a larger access of the same type,
   // e.g. we just allocated/memset-ed a block (so it contains 8 byte writes)
   // and now do smaller reads/writes, these can also be considered as "same
@@ -319,7 +320,7 @@ bool CheckRaces(ThreadState* thr, RawShadow* shadow_mem, Shadow cur,
   const m128 no_race =
       _mm_or_si128(_mm_or_si128(not_intersect, same_sid), both_read_or_atomic);
   const int race_mask = _mm_movemask_epi8(_mm_cmpeq_epi32(no_race, zero));
-  if (UNLIKELY(race_mask))
+  // if (UNLIKELY(race_mask))
     goto SHARED;
 
 STORE : {
@@ -374,16 +375,22 @@ SHARED:
   const m128 shadow_epochs = _mm_and_si128(shadow, mask_epoch);
   const m128 concurrent = _mm_cmplt_epi32(thread_epochs, shadow_epochs);
   const int concurrent_mask = _mm_movemask_epi8(concurrent);
-  if (LIKELY(concurrent_mask == 0))
+  // if (LIKELY(concurrent_mask == 0))
     goto STORE;
 
-  DoReportRaceV(thr, shadow_mem, cur, concurrent_mask, shadow, typ);
+  // DoReportRaceV(thr, shadow_mem, cur, concurrent_mask, shadow, typ);
   return true;
 }
 
+#if TSAN_NO_LOAD_SHADOW
+#  define LOAD_CURRENT_SHADOW(cur, shadow_mem)                         \
+    const m128 access = _mm_set1_epi32(static_cast<u32>((cur).raw())); \
+    const m128 shadow = _mm_set1_epi32(static_cast<u32>(Shadow::kEmpty))
+#else
 #  define LOAD_CURRENT_SHADOW(cur, shadow_mem)                         \
     const m128 access = _mm_set1_epi32(static_cast<u32>((cur).raw())); \
     const m128 shadow = _mm_load_si128(reinterpret_cast<m128*>(shadow_mem))
+#endif
 #endif
 
 char* DumpShadow(char* buf, RawShadow raw) {

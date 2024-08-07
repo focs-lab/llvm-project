@@ -18,6 +18,8 @@
 #include "sanitizer_common/sanitizer_mutex.h"
 #include "ubsan/ubsan_platform.h"
 
+#define TSAN_NO_LOAD_SHADOW 1
+
 #ifndef TSAN_VECTORIZE
 #  define TSAN_VECTORIZE __SSE4_2__
 #endif
