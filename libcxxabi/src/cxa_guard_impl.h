@@ -103,6 +103,14 @@ extern "C" void __tsan_release(void*);
 #  define __tsan_release(addr) ((void)0)
 #endif
 
+#if __has_feature(predictive_sanitizer)
+extern "C" void __psan_acquire(void*);
+extern "C" void __psan_release(void*);
+#else
+#  define __psan_acquire(addr) ((void)0)
+#  define __psan_release(addr) ((void)0)
+#endif
+
 namespace __cxxabiv1 {
 // Use an anonymous namespace to ensure that the tests and actual implementation
 // have unique definitions of these symbols.

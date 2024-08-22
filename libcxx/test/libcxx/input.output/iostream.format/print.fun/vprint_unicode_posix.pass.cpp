@@ -48,7 +48,7 @@ int main(int, char**) {
   std::fprintf(file, "Hello");
   assert(std::ftell(file) == 5);
 #if defined(TEST_HAS_GLIBC) &&                                                                                         \
-    !(__has_feature(address_sanitizer) || __has_feature(thread_sanitizer) || __has_feature(memory_sanitizer))
+    !(__has_feature(address_sanitizer) || __has_feature(thread_sanitizer) || __has_feature(predictive_sanitizer) || __has_feature(memory_sanitizer))
   assert(std::ranges::all_of(buffer, [](char c) { return c == '*'; }));
 #endif
 
@@ -56,7 +56,7 @@ int main(int, char**) {
   std::__print::__vprint_unicode_posix(file, " world", std::make_format_args(), false, false);
   assert(std::ftell(file) == 11);
 #if defined(TEST_HAS_GLIBC) &&                                                                                         \
-    !(__has_feature(address_sanitizer) || __has_feature(thread_sanitizer) || __has_feature(memory_sanitizer))
+    !(__has_feature(address_sanitizer) || __has_feature(thread_sanitizer) || __has_feature(predictive_sanitizer) || __has_feature(memory_sanitizer))
   assert(std::ranges::all_of(buffer, [](char c) { return c == '*'; }));
 #endif
 

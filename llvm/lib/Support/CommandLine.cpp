@@ -2764,6 +2764,9 @@ ArrayRef<StringRef> cl::getCompilerBuildConfig() {
 #if __has_feature(thread_sanitizer)
       "+tsan",
 #endif
+#if __has_feature(predictive_sanitizer)
+      "+psan",
+#endif
 #if __has_feature(undefined_behavior_sanitizer)
       "+ubsan",
 #endif

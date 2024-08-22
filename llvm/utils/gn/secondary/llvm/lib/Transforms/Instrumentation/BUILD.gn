@@ -31,6 +31,7 @@ static_library("Instrumentation") {
     "PGOInstrumentation.cpp",
     "PGOMemOPSizeOpt.cpp",
     "PoisonChecking.cpp",
+    "PredictiveSanitizer.cpp",
     "SanitizerBinaryMetadata.cpp",
     "SanitizerCoverage.cpp",
     "ThreadSanitizer.cpp",

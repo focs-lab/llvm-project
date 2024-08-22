@@ -463,6 +463,9 @@ using namespace __sanitizer;
 namespace __tsan {
 using namespace __sanitizer;
 }
+namespace __psan {
+using namespace __sanitizer;
+}
 namespace __scudo {
 using namespace __sanitizer;
 }

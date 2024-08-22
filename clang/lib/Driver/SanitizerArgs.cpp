@@ -40,7 +40,7 @@ static const SanitizerMask NotAllowedWithMinimalRuntime = SanitizerKind::Vptr;
 static const SanitizerMask NotAllowedWithExecuteOnly =
     SanitizerKind::Function | SanitizerKind::KCFI;
 static const SanitizerMask NeedsUnwindTables =
-    SanitizerKind::Address | SanitizerKind::HWAddress | SanitizerKind::Thread |
+    SanitizerKind::Address | SanitizerKind::HWAddress | SanitizerKind::Thread | SanitizerKind::Predictive |
     SanitizerKind::Memory | SanitizerKind::DataFlow;
 static const SanitizerMask SupportsCoverage =
     SanitizerKind::Address | SanitizerKind::HWAddress |
@@ -53,7 +53,7 @@ static const SanitizerMask SupportsCoverage =
     SanitizerKind::DataFlow | SanitizerKind::Fuzzer |
     SanitizerKind::FuzzerNoLink | SanitizerKind::FloatDivideByZero |
     SanitizerKind::SafeStack | SanitizerKind::ShadowCallStack |
-    SanitizerKind::Thread | SanitizerKind::ObjCCast | SanitizerKind::KCFI;
+    SanitizerKind::Thread | SanitizerKind::Predictive | SanitizerKind::ObjCCast | SanitizerKind::KCFI;
 static const SanitizerMask RecoverableByDefault =
     SanitizerKind::Undefined | SanitizerKind::Integer |
     SanitizerKind::ImplicitConversion | SanitizerKind::Nullability |
@@ -176,6 +176,7 @@ static void addDefaultIgnorelists(const Driver &D, SanitizerMask Kinds,
                      {"memtag_ignorelist.txt", SanitizerKind::MemTag},
                      {"msan_ignorelist.txt", SanitizerKind::Memory},
                      {"tsan_ignorelist.txt", SanitizerKind::Thread},
+                     {"psan_ignorelist.txt", SanitizerKind::Predictive},
                      {"dfsan_abilist.txt", SanitizerKind::DataFlow},
                      {"cfi_ignorelist.txt", SanitizerKind::CFI},
                      {"ubsan_ignorelist.txt",
@@ -277,13 +278,13 @@ static SanitizerMask parseSanitizeTrapArgs(const Driver &D,
 }
 
 bool SanitizerArgs::needsFuzzerInterceptors() const {
-  return needsFuzzer() && !needsAsanRt() && !needsTsanRt() && !needsMsanRt();
+  return needsFuzzer() && !needsAsanRt() && !needsTsanRt() && !needsPsanRt() && !needsMsanRt();
 }
 
 bool SanitizerArgs::needsUbsanRt() const {
   // All of these include ubsan.
   if (needsAsanRt() || needsMsanRt() || needsHwasanRt() || needsTsanRt() ||
-      needsDfsanRt() || needsLsanRt() || needsCfiDiagRt() ||
+      needsPsanRt() || needsDfsanRt() || needsLsanRt() || needsCfiDiagRt() ||
       (needsScudoRt() && !requiresMinimalRuntime()))
     return false;
 
@@ -519,34 +520,34 @@ SanitizerArgs::SanitizerArgs(const ToolChain &TC,
 
   std::pair<SanitizerMask, SanitizerMask> IncompatibleGroups[] = {
       std::make_pair(SanitizerKind::Address,
-                     SanitizerKind::Thread | SanitizerKind::Memory),
-      std::make_pair(SanitizerKind::Thread, SanitizerKind::Memory),
+                     SanitizerKind::Thread | SanitizerKind::Predictive | SanitizerKind::Memory),
+      std::make_pair(SanitizerKind::Thread | SanitizerKind::Predictive, SanitizerKind::Memory),
       std::make_pair(SanitizerKind::Leak,
-                     SanitizerKind::Thread | SanitizerKind::Memory),
+                     SanitizerKind::Thread | SanitizerKind::Predictive | SanitizerKind::Memory),
       std::make_pair(SanitizerKind::KernelAddress,
                      SanitizerKind::Address | SanitizerKind::Leak |
-                         SanitizerKind::Thread | SanitizerKind::Memory),
+                         SanitizerKind::Thread | SanitizerKind::Predictive | SanitizerKind::Memory),
       std::make_pair(SanitizerKind::HWAddress,
-                     SanitizerKind::Address | SanitizerKind::Thread |
+                     SanitizerKind::Address | SanitizerKind::Thread | SanitizerKind::Predictive |
                          SanitizerKind::Memory | SanitizerKind::KernelAddress),
       std::make_pair(SanitizerKind::Scudo,
                      SanitizerKind::Address | SanitizerKind::HWAddress |
-                         SanitizerKind::Leak | SanitizerKind::Thread |
+                         SanitizerKind::Leak | SanitizerKind::Thread | SanitizerKind::Predictive |
                          SanitizerKind::Memory | SanitizerKind::KernelAddress),
       std::make_pair(SanitizerKind::SafeStack,
                      (TC.getTriple().isOSFuchsia() ? SanitizerMask()
                                                    : SanitizerKind::Leak) |
                          SanitizerKind::Address | SanitizerKind::HWAddress |
-                         SanitizerKind::Thread | SanitizerKind::Memory |
+                         SanitizerKind::Thread | SanitizerKind::Predictive | SanitizerKind::Memory |
                          SanitizerKind::KernelAddress),
       std::make_pair(SanitizerKind::KernelHWAddress,
                      SanitizerKind::Address | SanitizerKind::HWAddress |
-                         SanitizerKind::Leak | SanitizerKind::Thread |
+                         SanitizerKind::Leak | SanitizerKind::Thread | SanitizerKind::Predictive |
                          SanitizerKind::Memory | SanitizerKind::KernelAddress |
                          SanitizerKind::SafeStack),
       std::make_pair(SanitizerKind::KernelMemory,
                      SanitizerKind::Address | SanitizerKind::HWAddress |
-                         SanitizerKind::Leak | SanitizerKind::Thread |
+                         SanitizerKind::Leak | SanitizerKind::Thread | SanitizerKind::Predictive |
                          SanitizerKind::Memory | SanitizerKind::KernelAddress |
                          SanitizerKind::Scudo | SanitizerKind::SafeStack),
       std::make_pair(SanitizerKind::MemTag,
@@ -735,6 +736,18 @@ SanitizerArgs::SanitizerArgs(const ToolChain &TC,
     TsanAtomics =
         Args.hasFlag(options::OPT_fsanitize_thread_atomics,
                      options::OPT_fno_sanitize_thread_atomics, TsanAtomics);
+  }
+
+  if (AllAddedKinds & SanitizerKind::Predictive) {
+    PsanMemoryAccess = Args.hasFlag(
+        options::OPT_fsanitize_predict_memory_access,
+        options::OPT_fno_sanitize_predict_memory_access, PsanMemoryAccess);
+    PsanFuncEntryExit = Args.hasFlag(
+        options::OPT_fsanitize_predict_func_entry_exit,
+        options::OPT_fno_sanitize_predict_func_entry_exit, PsanFuncEntryExit);
+    PsanAtomics =
+        Args.hasFlag(options::OPT_fsanitize_predict_atomics,
+                     options::OPT_fno_sanitize_predict_atomics, PsanAtomics);
   }
 
   if (AllAddedKinds & SanitizerKind::CFI) {
@@ -1260,6 +1273,21 @@ void SanitizerArgs::addArgs(const ToolChain &TC, const llvm::opt::ArgList &Args,
     CmdArgs.push_back("-tsan-instrument-func-entry-exit=0");
   }
   if (!TsanAtomics) {
+    CmdArgs.push_back("-mllvm");
+    CmdArgs.push_back("-tsan-instrument-atomics=0");
+  }
+
+  if (!PsanMemoryAccess) {
+    CmdArgs.push_back("-mllvm");
+    CmdArgs.push_back("-tsan-instrument-memory-accesses=0");
+    CmdArgs.push_back("-mllvm");
+    CmdArgs.push_back("-tsan-instrument-memintrinsics=0");
+  }
+  if (!PsanFuncEntryExit) {
+    CmdArgs.push_back("-mllvm");
+    CmdArgs.push_back("-tsan-instrument-func-entry-exit=0");
+  }
+  if (!PsanAtomics) {
     CmdArgs.push_back("-mllvm");
     CmdArgs.push_back("-tsan-instrument-atomics=0");
   }

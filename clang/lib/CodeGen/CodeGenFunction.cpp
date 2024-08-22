@@ -676,6 +676,10 @@ void CodeGenFunction::markAsIgnoreThreadCheckingAtRuntime(llvm::Function *Fn) {
     Fn->addFnAttr("sanitize_thread_no_checking_at_run_time");
     Fn->removeFnAttr(llvm::Attribute::SanitizeThread);
   }
+  if (SanOpts.has(SanitizerKind::Predictive)) {
+    Fn->addFnAttr("sanitize_predict_no_checking_at_run_time");
+    Fn->removeFnAttr(llvm::Attribute::SanitizePredict);
+  }
 }
 
 /// Check if the return value of this function requires sanitization.
@@ -797,6 +801,11 @@ void CodeGenFunction::StartFunction(GlobalDecl GD, QualType RetTy,
       if (no_sanitize_mask & SanitizerKind::Thread)
         Fn->addFnAttr("no_sanitize_thread");
     }
+
+    if (CGM.getCodeGenOpts().hasSanitizeBinaryMetadata()) {
+      if (no_sanitize_mask & SanitizerKind::Predictive)
+        Fn->addFnAttr("no_sanitize_thread");
+    }
   }
 
   if (ShouldSkipSanitizerInstrumentation()) {
@@ -812,6 +821,8 @@ void CodeGenFunction::StartFunction(GlobalDecl GD, QualType RetTy,
       Fn->addFnAttr(llvm::Attribute::SanitizeMemTag);
     if (SanOpts.has(SanitizerKind::Thread))
       Fn->addFnAttr(llvm::Attribute::SanitizeThread);
+    if (SanOpts.has(SanitizerKind::Predictive))
+      Fn->addFnAttr(llvm::Attribute::SanitizePredict);
     if (SanOpts.hasOneOf(SanitizerKind::Memory | SanitizerKind::KernelMemory))
       Fn->addFnAttr(llvm::Attribute::SanitizeMemory);
   }
@@ -827,6 +838,19 @@ void CodeGenFunction::StartFunction(GlobalDecl GD, QualType RetTy,
   // Ignore TSan memory acesses from within ObjC/ObjC++ dealloc, initialize,
   // .cxx_destruct, __destroy_helper_block_ and all of their calees at run time.
   if (SanOpts.has(SanitizerKind::Thread)) {
+    if (const auto *OMD = dyn_cast_or_null<ObjCMethodDecl>(D)) {
+      const IdentifierInfo *II = OMD->getSelector().getIdentifierInfoForSlot(0);
+      if (OMD->getMethodFamily() == OMF_dealloc ||
+          OMD->getMethodFamily() == OMF_initialize ||
+          (OMD->getSelector().isUnarySelector() && II->isStr(".cxx_destruct"))) {
+        markAsIgnoreThreadCheckingAtRuntime(Fn);
+      }
+    }
+  }
+
+  // Ignore PSan memory acesses from within ObjC/ObjC++ dealloc, initialize,
+  // .cxx_destruct, __destroy_helper_block_ and all of their calees at run time.
+  if (SanOpts.has(SanitizerKind::Predictive)) {
     if (const auto *OMD = dyn_cast_or_null<ObjCMethodDecl>(D)) {
       const IdentifierInfo *II = OMD->getSelector().getIdentifierInfoForSlot(0);
       if (OMD->getMethodFamily() == OMF_dealloc ||

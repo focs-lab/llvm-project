@@ -60,6 +60,9 @@ class SanitizerArgs {
   bool TsanMemoryAccess = true;
   bool TsanFuncEntryExit = true;
   bool TsanAtomics = true;
+  bool PsanMemoryAccess = true;
+  bool PsanFuncEntryExit = true;
+  bool PsanAtomics = true;
   bool MinimalRuntime = false;
   // True if cross-dso CFI support if provided by the system (i.e. Android).
   bool ImplicitCfiRuntime = false;
@@ -87,6 +90,7 @@ public:
     return needsHwasanRt() && HwasanUseAliases;
   }
   bool needsTsanRt() const { return Sanitizers.has(SanitizerKind::Thread); }
+  bool needsPsanRt() const { return Sanitizers.has(SanitizerKind::Predictive); }
   bool needsMsanRt() const { return Sanitizers.has(SanitizerKind::Memory); }
   bool needsFuzzer() const { return Sanitizers.has(SanitizerKind::Fuzzer); }
   bool needsLsanRt() const {

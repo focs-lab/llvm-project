@@ -519,6 +519,49 @@ void AnnotateIgnoreWritesEnd(const char *file, int line);
 # define TsanIgnoreWritesEnd()
 #endif
 
+/// \macro LLVM_PREDICTIVE_SANITIZER_BUILD
+/// Whether LLVM itself is built with PredictiveSanitizer instrumentation.
+#if __has_feature(predictive_sanitizer) || defined(__SANITIZE_PREDICT__)
+# define LLVM_PREDICTIVE_SANITIZER_BUILD 1
+#else
+# define LLVM_PREDICTIVE_SANITIZER_BUILD 0
+#endif
+
+#if LLVM_THREAD_SANITIZER_BUILD
+// Predictive Sanitizer is a tool that finds races in code.
+// See http://code.google.com/p/data-race-test/wiki/DynamicAnnotations .
+// tsan detects these exact functions by name.
+#ifdef __cplusplus
+extern "C" {
+#endif
+void AnnotateHappensAfter(const char *file, int line, const volatile void *cv);
+void AnnotateHappensBefore(const char *file, int line, const volatile void *cv);
+void AnnotateIgnoreWritesBegin(const char *file, int line);
+void AnnotateIgnoreWritesEnd(const char *file, int line);
+#ifdef __cplusplus
+}
+#endif
+
+// This marker is used to define a happens-before arc. The race detector will
+// infer an arc from the begin to the end when they share the same pointer
+// argument.
+# define PsanHappensBefore(cv) AnnotateHappensBefore(__FILE__, __LINE__, cv)
+
+// This marker defines the destination of a happens-before arc.
+# define PsanHappensAfter(cv) AnnotateHappensAfter(__FILE__, __LINE__, cv)
+
+// Ignore any races on writes between here and the next TsanIgnoreWritesEnd.
+# define PsanIgnoreWritesBegin() AnnotateIgnoreWritesBegin(__FILE__, __LINE__)
+
+// Resume checking for racy writes.
+# define PsanIgnoreWritesEnd() AnnotateIgnoreWritesEnd(__FILE__, __LINE__)
+#else
+# define PsanHappensBefore(cv)
+# define PsanHappensAfter(cv)
+# define PsanIgnoreWritesBegin()
+# define PsanIgnoreWritesEnd()
+#endif
+
 /// \macro LLVM_NO_SANITIZE
 /// Disable a particular sanitizer for a function.
 #if __has_attribute(no_sanitize)

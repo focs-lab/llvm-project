@@ -220,6 +220,10 @@ N: Kostya Serebryany
 E: kcc@google.com
 D: AddressSanitizer, ThreadSanitizer (LLVM parts)
 
+N: Kostya Serebryany
+E: dwslim2@gmail.com
+D: PredictiveSanitizer (LLVM parts)
+
 N: Michael Spencer
 E: bigcheesegs@gmail.com
 D: Windows parts of Support, Object, ar, nm, objdump, ranlib, size

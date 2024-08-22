@@ -553,6 +553,7 @@ SanitizerMask NetBSD::getSupportedSanitizers() const {
     Res |= SanitizerKind::KernelMemory;
     Res |= SanitizerKind::Memory;
     Res |= SanitizerKind::Thread;
+    Res |= SanitizerKind::Predictive;
   }
   return Res;
 }

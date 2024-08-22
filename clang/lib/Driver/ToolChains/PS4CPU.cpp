@@ -116,6 +116,8 @@ void toolchains::PS5CPU::addSanitizerArgs(const ArgList &Args,
     CmdArgs.push_back(arg("SceAddressSanitizer_nosubmission_stub_weak"));
   if (SanArgs.needsTsanRt())
     CmdArgs.push_back(arg("SceThreadSanitizer_nosubmission_stub_weak"));
+  if (SanArgs.needsPsanRt())
+    CmdArgs.push_back(arg("ScePredictiveSanitizer_nosubmission_stub_weak"));
 }
 
 void tools::PScpu::Linker::ConstructJob(Compilation &C, const JobAction &JA,
@@ -343,6 +345,7 @@ SanitizerMask toolchains::PS4PS5Base::getSupportedSanitizers() const {
 SanitizerMask toolchains::PS5CPU::getSupportedSanitizers() const {
   SanitizerMask Res = PS4PS5Base::getSupportedSanitizers();
   Res |= SanitizerKind::Thread;
+  Res |= SanitizerKind::Predictive;
   return Res;
 }
 

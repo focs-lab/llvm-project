@@ -398,7 +398,7 @@ CodeGenModule::CodeGenModule(ASTContext &C,
     createHLSLRuntime();
 
   // Enable TBAA unless it's suppressed. ThreadSanitizer needs TBAA even at O0.
-  if (LangOpts.Sanitize.has(SanitizerKind::Thread) ||
+  if (LangOpts.Sanitize.has(SanitizerKind::Thread) || LangOpts.Sanitize.has(SanitizerKind::Predictive) ||
       (!CodeGenOpts.RelaxedAliasing && CodeGenOpts.OptimizationLevel > 0))
     TBAA.reset(new CodeGenTBAA(Context, getTypes(), TheModule, CodeGenOpts,
                                getLangOpts(), getCXXABI().getMangleContext()));

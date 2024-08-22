@@ -4,7 +4,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-#if !__has_feature(thread_sanitizer)
+#if !(__has_feature(thread_sanitizer) || __has_feature(predictive_sanitizer))
 
 // Defined by tsan.
 extern "C" void *__interceptor_malloc(unsigned long size);

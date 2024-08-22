@@ -77,6 +77,7 @@
 #include "llvm/Transforms/Instrumentation/MemProfiler.h"
 #include "llvm/Transforms/Instrumentation/MemorySanitizer.h"
 #include "llvm/Transforms/Instrumentation/PGOInstrumentation.h"
+#include "llvm/Transforms/Instrumentation/PredictiveSanitizer.h"
 #include "llvm/Transforms/Instrumentation/SanitizerBinaryMetadata.h"
 #include "llvm/Transforms/Instrumentation/SanitizerCoverage.h"
 #include "llvm/Transforms/Instrumentation/ThreadSanitizer.h"
@@ -710,6 +711,11 @@ static void addSanitizers(const Triple &TargetTriple,
     if (LangOpts.Sanitize.has(SanitizerKind::Thread)) {
       MPM.addPass(ModuleThreadSanitizerPass());
       MPM.addPass(createModuleToFunctionPassAdaptor(ThreadSanitizerPass()));
+    }
+
+    if (LangOpts.Sanitize.has(SanitizerKind::Predictive)) {
+      MPM.addPass(ModulePredictiveSanitizerPass());
+      MPM.addPass(createModuleToFunctionPassAdaptor(PredictiveSanitizerPass()));
     }
 
     auto ASanPass = [&](SanitizerMask Mask, bool CompileKernel) {

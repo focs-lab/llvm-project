@@ -817,6 +817,8 @@ static uint64_t getAttrKindEncoding(Attribute::AttrKind Kind) {
     return bitc::ATTR_KIND_SANITIZE_HWADDRESS;
   case Attribute::SanitizeThread:
     return bitc::ATTR_KIND_SANITIZE_THREAD;
+  case Attribute::SanitizePredict:
+    return bitc::ATTR_KIND_SANITIZE_PREDICT;
   case Attribute::SanitizeMemory:
     return bitc::ATTR_KIND_SANITIZE_MEMORY;
   case Attribute::SpeculativeLoadHardening:

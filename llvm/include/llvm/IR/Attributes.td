@@ -276,6 +276,9 @@ def SanitizeAddress : EnumAttr<"sanitize_address", [FnAttr]>;
 /// ThreadSanitizer is on.
 def SanitizeThread : EnumAttr<"sanitize_thread", [FnAttr]>;
 
+/// PredictiveSanitizer is on.
+def SanitizePredict : EnumAttr<"sanitize_predict", [FnAttr]>;
+
 /// MemorySanitizer is on.
 def SanitizeMemory : EnumAttr<"sanitize_memory", [FnAttr]>;
 

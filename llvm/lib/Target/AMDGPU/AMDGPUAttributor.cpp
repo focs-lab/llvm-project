@@ -132,6 +132,7 @@ static bool funcRequiresHostcallPtr(const Function &F) {
   // Sanitizers require the hostcall buffer passed in the implicit arguments.
   return F.hasFnAttribute(Attribute::SanitizeAddress) ||
          F.hasFnAttribute(Attribute::SanitizeThread) ||
+         F.hasFnAttribute(Attribute::SanitizePredict) ||
          F.hasFnAttribute(Attribute::SanitizeMemory) ||
          F.hasFnAttribute(Attribute::SanitizeHWAddress) ||
          F.hasFnAttribute(Attribute::SanitizeMemTag);

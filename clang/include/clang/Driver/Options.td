@@ -2532,6 +2532,27 @@ def fno_sanitize_thread_atomics : Flag<["-"], "fno-sanitize-thread-atomics">,
                                   Group<f_clang_Group>,
                                   Visibility<[ClangOption, CLOption]>,
                                   HelpText<"Disable atomic operations instrumentation in ThreadSanitizer">;
+def fsanitize_predict_memory_access : Flag<["-"], "fsanitize-predict-memory-access">,
+                                     Group<f_clang_Group>,
+                                     HelpText<"Enable memory access instrumentation in PredictiveSanitizer (default)">;
+def fno_sanitize_predict_memory_access : Flag<["-"], "fno-sanitize-predict-memory-access">,
+                                        Group<f_clang_Group>,
+                                        Visibility<[ClangOption, CLOption]>,
+                                        HelpText<"Disable memory access instrumentation in PredictiveSanitizer">;
+def fsanitize_predict_func_entry_exit : Flag<["-"], "fsanitize-predict-func-entry-exit">,
+                                       Group<f_clang_Group>,
+                                       HelpText<"Enable function entry/exit instrumentation in PredictiveSanitizer (default)">;
+def fno_sanitize_predict_func_entry_exit : Flag<["-"], "fno-sanitize-predict-func-entry-exit">,
+                                          Group<f_clang_Group>,
+                                          Visibility<[ClangOption, CLOption]>,
+                                          HelpText<"Disable function entry/exit instrumentation in PredictiveSanitizer">;
+def fsanitize_predict_atomics : Flag<["-"], "fsanitize-predict-atomics">,
+                               Group<f_clang_Group>,
+                               HelpText<"Enable atomic operations instrumentation in PredictiveSanitizer (default)">;
+def fno_sanitize_predict_atomics : Flag<["-"], "fno-sanitize-predict-atomics">,
+                                  Group<f_clang_Group>,
+                                  Visibility<[ClangOption, CLOption]>,
+                                  HelpText<"Disable atomic operations instrumentation in PredictiveSanitizer">;
 def fsanitize_undefined_strip_path_components_EQ : Joined<["-"], "fsanitize-undefined-strip-path-components=">,
   Group<f_clang_Group>, MetaVarName<"<number>">,
   HelpText<"Strip (or keep only, if negative) a given number of path components "

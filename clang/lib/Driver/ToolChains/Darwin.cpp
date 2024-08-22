@@ -1491,6 +1491,8 @@ void DarwinClang::AddLinkRuntimeLibArgs(const ArgList &Args,
       sanitizer = "AddressSanitizer";
     } else if (Sanitize.needsTsanRt()) {
       sanitizer = "ThreadSanitizer";
+    } else if (Sanitize.needsPsanRt()) {
+      sanitizer = "PredictiveSanitizer";
     }
     if (sanitizer) {
       getDriver().Diag(diag::err_drv_unsupported_static_sanitizer_darwin)
@@ -1522,6 +1524,11 @@ void DarwinClang::AddLinkRuntimeLibArgs(const ArgList &Args,
       assert(Sanitize.needsSharedRt() &&
              "Static sanitizer runtimes not supported");
       AddLinkSanitizerLibArgs(Args, CmdArgs, "tsan");
+    }
+    if (Sanitize.needsPsanRt()) {
+      assert(Sanitize.needsSharedRt() &&
+             "Static sanitizer runtimes not supported");
+      AddLinkSanitizerLibArgs(Args, CmdArgs, "psan");
     }
     if (Sanitize.needsFuzzer() && !Args.hasArg(options::OPT_dynamiclib)) {
       AddLinkSanitizerLibArgs(Args, CmdArgs, "fuzzer", /*shared=*/false);
@@ -3412,6 +3419,13 @@ SanitizerMask Darwin::getSupportedSanitizers() const {
        isTargetTvOSSimulator() || isTargetWatchOSSimulator())) {
     Res |= SanitizerKind::Thread;
   }
+
+  if ((IsX86_64 || IsAArch64) &&
+      (isTargetMacOSBased() || isTargetIOSSimulator() ||
+       isTargetTvOSSimulator() || isTargetWatchOSSimulator())) {
+    Res |= SanitizerKind::Predictive;
+  }
+
   return Res;
 }
 
