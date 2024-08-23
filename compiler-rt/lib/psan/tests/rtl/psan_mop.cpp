@@ -1,4 +1,4 @@
-//===-- tsan_mop.cpp ------------------------------------------------------===//
+//===-- psan_mop.cpp ------------------------------------------------------===//
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -11,54 +11,54 @@
 // c609043dd00955bf177ff57b0bad2a87c1e61a36.
 //
 //===----------------------------------------------------------------------===//
-#include "tsan_interface.h"
-#include "tsan_test_util.h"
+#include "psan_interface.h"
+#include "psan_test_util.h"
 #include "gtest/gtest.h"
 #include <stddef.h>
 #include <stdint.h>
 
-TEST_F(ThreadSanitizer, SimpleWrite) {
+TEST_F(PredictiveSanitizer, SimpleWrite) {
   ScopedThread t;
   MemLoc l;
   t.Write1(l);
 }
 
-TEST_F(ThreadSanitizer, SimpleWriteWrite) {
+TEST_F(PredictiveSanitizer, SimpleWriteWrite) {
   ScopedThread t1, t2;
   MemLoc l1, l2;
   t1.Write1(l1);
   t2.Write1(l2);
 }
 
-TEST_F(ThreadSanitizer, WriteWriteRace) {
+TEST_F(PredictiveSanitizer, WriteWriteRace) {
   ScopedThread t1, t2;
   MemLoc l;
   t1.Write1(l);
   t2.Write1(l, true);
 }
 
-TEST_F(ThreadSanitizer, ReadWriteRace) {
+TEST_F(PredictiveSanitizer, ReadWriteRace) {
   ScopedThread t1, t2;
   MemLoc l;
   t1.Read1(l);
   t2.Write1(l, true);
 }
 
-TEST_F(ThreadSanitizer, WriteReadRace) {
+TEST_F(PredictiveSanitizer, WriteReadRace) {
   ScopedThread t1, t2;
   MemLoc l;
   t1.Write1(l);
   t2.Read1(l, true);
 }
 
-TEST_F(ThreadSanitizer, ReadReadNoRace) {
+TEST_F(PredictiveSanitizer, ReadReadNoRace) {
   ScopedThread t1, t2;
   MemLoc l;
   t1.Read1(l);
   t2.Read1(l);
 }
 
-TEST_F(ThreadSanitizer, WriteThenRead) {
+TEST_F(PredictiveSanitizer, WriteThenRead) {
   MemLoc l;
   ScopedThread t1, t2;
   t1.Write1(l);
@@ -66,7 +66,7 @@ TEST_F(ThreadSanitizer, WriteThenRead) {
   t2.Read1(l, true);
 }
 
-TEST_F(ThreadSanitizer, WriteThenLockedRead) {
+TEST_F(PredictiveSanitizer, WriteThenLockedRead) {
   UserMutex m(UserMutex::RW);
   MainThread t0;
   t0.Create(m);
@@ -85,7 +85,7 @@ TEST_F(ThreadSanitizer, WriteThenLockedRead) {
   t0.Destroy(m);
 }
 
-TEST_F(ThreadSanitizer, LockedWriteThenRead) {
+TEST_F(PredictiveSanitizer, LockedWriteThenRead) {
   UserMutex m(UserMutex::RW);
   MainThread t0;
   t0.Create(m);
@@ -105,7 +105,7 @@ TEST_F(ThreadSanitizer, LockedWriteThenRead) {
 }
 
 
-TEST_F(ThreadSanitizer, RaceWithOffset) {
+TEST_F(PredictiveSanitizer, RaceWithOffset) {
   ScopedThread t1, t2;
   {
     MemLoc l;
@@ -139,7 +139,7 @@ TEST_F(ThreadSanitizer, RaceWithOffset) {
   }
 }
 
-TEST_F(ThreadSanitizer, RaceWithOffset2) {
+TEST_F(PredictiveSanitizer, RaceWithOffset2) {
   ScopedThread t1, t2;
   {
     MemLoc l;
@@ -153,7 +153,7 @@ TEST_F(ThreadSanitizer, RaceWithOffset2) {
   }
 }
 
-TEST_F(ThreadSanitizer, NoRaceWithOffset) {
+TEST_F(PredictiveSanitizer, NoRaceWithOffset) {
   ScopedThread t1, t2;
   {
     MemLoc l;
@@ -168,14 +168,14 @@ TEST_F(ThreadSanitizer, NoRaceWithOffset) {
   }
 }
 
-TEST_F(ThreadSanitizer, RaceWithDeadThread) {
+TEST_F(PredictiveSanitizer, RaceWithDeadThread) {
   MemLoc l;
   ScopedThread t;
   ScopedThread().Write1(l);
   t.Write1(l, true);
 }
 
-TEST_F(ThreadSanitizer, BenignRaceOnVptr) {
+TEST_F(PredictiveSanitizer, BenignRaceOnVptr) {
   void *vptr_storage;
   MemLoc vptr(&vptr_storage), val;
   vptr_storage = val.loc();
@@ -184,7 +184,7 @@ TEST_F(ThreadSanitizer, BenignRaceOnVptr) {
   t2.Read8(vptr);
 }
 
-TEST_F(ThreadSanitizer, HarmfulRaceOnVptr) {
+TEST_F(PredictiveSanitizer, HarmfulRaceOnVptr) {
   void *vptr_storage;
   MemLoc vptr(&vptr_storage), val1, val2;
   vptr_storage = val1.loc();
@@ -205,7 +205,7 @@ static void bar() {
   (void)x2;
 }
 
-TEST_F(ThreadSanitizer, ReportDeadThread) {
+TEST_F(PredictiveSanitizer, ReportDeadThread) {
   MemLoc l;
   ScopedThread t1;
   {
@@ -225,7 +225,7 @@ int ClassWithStatic::Data[4];
 
 static void foobarbaz() {}
 
-TEST_F(ThreadSanitizer, ReportRace) {
+TEST_F(PredictiveSanitizer, ReportRace) {
   ScopedThread t1;
   MainThread().Access(&ClassWithStatic::Data, true, 4, false);
   t1.Call(&foobarbaz);

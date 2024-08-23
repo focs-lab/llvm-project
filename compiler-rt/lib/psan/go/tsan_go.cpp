@@ -1,4 +1,4 @@
-//===-- tsan_go.cpp -------------------------------------------------------===//
+//===-- psan_go.cpp -------------------------------------------------------===//
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -6,16 +6,16 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// ThreadSanitizer runtime for Go language.
+// PredictiveSanitizer runtime for Go language.
 //
 //===----------------------------------------------------------------------===//
 
-#include "tsan_rtl.h"
-#include "tsan_symbolize.h"
+#include "psan_rtl.h"
+#include "psan_symbolize.h"
 #include "sanitizer_common/sanitizer_common.h"
 #include <stdlib.h>
 
-namespace __tsan {
+namespace __psan {
 
 void InitializeInterceptors() {
 }
@@ -145,7 +145,7 @@ static ThreadState *AllocGoroutine() {
   return thr;
 }
 
-void __tsan_init(ThreadState **thrp, Processor **procp,
+void __psan_init(ThreadState **thrp, Processor **procp,
                  void (*cb)(uptr cmd, void *cb)) {
   go_runtime_cb = cb;
   ThreadState *thr = AllocGoroutine();
@@ -155,22 +155,22 @@ void __tsan_init(ThreadState **thrp, Processor **procp,
   inited = true;
 }
 
-void __tsan_fini() {
+void __psan_fini() {
   // FIXME: Not necessary thread 0.
   ThreadState *thr = main_thr;
   int res = Finalize(thr);
   exit(res);
 }
 
-void __tsan_map_shadow(uptr addr, uptr size) {
+void __psan_map_shadow(uptr addr, uptr size) {
   MapShadow(addr, size);
 }
 
-void __tsan_read(ThreadState *thr, void *addr, void *pc) {
+void __psan_read(ThreadState *thr, void *addr, void *pc) {
   MemoryAccess(thr, (uptr)pc, (uptr)addr, 1, kAccessRead);
 }
 
-void __tsan_read_pc(ThreadState *thr, void *addr, uptr callpc, uptr pc) {
+void __psan_read_pc(ThreadState *thr, void *addr, uptr callpc, uptr pc) {
   if (callpc != 0)
     FuncEntry(thr, callpc);
   MemoryAccess(thr, (uptr)pc, (uptr)addr, 1, kAccessRead);
@@ -178,11 +178,11 @@ void __tsan_read_pc(ThreadState *thr, void *addr, uptr callpc, uptr pc) {
     FuncExit(thr);
 }
 
-void __tsan_write(ThreadState *thr, void *addr, void *pc) {
+void __psan_write(ThreadState *thr, void *addr, void *pc) {
   MemoryAccess(thr, (uptr)pc, (uptr)addr, 1, kAccessWrite);
 }
 
-void __tsan_write_pc(ThreadState *thr, void *addr, uptr callpc, uptr pc) {
+void __psan_write_pc(ThreadState *thr, void *addr, uptr callpc, uptr pc) {
   if (callpc != 0)
     FuncEntry(thr, callpc);
   MemoryAccess(thr, (uptr)pc, (uptr)addr, 1, kAccessWrite);
@@ -190,102 +190,102 @@ void __tsan_write_pc(ThreadState *thr, void *addr, uptr callpc, uptr pc) {
     FuncExit(thr);
 }
 
-void __tsan_read_range(ThreadState *thr, void *addr, uptr size, uptr pc) {
+void __psan_read_range(ThreadState *thr, void *addr, uptr size, uptr pc) {
   MemoryAccessRange(thr, (uptr)pc, (uptr)addr, size, false);
 }
 
-void __tsan_write_range(ThreadState *thr, void *addr, uptr size, uptr pc) {
+void __psan_write_range(ThreadState *thr, void *addr, uptr size, uptr pc) {
   MemoryAccessRange(thr, (uptr)pc, (uptr)addr, size, true);
 }
 
-void __tsan_func_enter(ThreadState *thr, void *pc) {
+void __psan_func_enter(ThreadState *thr, void *pc) {
   FuncEntry(thr, (uptr)pc);
 }
 
-void __tsan_func_exit(ThreadState *thr) {
+void __psan_func_exit(ThreadState *thr) {
   FuncExit(thr);
 }
 
-void __tsan_malloc(ThreadState *thr, uptr pc, uptr p, uptr sz) {
+void __psan_malloc(ThreadState *thr, uptr pc, uptr p, uptr sz) {
   CHECK(inited);
   if (thr && pc)
     ctx->metamap.AllocBlock(thr, pc, p, sz);
   MemoryResetRange(thr, pc, (uptr)p, sz);
 }
 
-void __tsan_free(uptr p, uptr sz) {
+void __psan_free(uptr p, uptr sz) {
   ctx->metamap.FreeRange(get_cur_proc(), p, sz, false);
 }
 
-void __tsan_go_start(ThreadState *parent, ThreadState **pthr, void *pc) {
+void __psan_go_start(ThreadState *parent, ThreadState **pthr, void *pc) {
   ThreadState *thr = AllocGoroutine();
   *pthr = thr;
   Tid goid = ThreadCreate(parent, (uptr)pc, 0, true);
   ThreadStart(thr, goid, 0, ThreadType::Regular);
 }
 
-void __tsan_go_end(ThreadState *thr) {
+void __psan_go_end(ThreadState *thr) {
   ThreadFinish(thr);
   Free(thr);
 }
 
-void __tsan_proc_create(Processor **pproc) {
+void __psan_proc_create(Processor **pproc) {
   *pproc = ProcCreate();
 }
 
-void __tsan_proc_destroy(Processor *proc) {
+void __psan_proc_destroy(Processor *proc) {
   ProcDestroy(proc);
 }
 
-void __tsan_acquire(ThreadState *thr, void *addr) {
+void __psan_acquire(ThreadState *thr, void *addr) {
   Acquire(thr, 0, (uptr)addr);
 }
 
-void __tsan_release_acquire(ThreadState *thr, void *addr) {
+void __psan_release_acquire(ThreadState *thr, void *addr) {
   ReleaseStoreAcquire(thr, 0, (uptr)addr);
 }
 
-void __tsan_release(ThreadState *thr, void *addr) {
+void __psan_release(ThreadState *thr, void *addr) {
   ReleaseStore(thr, 0, (uptr)addr);
 }
 
-void __tsan_release_merge(ThreadState *thr, void *addr) {
+void __psan_release_merge(ThreadState *thr, void *addr) {
   Release(thr, 0, (uptr)addr);
 }
 
-void __tsan_finalizer_goroutine(ThreadState *thr) { AcquireGlobal(thr); }
+void __psan_finalizer_goroutine(ThreadState *thr) { AcquireGlobal(thr); }
 
-void __tsan_mutex_before_lock(ThreadState *thr, uptr addr, uptr write) {
+void __psan_mutex_before_lock(ThreadState *thr, uptr addr, uptr write) {
   if (write)
     MutexPreLock(thr, 0, addr);
   else
     MutexPreReadLock(thr, 0, addr);
 }
 
-void __tsan_mutex_after_lock(ThreadState *thr, uptr addr, uptr write) {
+void __psan_mutex_after_lock(ThreadState *thr, uptr addr, uptr write) {
   if (write)
     MutexPostLock(thr, 0, addr);
   else
     MutexPostReadLock(thr, 0, addr);
 }
 
-void __tsan_mutex_before_unlock(ThreadState *thr, uptr addr, uptr write) {
+void __psan_mutex_before_unlock(ThreadState *thr, uptr addr, uptr write) {
   if (write)
     MutexUnlock(thr, 0, addr);
   else
     MutexReadUnlock(thr, 0, addr);
 }
 
-void __tsan_go_ignore_sync_begin(ThreadState *thr) {
+void __psan_go_ignore_sync_begin(ThreadState *thr) {
   ThreadIgnoreSyncBegin(thr, 0);
 }
 
-void __tsan_go_ignore_sync_end(ThreadState *thr) { ThreadIgnoreSyncEnd(thr); }
+void __psan_go_ignore_sync_end(ThreadState *thr) { ThreadIgnoreSyncEnd(thr); }
 
-void __tsan_report_count(u64 *pn) {
+void __psan_report_count(u64 *pn) {
   Lock lock(&ctx->report_mtx);
   *pn = ctx->nreported;
 }
 
 }  // extern "C"
-}  // namespace __tsan
+}  // namespace __psan

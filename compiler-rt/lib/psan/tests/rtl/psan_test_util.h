@@ -1,4 +1,4 @@
-//===-- tsan_test_util.h ----------------------------------------*- C++ -*-===//
+//===-- psan_test_util.h ----------------------------------------*- C++ -*-===//
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -12,12 +12,12 @@
 //
 // Test utils.
 //===----------------------------------------------------------------------===//
-#ifndef TSAN_TEST_UTIL_H
-#define TSAN_TEST_UTIL_H
+#ifndef PSAN_TEST_UTIL_H
+#define PSAN_TEST_UTIL_H
 
 #include "gtest/gtest.h"
 
-class ThreadSanitizer : public ::testing::Test {
+class PredictiveSanitizer : public ::testing::Test {
  protected:
   void TearDown() override;
 };
@@ -53,7 +53,7 @@ class UserMutex {
   ~UserMutex();
 
   void Init();
-  void StaticInit();  // Emulates static initialization (tsan invisible).
+  void StaticInit();  // Emulates static initialization (psan invisible).
   void Destroy();
   void Lock();
   bool TryLock();
@@ -135,4 +135,4 @@ class MainThread : public ScopedThread {
   }
 };
 
-#endif  // #ifndef TSAN_TEST_UTIL_H
+#endif  // #ifndef PSAN_TEST_UTIL_H

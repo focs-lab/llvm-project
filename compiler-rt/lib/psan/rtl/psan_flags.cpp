@@ -115,7 +115,7 @@ void InitializeFlags(Flags *f, const char *env, const char *env_option_name) {
   if (common_flags()->help) parser.PrintFlagDescriptions();
 
   if (f->io_sync < 0 || f->io_sync > 2) {
-    Printf("ThreadSanitizer: incorrect value for io_sync"
+    Printf("PredictiveSanitizer: incorrect value for io_sync"
            " (must be [0..2])\n");
     Die();
   }

@@ -1,4 +1,4 @@
-//===-- tsan_trace_test.cpp -----------------------------------------------===//
+//===-- psan_trace_test.cpp -----------------------------------------------===//
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -11,12 +11,12 @@
 // c609043dd00955bf177ff57b0bad2a87c1e61a36.
 //
 //===----------------------------------------------------------------------===//
-#include "tsan_trace.h"
+#include "psan_trace.h"
 
 #include <pthread.h>
 
 #include "gtest/gtest.h"
-#include "tsan_rtl.h"
+#include "psan_rtl.h"
 
 #if !defined(__x86_64__)
 // These tests are currently crashing on ppc64:
@@ -29,7 +29,7 @@
 #  define TRACE_TEST(SUITE, NAME) TEST(SUITE, NAME)
 #endif
 
-namespace __tsan {
+namespace __psan {
 
 // We need to run all trace tests in a new thread,
 // so that the thread trace is empty initially.
@@ -340,4 +340,4 @@ TRACE_TEST(TraceAlloc, FinishedThreadReuse2) {
   }
 }
 
-}  // namespace __tsan
+}  // namespace __psan

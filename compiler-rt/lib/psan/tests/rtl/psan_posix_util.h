@@ -1,4 +1,4 @@
-//===-- tsan_posix_util.h ---------------------------------------*- C++ -*-===//
+//===-- psan_posix_util.h ---------------------------------------*- C++ -*-===//
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -12,8 +12,8 @@
 //
 // Test POSIX utils.
 //===----------------------------------------------------------------------===//
-#ifndef TSAN_POSIX_UTIL_H
-#define TSAN_POSIX_UTIL_H
+#ifndef PSAN_POSIX_UTIL_H
+#define PSAN_POSIX_UTIL_H
 
 #include <pthread.h>
 
@@ -75,4 +75,4 @@ extern "C" int __interceptor_pthread_cond_wait(pthread_cond_t *cond,
                                                pthread_mutex_t *mutex);
 extern "C" int __interceptor_pthread_cond_destroy(pthread_cond_t *cond);
 
-#endif  // #ifndef TSAN_POSIX_UTIL_H
+#endif  // #ifndef PSAN_POSIX_UTIL_H

@@ -1,4 +1,4 @@
-// Synthetic benchmark for __tsan_read/write{1,2,4,8}.
+// Synthetic benchmark for __psan_read/write{1,2,4,8}.
 // As compared to mini_bench_local/shared.cc this benchmark passes through
 // deduplication logic (ContainsSameAccess).
 // First argument is access size (1, 2, 4, 8). Second optional arg switches

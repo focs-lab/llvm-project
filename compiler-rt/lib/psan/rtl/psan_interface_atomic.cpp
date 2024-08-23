@@ -12,7 +12,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-// ThreadSanitizer atomic operations are based on C++11/C1x standards.
+// PredictiveSanitizer atomic operations are based on C++11/C1x standards.
 // For background see C++11 standard.  A slightly older, publicly
 // available draft of the standard (not entirely up-to-date, but close enough
 // for casual browsing) is available here:
@@ -224,7 +224,6 @@ static a128 NoPsanAtomicLoad(const volatile a128 *a, morder mo) {
 
 template <typename T>
 static T AtomicLoad(ThreadState *thr, uptr pc, const volatile T *a, morder mo) {
-  return NoPsanAtomicLoad(a, mo);
   DCHECK(IsLoadOrder(mo));
   // This fast-path is critical for performance.
   // Assume the access is atomic.
@@ -264,8 +263,6 @@ static void NoPsanAtomicStore(volatile a128 *a, a128 v, morder mo) {
 template <typename T>
 static void AtomicStore(ThreadState *thr, uptr pc, volatile T *a, T v,
                         morder mo) {
-  NoPsanAtomicStore(a, v, mo);
-  return;
   DCHECK(IsStoreOrder(mo));
   MemoryAccess(thr, pc, (uptr)a, AccessSize<T>(), kAccessWrite | kAccessAtomic);
   // This fast-path is critical for performance.
@@ -288,7 +285,6 @@ static void AtomicStore(ThreadState *thr, uptr pc, volatile T *a, T v,
 
 template <typename T, T (*F)(volatile T *v, T op)>
 static T AtomicRMW(ThreadState *thr, uptr pc, volatile T *a, T v, morder mo) {
-  return F(a, v);
   MemoryAccess(thr, pc, (uptr)a, AccessSize<T>(), kAccessWrite | kAccessAtomic);
   if (LIKELY(mo == mo_relaxed))
     return F(a, v);
@@ -412,12 +408,6 @@ static T NoPsanAtomicCAS(volatile T *a, T c, T v, morder mo, morder fmo) {
 template <typename T>
 static bool AtomicCAS(ThreadState *thr, uptr pc, volatile T *a, T *c, T v,
                       morder mo, morder fmo) {
-  T cc = *c;
-  T pr = func_cas(a, cc, v);
-  if (pr == cc)
-    return true;
-  *c = pr;
-  return false;
   // 31.7.2.18: "The failure argument shall not be memory_order_release
   // nor memory_order_acq_rel". LLVM (2021-05) fallbacks to Monotonic
   // (mo_relaxed) when those are used.

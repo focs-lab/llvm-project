@@ -1,4 +1,4 @@
-//===-- tsan_flags_test.cpp -----------------------------------------------===//
+//===-- psan_flags_test.cpp -----------------------------------------------===//
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -11,12 +11,12 @@
 // c609043dd00955bf177ff57b0bad2a87c1e61a36.
 //
 //===----------------------------------------------------------------------===//
-#include "tsan_flags.h"
-#include "tsan_rtl.h"
+#include "psan_flags.h"
+#include "psan_rtl.h"
 #include "gtest/gtest.h"
 #include <string>
 
-namespace __tsan {
+namespace __psan {
 
 TEST(Flags, Basic) {
   // At least should not crash.
@@ -126,7 +126,7 @@ void VerifyOptions2(Flags *f) {
 }
 
 static const char *test_default_options;
-extern "C" const char *__tsan_default_options() {
+extern "C" const char *__psan_default_options() {
   return test_default_options;
 }
 
@@ -164,4 +164,4 @@ TEST(Flags, ParsePriority) {
   VerifyOptions2(&f);
 }
 
-}  // namespace __tsan
+}  // namespace __psan

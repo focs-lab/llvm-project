@@ -3,7 +3,7 @@
 // Some facts:
 // a) clang -O1 takes <15ms to start N=500 threads,
 //    consuming ~4MB more RAM than N=1.
-// b) clang -O1 -ftsan takes ~26s to start N=500 threads,
+// b) clang -O1 -fpsan takes ~26s to start N=500 threads,
 //    eats 5GB more RAM than N=1 (which is somewhat expected but still a lot)
 //    but then it consumes ~4GB of extra memory when the threads shut down!
 //        (definitely not in the barrier_wait interceptor)

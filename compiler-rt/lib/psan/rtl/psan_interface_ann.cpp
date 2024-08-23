@@ -314,7 +314,7 @@ void INTERFACE_ATTRIBUTE AnnotateThreadName(
 
 // We deliberately omit the implementation of WTFAnnotateHappensBefore() and
 // WTFAnnotateHappensAfter(). Those are being used by Webkit to annotate
-// atomic operations, which should be handled by ThreadSanitizer correctly.
+// atomic operations, which should be handled by PredictiveSanitizer correctly.
 void INTERFACE_ATTRIBUTE WTFAnnotateHappensBefore(char *f, int l, uptr addr) {
 }
 
@@ -335,7 +335,7 @@ double __attribute__((weak)) INTERFACE_ATTRIBUTE ValgrindSlowdown(void) {
   return 10.0;
 }
 
-const char INTERFACE_ATTRIBUTE* ThreadSanitizerQuery(const char *query) {
+const char INTERFACE_ATTRIBUTE* PredictiveSanitizerQuery(const char *query) {
   if (internal_strcmp(query, "pure_happens_before") == 0)
     return "1";
   else

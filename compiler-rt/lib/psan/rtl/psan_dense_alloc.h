@@ -173,11 +173,11 @@ class DenseSlabAlloc {
     Lock lock(&mtx_);
     uptr fillpos = atomic_load_relaxed(&fillpos_);
     if (fillpos == kL1Size) {
-      Printf("ThreadSanitizer: %s overflow (%zu*%zu). Dying.\n", name_, kL1Size,
+      Printf("PredictiveSanitizer: %s overflow (%zu*%zu). Dying.\n", name_, kL1Size,
              kL2Size);
       Die();
     }
-    VPrintf(2, "ThreadSanitizer: growing %s: %zu out of %zu*%zu\n", name_,
+    VPrintf(2, "PredictiveSanitizer: growing %s: %zu out of %zu*%zu\n", name_,
             fillpos, kL1Size, kL2Size);
     T *batch = (T *)MmapOrDie(kL2Size * sizeof(T), name_);
     map_[fillpos] = batch;

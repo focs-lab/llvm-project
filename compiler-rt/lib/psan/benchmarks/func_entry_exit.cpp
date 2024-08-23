@@ -1,4 +1,4 @@
-// Synthetic benchmark for __tsan_func_entry/exit (spends ~75% there).
+// Synthetic benchmark for __psan_func_entry/exit (spends ~75% there).
 
 void foo(bool x);
 

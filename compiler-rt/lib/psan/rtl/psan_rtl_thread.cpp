@@ -58,9 +58,9 @@ static void CollectThreadLeaks(ThreadContextBase *tctx_base, void *arg) {
 #if !SANITIZER_GO && !SANITIZER_APPLE
 static void ReportIgnoresEnabled(ThreadContext *tctx, IgnoreSet *set) {
   if (tctx->tid == kMainTid) {
-    Printf("ThreadSanitizer: main thread finished with ignores enabled\n");
+    Printf("PredictiveSanitizer: main thread finished with ignores enabled\n");
   } else {
-    Printf("ThreadSanitizer: thread T%d %s finished with ignores enabled,"
+    Printf("PredictiveSanitizer: thread T%d %s finished with ignores enabled,"
       " created at:\n", tctx->tid, tctx->name);
     PrintStack(SymbolizeStackId(tctx->creation_stack_id));
   }

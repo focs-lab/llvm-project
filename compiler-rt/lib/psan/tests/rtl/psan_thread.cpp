@@ -1,4 +1,4 @@
-//===-- tsan_thread.cpp ---------------------------------------------------===//
+//===-- psan_thread.cpp ---------------------------------------------------===//
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -11,10 +11,10 @@
 // c609043dd00955bf177ff57b0bad2a87c1e61a36.
 //
 //===----------------------------------------------------------------------===//
-#include "tsan_test_util.h"
+#include "psan_test_util.h"
 #include "gtest/gtest.h"
 
-TEST_F(ThreadSanitizer, ThreadSync) {
+TEST_F(PredictiveSanitizer, ThreadSync) {
   MainThread t0;
   MemLoc l;
   t0.Write1(l);
@@ -25,13 +25,13 @@ TEST_F(ThreadSanitizer, ThreadSync) {
   t0.Write1(l);
 }
 
-TEST_F(ThreadSanitizer, ThreadDetach1) {
+TEST_F(PredictiveSanitizer, ThreadDetach1) {
   ScopedThread t1(true);
   MemLoc l;
   t1.Write1(l);
 }
 
-TEST_F(ThreadSanitizer, ThreadDetach2) {
+TEST_F(PredictiveSanitizer, ThreadDetach2) {
   ScopedThread t1;
   MemLoc l;
   t1.Write1(l);
@@ -45,7 +45,7 @@ static void *thread_alot_func(void *arg) {
   return 0;
 }
 
-TEST(DISABLED_SLOW_ThreadSanitizer, ThreadALot) {
+TEST(DISABLED_SLOW_PredictiveSanitizer, ThreadALot) {
   const int kThreads = 70000;
   const int kAlive = 1000;
   pthread_t threads[kAlive] = {};

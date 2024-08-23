@@ -1,4 +1,4 @@
-// Mini-benchmark for tsan: shared memory reads.
+// Mini-benchmark for psan: shared memory reads.
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>

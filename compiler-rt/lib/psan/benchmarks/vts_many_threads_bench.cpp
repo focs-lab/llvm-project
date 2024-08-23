@@ -1,4 +1,4 @@
-// Mini-benchmark for tsan VTS worst case performance
+// Mini-benchmark for psan VTS worst case performance
 // Idea:
 // 1) Spawn M + N threads (M >> N)
 //    We'll call the 'M' threads as 'garbage threads'.
@@ -12,16 +12,16 @@
 // Some numbers:
 // a) clang++ native O1 with n_iterations=200kk takes
 //      5s regardless of M
-//    clang++ tsanv2 O1 with n_iterations=20kk takes
+//    clang++ psanv2 O1 with n_iterations=20kk takes
 //      23.5s with M=200
 //      11.5s with M=1
-//    i.e. tsanv2 is ~23x to ~47x slower than native, depends on M.
+//    i.e. psanv2 is ~23x to ~47x slower than native, depends on M.
 // b) g++ native O1 with n_iterations=200kk takes
 //      5.5s regardless of M
-//    g++ tsanv1 O1 with n_iterations=2kk takes
+//    g++ psanv1 O1 with n_iterations=2kk takes
 //      39.5s with M=200
 //      20.5s with M=1
-//    i.e. tsanv1 is ~370x to ~720x slower than native, depends on M.
+//    i.e. psanv1 is ~370x to ~720x slower than native, depends on M.
 
 #include <assert.h>
 #include <pthread.h>

@@ -167,17 +167,13 @@ void __psan_vptr_read(void **vptr_p) {
                kAccessRead | kAccessVptr);
 }
 
-void __psan_func_entry(void *pc) { FuncEntry(cur_thread(), STRIP_PAC_PC(pc));
-}
+void __psan_func_entry(void *pc) { FuncEntry(cur_thread(), STRIP_PAC_PC(pc)); }
 
-void __psan_func_exit() { FuncExit(cur_thread());
-}
+void __psan_func_exit() { FuncExit(cur_thread()); }
 
-void __psan_ignore_thread_begin() { ThreadIgnoreBegin(cur_thread(), CALLERPC);
-}
+void __psan_ignore_thread_begin() { ThreadIgnoreBegin(cur_thread(), CALLERPC); }
 
-void __psan_ignore_thread_end() { ThreadIgnoreEnd(cur_thread());
-}
+void __psan_ignore_thread_end() { ThreadIgnoreEnd(cur_thread()); }
 
 void __psan_read_range(void *addr, uptr size) {
   MemoryAccessRange(cur_thread(), CALLERPC, (uptr)addr, size, false);

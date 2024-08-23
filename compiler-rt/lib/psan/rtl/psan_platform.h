@@ -1013,7 +1013,7 @@ struct RestoreAddrImpl {
           return addr | (p & ~(ind_lsb - 1));
       }
     }
-    Printf("ThreadSanitizer: failed to restore address 0x%zx\n", addr);
+    Printf("PredictiveSanitizer: failed to restore address 0x%zx\n", addr);
     Die();
   }
 };

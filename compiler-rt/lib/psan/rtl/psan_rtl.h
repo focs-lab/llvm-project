@@ -51,7 +51,7 @@
 #include "psan_vector_clock.h"
 
 #if SANITIZER_WORDSIZE != 64
-# error "ThreadSanitizer is supported only on 64-bit platforms"
+# error "PredictiveSanitizer is supported only on 64-bit platforms"
 #endif
 
 namespace __psan {

@@ -1,4 +1,4 @@
-//===-- tsan_mutex.cpp ----------------------------------------------------===//
+//===-- psan_mutex.cpp ----------------------------------------------------===//
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -12,15 +12,15 @@
 //
 //===----------------------------------------------------------------------===//
 #include "sanitizer_common/sanitizer_atomic.h"
-#include "tsan_interface.h"
-#include "tsan_interface_ann.h"
-#include "tsan_test_util.h"
+#include "psan_interface.h"
+#include "psan_interface_ann.h"
+#include "psan_test_util.h"
 #include "gtest/gtest.h"
 #include <stdint.h>
 
-namespace __tsan {
+namespace __psan {
 
-TEST_F(ThreadSanitizer, BasicMutex) {
+TEST_F(PredictiveSanitizer, BasicMutex) {
   ScopedThread t;
   UserMutex m;
   t.Create(m);
@@ -38,7 +38,7 @@ TEST_F(ThreadSanitizer, BasicMutex) {
   t.Destroy(m);
 }
 
-TEST_F(ThreadSanitizer, BasicSpinMutex) {
+TEST_F(PredictiveSanitizer, BasicSpinMutex) {
   ScopedThread t;
   UserMutex m(UserMutex::Spin);
   t.Create(m);
@@ -56,7 +56,7 @@ TEST_F(ThreadSanitizer, BasicSpinMutex) {
   t.Destroy(m);
 }
 
-TEST_F(ThreadSanitizer, BasicRwMutex) {
+TEST_F(PredictiveSanitizer, BasicRwMutex) {
   ScopedThread t;
   UserMutex m(UserMutex::RW);
   t.Create(m);
@@ -93,7 +93,7 @@ TEST_F(ThreadSanitizer, BasicRwMutex) {
   t.Destroy(m);
 }
 
-TEST_F(ThreadSanitizer, Mutex) {
+TEST_F(PredictiveSanitizer, Mutex) {
   UserMutex m;
   MainThread t0;
   t0.Create(m);
@@ -109,7 +109,7 @@ TEST_F(ThreadSanitizer, Mutex) {
   t2.Destroy(m);
 }
 
-TEST_F(ThreadSanitizer, SpinMutex) {
+TEST_F(PredictiveSanitizer, SpinMutex) {
   UserMutex m(UserMutex::Spin);
   MainThread t0;
   t0.Create(m);
@@ -125,7 +125,7 @@ TEST_F(ThreadSanitizer, SpinMutex) {
   t2.Destroy(m);
 }
 
-TEST_F(ThreadSanitizer, RwMutex) {
+TEST_F(PredictiveSanitizer, RwMutex) {
   UserMutex m(UserMutex::RW);
   MainThread t0;
   t0.Create(m);
@@ -150,7 +150,7 @@ TEST_F(ThreadSanitizer, RwMutex) {
   t2.Destroy(m);
 }
 
-TEST_F(ThreadSanitizer, StaticMutex) {
+TEST_F(PredictiveSanitizer, StaticMutex) {
   // Emulates statically initialized mutex.
   UserMutex m;
   m.StaticInit();
@@ -168,14 +168,14 @@ static void *singleton_thread(void *param) {
   atomic_uintptr_t *singleton = (atomic_uintptr_t *)param;
   for (int i = 0; i < 4*1024*1024; i++) {
     int *val = (int *)atomic_load(singleton, memory_order_acquire);
-    __tsan_acquire(singleton);
-    __tsan_read4(val);
+    __psan_acquire(singleton);
+    __psan_read4(val);
     CHECK_EQ(*val, 42);
   }
   return 0;
 }
 
-TEST(DISABLED_BENCH_ThreadSanitizer, Singleton) {
+TEST(DISABLED_BENCH_PredictiveSanitizer, Singleton) {
   const int kClockSize = 100;
   const int kThreadCount = 8;
 
@@ -186,9 +186,9 @@ TEST(DISABLED_BENCH_ThreadSanitizer, Singleton) {
   }
   // Create the singleton.
   int val = 42;
-  __tsan_write4(&val);
+  __psan_write4(&val);
   atomic_uintptr_t singleton;
-  __tsan_release(&singleton);
+  __psan_release(&singleton);
   atomic_store(&singleton, (uintptr_t)&val, memory_order_release);
   // Create reader threads.
   pthread_t threads[kThreadCount];
@@ -198,7 +198,7 @@ TEST(DISABLED_BENCH_ThreadSanitizer, Singleton) {
     pthread_join(threads[t], 0);
 }
 
-TEST(DISABLED_BENCH_ThreadSanitizer, StopFlag) {
+TEST(DISABLED_BENCH_PredictiveSanitizer, StopFlag) {
   const int kClockSize = 100;
   const int kIters = 16*1024*1024;
 
@@ -209,14 +209,14 @@ TEST(DISABLED_BENCH_ThreadSanitizer, StopFlag) {
   }
   // Create the stop flag.
   atomic_uintptr_t flag;
-  __tsan_release(&flag);
+  __psan_release(&flag);
   atomic_store(&flag, 0, memory_order_release);
   // Read it a lot.
   for (int i = 0; i < kIters; i++) {
     uptr v = atomic_load(&flag, memory_order_acquire);
-    __tsan_acquire(&flag);
+    __psan_acquire(&flag);
     CHECK_EQ(v, 0);
   }
 }
 
-}  // namespace __tsan
+}  // namespace __psan

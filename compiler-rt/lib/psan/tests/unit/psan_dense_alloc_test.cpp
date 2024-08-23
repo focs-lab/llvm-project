@@ -1,4 +1,4 @@
-//===-- tsan_dense_alloc_test.cpp -----------------------------------------===//
+//===-- psan_dense_alloc_test.cpp -----------------------------------------===//
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -11,16 +11,16 @@
 // c609043dd00955bf177ff57b0bad2a87c1e61a36.
 //
 //===----------------------------------------------------------------------===//
-#include "tsan_dense_alloc.h"
-#include "tsan_rtl.h"
-#include "tsan_mman.h"
+#include "psan_dense_alloc.h"
+#include "psan_rtl.h"
+#include "psan_mman.h"
 #include "gtest/gtest.h"
 
 #include <stdlib.h>
 #include <stdint.h>
 #include <map>
 
-namespace __tsan {
+namespace __psan {
 
 TEST(DenseSlabAlloc, Basic) {
   typedef u64 T;
@@ -54,4 +54,4 @@ TEST(DenseSlabAlloc, Basic) {
   }
 }
 
-}  // namespace __tsan
+}  // namespace __psan

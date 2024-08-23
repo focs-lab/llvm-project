@@ -1,4 +1,4 @@
-// Mini-benchmark for tsan: non-shared memory writes.
+// Mini-benchmark for psan: non-shared memory writes.
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>

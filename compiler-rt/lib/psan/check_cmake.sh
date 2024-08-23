@@ -12,7 +12,7 @@ else
 fi
 ninja
 ninja check-sanitizer
-ninja check-tsan
+ninja check-psan
 ninja check-asan
 ninja check-msan
 ninja check-lsan

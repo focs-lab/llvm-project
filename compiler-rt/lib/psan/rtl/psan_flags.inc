@@ -6,7 +6,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// TSan runtime flags.
+// PSan runtime flags.
 //
 //===----------------------------------------------------------------------===//
 #ifndef PSAN_FLAG
@@ -53,7 +53,7 @@ PSAN_FLAG(int, flush_symbolizer_ms, 5000, "Flush symbolizer caches every X ms.")
 PSAN_FLAG(
     int, memory_limit_mb, 0,
     "Resident memory limit in MB to aim at."
-    "If the process consumes more memory, then TSan will flush shadow memory.")
+    "If the process consumes more memory, then PSan will flush shadow memory.")
 PSAN_FLAG(bool, stop_on_start, false,
           "Stops on start until __psan_resume() is called (for debugging).")
 PSAN_FLAG(bool, running_on_valgrind, false,

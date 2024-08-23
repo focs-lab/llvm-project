@@ -6,7 +6,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// This file is a part of ThreadSanitizer.
+// This file is a part of PredictiveSanitizer.
 //
 // Call __psan_init at the very early stage of process startup.
 //===----------------------------------------------------------------------===//

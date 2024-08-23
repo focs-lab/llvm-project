@@ -1,23 +1,23 @@
-set(TSAN_RTL_TEST_SOURCES
-  tsan_bench.cpp
-  tsan_mop.cpp
-  tsan_mutex.cpp
-  tsan_posix.cpp
-  tsan_string.cpp
-  tsan_test.cpp
-  tsan_thread.cpp
+set(PSAN_RTL_TEST_SOURCES
+  psan_bench.cpp
+  psan_mop.cpp
+  psan_mutex.cpp
+  psan_posix.cpp
+  psan_string.cpp
+  psan_test.cpp
+  psan_thread.cpp
   )
 
 if(UNIX)
-  list(APPEND TSAN_RTL_TEST_SOURCES
-    tsan_test_util_posix.cpp
+  list(APPEND PSAN_RTL_TEST_SOURCES
+    psan_test_util_posix.cpp
     )
 endif()
 
-set(TSAN_RTL_TEST_HEADERS
-  tsan_test_util.h
+set(PSAN_RTL_TEST_HEADERS
+  psan_test_util.h
   )
 
-add_tsan_unittest(TsanRtlTest
-  SOURCES ${TSAN_RTL_TEST_SOURCES}
-  HEADERS ${TSAN_RTL_TEST_HEADERS})
+add_psan_unittest(PsanRtlTest
+  SOURCES ${PSAN_RTL_TEST_SOURCES}
+  HEADERS ${PSAN_RTL_TEST_HEADERS})

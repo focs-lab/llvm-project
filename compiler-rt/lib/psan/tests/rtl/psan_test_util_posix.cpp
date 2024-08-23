@@ -1,4 +1,4 @@
-//===-- tsan_test_util_posix.cpp ------------------------------------------===//
+//===-- psan_test_util_posix.cpp ------------------------------------------===//
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -14,11 +14,11 @@
 //===----------------------------------------------------------------------===//
 
 #include "sanitizer_common/sanitizer_atomic.h"
-#include "tsan_interface.h"
-#include "tsan_posix_util.h"
-#include "tsan_rtl.h"
-#include "tsan_test_util.h"
-#include "tsan_report.h"
+#include "psan_interface.h"
+#include "psan_posix_util.h"
+#include "psan_rtl.h"
+#include "psan_test_util.h"
+#include "psan_report.h"
 
 #include <assert.h>
 #include <pthread.h>
@@ -32,10 +32,10 @@
 
 static __thread bool expect_report;
 static __thread bool expect_report_reported;
-static __thread __tsan::ReportType expect_report_type;
+static __thread __psan::ReportType expect_report_type;
 
-void ThreadSanitizer::TearDown() {
-  __tsan::ctx->racy_stacks.Reset();
+void PredictiveSanitizer::TearDown() {
+  __psan::ctx->racy_stacks.Reset();
 }
 
 static void *BeforeInitThread(void *param) {
@@ -47,7 +47,7 @@ static void AtExit() {
 }
 
 void TestMutexBeforeInit() {
-  // Mutexes must be usable before __tsan_init();
+  // Mutexes must be usable before __psan_init();
   pthread_mutex_t mtx = PTHREAD_MUTEX_INITIALIZER;
   __interceptor_pthread_mutex_lock(&mtx);
   __interceptor_pthread_mutex_unlock(&mtx);
@@ -58,7 +58,7 @@ void TestMutexBeforeInit() {
   atexit(AtExit);
 }
 
-namespace __tsan {
+namespace __psan {
 bool OnReport(const ReportDesc *rep, bool suppressed) {
   if (expect_report) {
     if (rep->typ != expect_report_type) {
@@ -74,15 +74,15 @@ bool OnReport(const ReportDesc *rep, bool suppressed) {
   expect_report_reported = true;
   return true;
 }
-}  // namespace __tsan
+}  // namespace __psan
 
 static void* allocate_addr(int size, int offset_from_aligned = 0) {
   static uintptr_t foo;
-  static __tsan::atomic_uintptr_t uniq = {(uintptr_t)&foo}; // Some real address.
+  static __psan::atomic_uintptr_t uniq = {(uintptr_t)&foo}; // Some real address.
   const int kAlign = 16;
   CHECK(offset_from_aligned < kAlign);
   size = (size + 2 * kAlign) & ~(kAlign - 1);
-  uintptr_t addr = atomic_fetch_add(&uniq, size, __tsan::memory_order_relaxed);
+  uintptr_t addr = atomic_fetch_add(&uniq, size, __psan::memory_order_relaxed);
   return (void*)(addr + offset_from_aligned);
 }
 
@@ -213,7 +213,7 @@ struct Event {
   uptr arg2;
   bool res;
   bool expect_report;
-  __tsan::ReportType report_type;
+  __psan::ReportType report_type;
 
   explicit Event(Type type, const void *ptr = 0, uptr arg = 0, uptr arg2 = 0)
       : type(type),
@@ -224,7 +224,7 @@ struct Event {
         expect_report(),
         report_type() {}
 
-  void ExpectReport(__tsan::ReportType type) {
+  void ExpectReport(__psan::ReportType type) {
     expect_report = true;
     report_type = type;
   }
@@ -234,7 +234,7 @@ struct ScopedThread::Impl {
   pthread_t thread;
   bool main;
   bool detached;
-  __tsan::atomic_uintptr_t event;  // Event*
+  __psan::atomic_uintptr_t event;  // Event*
 
   static void *ScopedThreadCallback(void *arg);
   void send(Event *ev);
@@ -249,63 +249,63 @@ void ScopedThread::Impl::HandleEvent(Event *ev) {
   switch (ev->type) {
   case Event::READ:
   case Event::WRITE: {
-    void (*tsan_mop)(void *addr, void *pc) = 0;
+    void (*psan_mop)(void *addr, void *pc) = 0;
     if (ev->type == Event::READ) {
       switch (ev->arg /*size*/) {
         case 1:
-          tsan_mop = __tsan_read1_pc;
+          psan_mop = __psan_read1_pc;
           break;
         case 2:
-          tsan_mop = __tsan_read2_pc;
+          psan_mop = __psan_read2_pc;
           break;
         case 4:
-          tsan_mop = __tsan_read4_pc;
+          psan_mop = __psan_read4_pc;
           break;
         case 8:
-          tsan_mop = __tsan_read8_pc;
+          psan_mop = __psan_read8_pc;
           break;
         case 16:
-          tsan_mop = __tsan_read16_pc;
+          psan_mop = __psan_read16_pc;
           break;
       }
     } else {
       switch (ev->arg /*size*/) {
         case 1:
-          tsan_mop = __tsan_write1_pc;
+          psan_mop = __psan_write1_pc;
           break;
         case 2:
-          tsan_mop = __tsan_write2_pc;
+          psan_mop = __psan_write2_pc;
           break;
         case 4:
-          tsan_mop = __tsan_write4_pc;
+          psan_mop = __psan_write4_pc;
           break;
         case 8:
-          tsan_mop = __tsan_write8_pc;
+          psan_mop = __psan_write8_pc;
           break;
         case 16:
-          tsan_mop = __tsan_write16_pc;
+          psan_mop = __psan_write16_pc;
           break;
       }
     }
-    CHECK_NE(tsan_mop, 0);
+    CHECK_NE(psan_mop, 0);
 #if defined(__FreeBSD__) || defined(__APPLE__) || defined(__NetBSD__)
     const int ErrCode = ESOCKTNOSUPPORT;
 #else
     const int ErrCode = ECHRNG;
 #endif
     errno = ErrCode;
-    tsan_mop(ev->ptr, (void *)ev->arg2);
+    psan_mop(ev->ptr, (void *)ev->arg2);
     CHECK_EQ(ErrCode, errno);  // In no case must errno be changed.
     break;
   }
   case Event::VPTR_UPDATE:
-    __tsan_vptr_update((void**)ev->ptr, (void*)ev->arg);
+    __psan_vptr_update((void**)ev->ptr, (void*)ev->arg);
     break;
   case Event::CALL:
-    __tsan_func_entry((void*)((uptr)ev->ptr));
+    __psan_func_entry((void*)((uptr)ev->ptr));
     break;
   case Event::RETURN:
-    __tsan_func_exit();
+    __psan_func_exit();
     break;
   case Event::MUTEX_CREATE:
     static_cast<UserMutex *>(ev->ptr)->Init();
@@ -347,23 +347,23 @@ void ScopedThread::Impl::HandleEvent(Event *ev) {
 }
 
 void *ScopedThread::Impl::ScopedThreadCallback(void *arg) {
-  __tsan_func_entry(CALLERPC);
+  __psan_func_entry(CALLERPC);
   Impl *impl = (Impl*)arg;
   for (;;) {
     Event *ev =
-        (Event *)atomic_load(&impl->event, __tsan::memory_order_acquire);
+        (Event *)atomic_load(&impl->event, __psan::memory_order_acquire);
     if (ev == 0) {
       sched_yield();
       continue;
     }
     if (ev->type == Event::SHUTDOWN) {
-      atomic_store(&impl->event, 0, __tsan::memory_order_release);
+      atomic_store(&impl->event, 0, __psan::memory_order_release);
       break;
     }
     impl->HandleEvent(ev);
-    atomic_store(&impl->event, 0, __tsan::memory_order_release);
+    atomic_store(&impl->event, 0, __psan::memory_order_release);
   }
-  __tsan_func_exit();
+  __psan_func_exit();
   return 0;
 }
 
@@ -371,9 +371,9 @@ void ScopedThread::Impl::send(Event *e) {
   if (main) {
     HandleEvent(e);
   } else {
-    CHECK_EQ(atomic_load(&event, __tsan::memory_order_relaxed), 0);
-    atomic_store(&event, (uintptr_t)e, __tsan::memory_order_release);
-    while (atomic_load(&event, __tsan::memory_order_acquire) != 0)
+    CHECK_EQ(atomic_load(&event, __psan::memory_order_relaxed), 0);
+    atomic_store(&event, (uintptr_t)e, __psan::memory_order_release);
+    while (atomic_load(&event, __psan::memory_order_acquire) != 0)
       sched_yield();
   }
 }
@@ -382,7 +382,7 @@ ScopedThread::ScopedThread(bool detached, bool main) {
   impl_ = new Impl;
   impl_->main = main;
   impl_->detached = detached;
-  atomic_store(&impl_->event, 0, __tsan::memory_order_relaxed);
+  atomic_store(&impl_->event, 0, __psan::memory_order_relaxed);
   if (!main) {
     pthread_attr_t attr;
     pthread_attr_init(&attr);
@@ -416,7 +416,7 @@ void ScopedThread::Access(void *addr, bool is_write,
   Event event(is_write ? Event::WRITE : Event::READ, addr, size,
               (uptr)CALLERPC);
   if (expect_race)
-    event.ExpectReport(__tsan::ReportTypeRace);
+    event.ExpectReport(__psan::ReportTypeRace);
   impl_->send(&event);
 }
 
@@ -425,7 +425,7 @@ void ScopedThread::VptrUpdate(const MemLoc &vptr,
                               bool expect_race) {
   Event event(Event::VPTR_UPDATE, vptr.loc(), (uptr)new_val.loc());
   if (expect_race)
-    event.ExpectReport(__tsan::ReportTypeRace);
+    event.ExpectReport(__psan::ReportTypeRace);
   impl_->send(&event);
 }
 
@@ -485,7 +485,7 @@ void ScopedThread::Memcpy(void *dst, const void *src, int size,
                           bool expect_race) {
   Event event(Event::MEMCPY, dst, (uptr)src, size);
   if (expect_race)
-    event.ExpectReport(__tsan::ReportTypeRace);
+    event.ExpectReport(__psan::ReportTypeRace);
   impl_->send(&event);
 }
 
@@ -493,6 +493,6 @@ void ScopedThread::Memset(void *dst, int val, int size,
                           bool expect_race) {
   Event event(Event::MEMSET, dst, val, size);
   if (expect_race)
-    event.ExpectReport(__tsan::ReportTypeRace);
+    event.ExpectReport(__psan::ReportTypeRace);
   impl_->send(&event);
 }

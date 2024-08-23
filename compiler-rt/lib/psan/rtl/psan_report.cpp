@@ -286,7 +286,7 @@ void PrintReport(const ReportDesc *rep) {
   Printf("==================\n");
   const char *rep_typ_str = ReportTypeString(rep->typ, rep->tag);
   Printf("%s", d.Warning());
-  Printf("WARNING: ThreadSanitizer: %s (pid=%d)\n", rep_typ_str,
+  Printf("WARNING: PredictiveSanitizer: %s (pid=%d)\n", rep_typ_str,
          (int)internal_getpid());
   Printf("%s", d.Default());
 

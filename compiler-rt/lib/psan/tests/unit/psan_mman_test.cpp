@@ -1,4 +1,4 @@
-//===-- tsan_mman_test.cpp ------------------------------------------------===//
+//===-- psan_mman_test.cpp ------------------------------------------------===//
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -13,11 +13,11 @@
 //===----------------------------------------------------------------------===//
 #include <limits>
 #include <sanitizer/allocator_interface.h>
-#include "tsan_mman.h"
-#include "tsan_rtl.h"
+#include "psan_mman.h"
+#include "psan_rtl.h"
 #include "gtest/gtest.h"
 
-namespace __tsan {
+namespace __psan {
 
 TEST(Mman, Internal) {
   char *p = (char *)Alloc(10);
@@ -158,7 +158,7 @@ TEST(Mman, Valloc) {
 
 #if !SANITIZER_DEBUG
 // EXPECT_DEATH clones a thread with 4K stack,
-// which is overflown by tsan memory accesses functions in debug mode.
+// which is overflown by psan memory accesses functions in debug mode.
 
 TEST(Mman, Memalign) {
   ThreadState *thr = cur_thread();
@@ -195,4 +195,4 @@ TEST(Mman, AlignedAlloc) {
   user_free(thr, 0, p);
 }
 
-}  // namespace __tsan
+}  // namespace __psan

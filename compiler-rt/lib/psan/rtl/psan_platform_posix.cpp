@@ -48,7 +48,7 @@ void InitializeShadowMemory() {
   // Map memory shadow.
   if (!MmapFixedSuperNoReserve(ShadowBeg(), ShadowEnd() - ShadowBeg(),
                                "shadow")) {
-    Printf("FATAL: ThreadSanitizer can not mmap the shadow memory\n");
+    Printf("FATAL: PredictiveSanitizer can not mmap the shadow memory\n");
     Printf("FATAL: Make sure to compile with -fPIE and to link with -pie.\n");
     Die();
   }
@@ -65,7 +65,7 @@ void InitializeShadowMemory() {
   const uptr meta = MetaShadowBeg();
   const uptr meta_size = MetaShadowEnd() - meta;
   if (!MmapFixedSuperNoReserve(meta, meta_size, "meta shadow")) {
-    Printf("FATAL: ThreadSanitizer can not mmap the shadow memory\n");
+    Printf("FATAL: PredictiveSanitizer can not mmap the shadow memory\n");
     Printf("FATAL: Make sure to compile with -fPIE and to link with -pie.\n");
     Die();
   }
@@ -90,7 +90,7 @@ static bool TryProtectRange(uptr beg, uptr end) {
 
 static void ProtectRange(uptr beg, uptr end) {
   if (!TryProtectRange(beg, end)) {
-    Printf("FATAL: ThreadSanitizer can not protect [%zx,%zx]\n", beg, end);
+    Printf("FATAL: PredictiveSanitizer can not protect [%zx,%zx]\n", beg, end);
     Printf("FATAL: Make sure you are not using unlimited stack\n");
     Die();
   }
@@ -132,7 +132,7 @@ bool CheckAndProtect(bool protect, bool ignore_heap, bool print_warnings) {
     // Debug output can break tests. Suppress this message in most cases.
     if (print_warnings)
       Printf(
-          "WARNING: ThreadSanitizer: unexpected memory mapping 0x%zx-0x%zx\n",
+          "WARNING: PredictiveSanitizer: unexpected memory mapping 0x%zx-0x%zx\n",
           segment.start, segment.end);
 
     return false;

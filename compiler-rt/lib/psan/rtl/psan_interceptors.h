@@ -63,7 +63,7 @@ inline bool MustIgnoreInterceptor(ThreadState *thr) {
 // https://lab.llvm.org/buildbot/#/builders/57
 #  define CHECK_REAL_FUNC(func)                                          \
     if (REAL(func) == 0) {                                               \
-      Report("FATAL: ThreadSanitizer: failed to intercept %s\n", #func); \
+      Report("FATAL: PredictiveSanitizer: failed to intercept %s\n", #func); \
       Die();                                                             \
     }
 #else

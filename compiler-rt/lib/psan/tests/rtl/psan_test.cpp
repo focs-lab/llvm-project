@@ -1,4 +1,4 @@
-//===-- tsan_test.cpp -----------------------------------------------------===//
+//===-- psan_test.cpp -----------------------------------------------------===//
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -11,14 +11,14 @@
 // c609043dd00955bf177ff57b0bad2a87c1e61a36.
 //
 //===----------------------------------------------------------------------===//
-#include "tsan_interface.h"
-#include "tsan_test_util.h"
+#include "psan_interface.h"
+#include "psan_test_util.h"
 #include "gtest/gtest.h"
 
 static void foo() {}
 static void bar() {}
 
-TEST_F(ThreadSanitizer, FuncCall) {
+TEST_F(PredictiveSanitizer, FuncCall) {
   ScopedThread t1, t2;
   MemLoc l;
   t1.Write1(l);
@@ -30,19 +30,19 @@ TEST_F(ThreadSanitizer, FuncCall) {
 }
 
 // We use this function instead of main, as ISO C++ forbids taking the address
-// of main, which we need to pass inside __tsan_func_entry.
+// of main, which we need to pass inside __psan_func_entry.
 int run_tests(int argc, char **argv) {
-  TestMutexBeforeInit();  // Mutexes must be usable before __tsan_init();
-  __tsan_init();
-  __tsan_func_entry(__builtin_return_address(0));
-  __tsan_func_entry((void*)((intptr_t)&run_tests + 1));
+  TestMutexBeforeInit();  // Mutexes must be usable before __psan_init();
+  __psan_init();
+  __psan_func_entry(__builtin_return_address(0));
+  __psan_func_entry((void*)((intptr_t)&run_tests + 1));
 
   testing::GTEST_FLAG(death_test_style) = "threadsafe";
   testing::InitGoogleTest(&argc, argv);
   int res = RUN_ALL_TESTS();
 
-  __tsan_func_exit();
-  __tsan_func_exit();
+  __psan_func_exit();
+  __psan_func_exit();
   return res;
 }
 
@@ -50,7 +50,7 @@ const char *argv0;
 
 #ifdef __APPLE__
 // On Darwin, turns off symbolication and crash logs to make tests faster.
-extern "C" const char* __tsan_default_options() {
+extern "C" const char* __psan_default_options() {
   return "symbolize=false:abort_on_error=0";
 }
 #endif

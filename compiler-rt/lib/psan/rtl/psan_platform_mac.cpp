@@ -229,7 +229,7 @@ void InitializePlatformEarly() {
 #  if !SANITIZER_GO && SANITIZER_IOS
   uptr max_vm = GetMaxUserVirtualAddress() + 1;
   if (max_vm != HiAppMemEnd()) {
-    Printf("ThreadSanitizer: unsupported vm address limit %p, expected %p.\n",
+    Printf("PredictiveSanitizer: unsupported vm address limit %p, expected %p.\n",
            (void *)max_vm, (void *)HiAppMemEnd());
     Die();
   }
@@ -242,7 +242,7 @@ void InitializePlatform() {
   DisableCoreDumperIfNecessary();
 #if !SANITIZER_GO
   if (!CheckAndProtect(true, true, true)) {
-    Printf("FATAL: ThreadSanitizer: found incompatible memory layout.\n");
+    Printf("FATAL: PredictiveSanitizer: found incompatible memory layout.\n");
     Die();
   }
 

@@ -1,4 +1,4 @@
-//===-- tsan_bench.cpp ----------------------------------------------------===//
+//===-- psan_bench.cpp ----------------------------------------------------===//
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -11,9 +11,9 @@
 // c609043dd00955bf177ff57b0bad2a87c1e61a36.
 //
 //===----------------------------------------------------------------------===//
-#include "tsan_test_util.h"
-#include "tsan_interface.h"
-#include "tsan_defs.h"
+#include "psan_test_util.h"
+#include "psan_interface.h"
+#include "psan_defs.h"
 #include "gtest/gtest.h"
 #include <stdint.h>
 
@@ -22,12 +22,12 @@ const int kRepeat = 2*1024*1024;
 
 void noinstr(void *p) {}
 
-template<typename T, void(*__tsan_mop)(void *p)>
+template<typename T, void(*__psan_mop)(void *p)>
 static void Benchmark() {
   volatile T data[kSize];
   for (int i = 0; i < kRepeat; i++) {
     for (int j = 0; j < kSize; j++) {
-      __tsan_mop((void*)&data[j]);
+      __psan_mop((void*)&data[j]);
       data[j]++;
     }
   }
@@ -38,11 +38,11 @@ TEST(DISABLED_BENCH, Mop1) {
 }
 
 TEST(DISABLED_BENCH, Mop1Read) {
-  Benchmark<uint8_t, __tsan_read1>();
+  Benchmark<uint8_t, __psan_read1>();
 }
 
 TEST(DISABLED_BENCH, Mop1Write) {
-  Benchmark<uint8_t, __tsan_write1>();
+  Benchmark<uint8_t, __psan_write1>();
 }
 
 TEST(DISABLED_BENCH, Mop2) {
@@ -50,11 +50,11 @@ TEST(DISABLED_BENCH, Mop2) {
 }
 
 TEST(DISABLED_BENCH, Mop2Read) {
-  Benchmark<uint16_t, __tsan_read2>();
+  Benchmark<uint16_t, __psan_read2>();
 }
 
 TEST(DISABLED_BENCH, Mop2Write) {
-  Benchmark<uint16_t, __tsan_write2>();
+  Benchmark<uint16_t, __psan_write2>();
 }
 
 TEST(DISABLED_BENCH, Mop4) {
@@ -62,11 +62,11 @@ TEST(DISABLED_BENCH, Mop4) {
 }
 
 TEST(DISABLED_BENCH, Mop4Read) {
-  Benchmark<uint32_t, __tsan_read4>();
+  Benchmark<uint32_t, __psan_read4>();
 }
 
 TEST(DISABLED_BENCH, Mop4Write) {
-  Benchmark<uint32_t, __tsan_write4>();
+  Benchmark<uint32_t, __psan_write4>();
 }
 
 TEST(DISABLED_BENCH, Mop8) {
@@ -74,19 +74,19 @@ TEST(DISABLED_BENCH, Mop8) {
 }
 
 TEST(DISABLED_BENCH, Mop8Read) {
-  Benchmark<uint64_t, __tsan_read8>();
+  Benchmark<uint64_t, __psan_read8>();
 }
 
 TEST(DISABLED_BENCH, Mop8Write) {
-  Benchmark<uint64_t, __tsan_write8>();
+  Benchmark<uint64_t, __psan_write8>();
 }
 
 TEST(DISABLED_BENCH, FuncCall) {
   for (int i = 0; i < kRepeat; i++) {
     for (int j = 0; j < kSize; j++)
-      __tsan_func_entry((void*)(uintptr_t)j);
+      __psan_func_entry((void*)(uintptr_t)j);
     for (int j = 0; j < kSize; j++)
-      __tsan_func_exit();
+      __psan_func_exit();
   }
 }
 

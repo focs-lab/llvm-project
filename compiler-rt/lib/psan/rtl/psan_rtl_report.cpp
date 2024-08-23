@@ -605,7 +605,7 @@ bool RacyStacks::operator==(const RacyStacks &other) const {
 static bool FindRacyStacks(const RacyStacks &hash) {
   for (uptr i = 0; i < ctx->racy_stacks.Size(); i++) {
     if (hash == ctx->racy_stacks[i]) {
-      VPrintf(2, "ThreadSanitizer: suppressing report as doubled (stack)\n");
+      VPrintf(2, "PredictiveSanitizer: suppressing report as doubled (stack)\n");
       return true;
     }
   }

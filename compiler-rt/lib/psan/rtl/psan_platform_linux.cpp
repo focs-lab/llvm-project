@@ -229,7 +229,7 @@ static void ReExecIfNeeded() {
     const uptr kMaxStackSize = 32 * 1024 * 1024;
     VReport(1,
             "Program is run with unlimited stack size, which wouldn't "
-            "work with ThreadSanitizer.\n"
+            "work with PredictiveSanitizer.\n"
             "Re-execing with stack size limited to %zd bytes.\n",
             kMaxStackSize);
     SetStackSizeLimitInBytes(kMaxStackSize);
@@ -239,7 +239,7 @@ static void ReExecIfNeeded() {
   if (!AddressSpaceIsUnlimited()) {
     Report(
         "WARNING: Program is run with limited virtual address space,"
-        " which wouldn't work with ThreadSanitizer.\n");
+        " which wouldn't work with PredictiveSanitizer.\n");
     Report("Re-execing with unlimited virtual address space.\n");
     SetAddressSpaceUnlimited();
     reexec = true;
@@ -259,7 +259,7 @@ static void ReExecIfNeeded() {
   if (aslr_on) {
     VReport(1,
             "WARNING: Program is run with randomized virtual address "
-            "space, which wouldn't work with ThreadSanitizer on Android.\n"
+            "space, which wouldn't work with PredictiveSanitizer on Android.\n"
             "Re-execing with fixed virtual address space.\n");
     CHECK_NE(personality(old_personality | ADDR_NO_RANDOMIZE), -1);
     reexec = true;
@@ -285,7 +285,7 @@ static void ReExecIfNeeded() {
       // re-execing (unless we change ReExec to pass a parameter of the
       // number of retries allowed.)
       VReport(1,
-              "WARNING: ThreadSanitizer: memory layout is incompatible, "
+              "WARNING: PredictiveSanitizer: memory layout is incompatible, "
               "possibly due to high-entropy ASLR.\n"
               "Re-execing with fixed virtual address space.\n"
               "N.B. reducing ASLR entropy is preferable.\n");
@@ -293,7 +293,7 @@ static void ReExecIfNeeded() {
       reexec = true;
     } else {
       VReport(1,
-              "FATAL: ThreadSanitizer: memory layout is incompatible, "
+              "FATAL: PredictiveSanitizer: memory layout is incompatible, "
               "even though ASLR is disabled.\n"
               "Please file a bug.\n");
       Die();
@@ -312,13 +312,13 @@ void InitializePlatformEarly() {
 #if defined(__aarch64__)
 # if !SANITIZER_GO
   if (vmaSize != 39 && vmaSize != 42 && vmaSize != 48) {
-    Printf("FATAL: ThreadSanitizer: unsupported VMA range\n");
+    Printf("FATAL: PredictiveSanitizer: unsupported VMA range\n");
     Printf("FATAL: Found %zd - Supported 39, 42 and 48\n", vmaSize);
     Die();
   }
 #else
   if (vmaSize != 48) {
-    Printf("FATAL: ThreadSanitizer: unsupported VMA range\n");
+    Printf("FATAL: PredictiveSanitizer: unsupported VMA range\n");
     Printf("FATAL: Found %zd - Supported 48\n", vmaSize);
     Die();
   }
@@ -326,13 +326,13 @@ void InitializePlatformEarly() {
 #elif SANITIZER_LOONGARCH64
 # if !SANITIZER_GO
   if (vmaSize != 47) {
-    Printf("FATAL: ThreadSanitizer: unsupported VMA range\n");
+    Printf("FATAL: PredictiveSanitizer: unsupported VMA range\n");
     Printf("FATAL: Found %zd - Supported 47\n", vmaSize);
     Die();
   }
 #    else
   if (vmaSize != 47) {
-    Printf("FATAL: ThreadSanitizer: unsupported VMA range\n");
+    Printf("FATAL: PredictiveSanitizer: unsupported VMA range\n");
     Printf("FATAL: Found %zd - Supported 47\n", vmaSize);
     Die();
   }
@@ -340,13 +340,13 @@ void InitializePlatformEarly() {
 #elif defined(__powerpc64__)
 # if !SANITIZER_GO
   if (vmaSize != 44 && vmaSize != 46 && vmaSize != 47) {
-    Printf("FATAL: ThreadSanitizer: unsupported VMA range\n");
+    Printf("FATAL: PredictiveSanitizer: unsupported VMA range\n");
     Printf("FATAL: Found %zd - Supported 44, 46, and 47\n", vmaSize);
     Die();
   }
 # else
   if (vmaSize != 46 && vmaSize != 47) {
-    Printf("FATAL: ThreadSanitizer: unsupported VMA range\n");
+    Printf("FATAL: PredictiveSanitizer: unsupported VMA range\n");
     Printf("FATAL: Found %zd - Supported 46, and 47\n", vmaSize);
     Die();
   }
@@ -354,13 +354,13 @@ void InitializePlatformEarly() {
 #elif defined(__mips64)
 # if !SANITIZER_GO
   if (vmaSize != 40) {
-    Printf("FATAL: ThreadSanitizer: unsupported VMA range\n");
+    Printf("FATAL: PredictiveSanitizer: unsupported VMA range\n");
     Printf("FATAL: Found %zd - Supported 40\n", vmaSize);
     Die();
   }
 # else
   if (vmaSize != 47) {
-    Printf("FATAL: ThreadSanitizer: unsupported VMA range\n");
+    Printf("FATAL: PredictiveSanitizer: unsupported VMA range\n");
     Printf("FATAL: Found %zd - Supported 47\n", vmaSize);
     Die();
   }
@@ -370,7 +370,7 @@ void InitializePlatformEarly() {
   vmaSize = vmaSize + 1;
 #    if !SANITIZER_GO
   if (vmaSize != 39 && vmaSize != 48) {
-    Printf("FATAL: ThreadSanitizer: unsupported VMA range\n");
+    Printf("FATAL: PredictiveSanitizer: unsupported VMA range\n");
     Printf("FATAL: Found %zd - Supported 39 and 48\n", vmaSize);
     Die();
   }
@@ -400,7 +400,7 @@ void InitializePlatform() {
   // memory layout, so we don't expect any more issues here.
   if (!CheckAndProtect(true, true, true)) {
     Printf(
-        "FATAL: ThreadSanitizer: unexpectedly found incompatible memory "
+        "FATAL: PredictiveSanitizer: unexpectedly found incompatible memory "
         "layout.\n");
     Printf("FATAL: Please file a bug.\n");
     Die();

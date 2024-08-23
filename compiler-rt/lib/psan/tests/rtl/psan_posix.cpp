@@ -1,4 +1,4 @@
-//===-- tsan_posix.cpp ----------------------------------------------------===//
+//===-- psan_posix.cpp ----------------------------------------------------===//
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -11,9 +11,9 @@
 // c609043dd00955bf177ff57b0bad2a87c1e61a36.
 //
 //===----------------------------------------------------------------------===//
-#include "tsan_interface.h"
-#include "tsan_posix_util.h"
-#include "tsan_test_util.h"
+#include "psan_interface.h"
+#include "psan_posix_util.h"
+#include "psan_test_util.h"
 #include "gtest/gtest.h"
 #include <pthread.h>
 
@@ -34,7 +34,7 @@ static void thread_secific_dtor(void *v) {
   thread_key *k = (thread_key *)v;
   EXPECT_EQ(__interceptor_pthread_mutex_lock(k->mtx), 0);
   (*k->cnt)++;
-  __tsan_write4(&k->cnt);
+  __psan_write4(&k->cnt);
   EXPECT_EQ(__interceptor_pthread_mutex_unlock(k->mtx), 0);
   if (k->val == 42) {
     // Okay.
@@ -76,8 +76,8 @@ TEST(Posix, ThreadSpecificDtors) {
 static __thread int local_var;
 
 static void *local_thread(void *p) {
-  __tsan_write1(&local_var);
-  __tsan_write1(&p);
+  __psan_write1(&local_var);
+  __psan_write1(&p);
   if (p == 0)
     return 0;
   const int kThreads = 4;

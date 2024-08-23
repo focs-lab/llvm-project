@@ -1,4 +1,4 @@
-//===-- tsan_mutexset_test.cpp --------------------------------------------===//
+//===-- psan_mutexset_test.cpp --------------------------------------------===//
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -11,10 +11,10 @@
 // c609043dd00955bf177ff57b0bad2a87c1e61a36.
 //
 //===----------------------------------------------------------------------===//
-#include "tsan_mutexset.h"
+#include "psan_mutexset.h"
 #include "gtest/gtest.h"
 
-namespace __tsan {
+namespace __psan {
 
 static void Expect(const MutexSet &mset, uptr i, u64 id, bool write, u64 epoch,
     int count) {
@@ -125,4 +125,4 @@ TEST(MutexSet, Overflow) {
   }
 }
 
-}  // namespace __tsan
+}  // namespace __psan

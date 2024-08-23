@@ -1,4 +1,4 @@
-//===-- tsan_clock_test.cpp -----------------------------------------------===//
+//===-- psan_clock_test.cpp -----------------------------------------------===//
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -11,12 +11,12 @@
 // c609043dd00955bf177ff57b0bad2a87c1e61a36.
 //
 //===----------------------------------------------------------------------===//
-#include "tsan_vector_clock.h"
+#include "psan_vector_clock.h"
 
 #include "gtest/gtest.h"
-#include "tsan_rtl.h"
+#include "psan_rtl.h"
 
-namespace __tsan {
+namespace __psan {
 
 TEST(VectorClock, GetSet) {
   // Compiler won't ensure alignment on stack.
@@ -100,4 +100,4 @@ TEST(VectorClock, VectorOps) {
   DestroyAndFree(vc3);
 }
 
-}  // namespace __tsan
+}  // namespace __psan

@@ -1,4 +1,4 @@
-//===-- tsan_ilist_test.cpp -----------------------------------------------===//
+//===-- psan_ilist_test.cpp -----------------------------------------------===//
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -11,11 +11,11 @@
 // c609043dd00955bf177ff57b0bad2a87c1e61a36.
 //
 //===----------------------------------------------------------------------===//
-#include "tsan_ilist.h"
+#include "psan_ilist.h"
 
 #include "gtest/gtest.h"
 
-namespace __tsan {
+namespace __psan {
 
 struct Node {
   INode node1;
@@ -124,4 +124,4 @@ TEST(IList, TwoLists) {
   EXPECT_EQ(list2.Size(), (size_t)0);
 }
 
-}  // namespace __tsan
+}  // namespace __psan
