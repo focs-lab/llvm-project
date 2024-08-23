@@ -26,7 +26,7 @@ int main() {
   pthread_join(t[1], NULL);
 }
 
-// CHECK: WARNING: ThreadSanitizer: data race
+// CHECK: WARNING: PredictiveSanitizer: data race
 // CHECK:   Location is file descriptor {{[0-9]+}} created by main thread at:
 // CHECK:     #0 pipe
 // CHECK:     #1 main

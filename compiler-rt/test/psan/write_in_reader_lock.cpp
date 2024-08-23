@@ -29,7 +29,7 @@ int main(int argc, char *argv[]) {
   return 0;
 }
 
-// CHECK: WARNING: ThreadSanitizer: data race
+// CHECK: WARNING: PredictiveSanitizer: data race
 // CHECK:   Write of size 4 at {{.*}} by thread T1{{.*}}:
 // CHECK:     #0 Thread1(void*) {{.*}}write_in_reader_lock.cpp:12
 // CHECK:   Previous read of size 4 at {{.*}} by main thread{{.*}}:

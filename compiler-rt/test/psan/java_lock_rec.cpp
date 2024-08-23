@@ -52,6 +52,6 @@ int main() {
   return __psan_java_fini();
 }
 
-// CHECK-NOT: WARNING: ThreadSanitizer: data race
+// CHECK-NOT: WARNING: PredictiveSanitizer: data race
 // CHECK-NOT: FAILED
 // CHECK: DONE

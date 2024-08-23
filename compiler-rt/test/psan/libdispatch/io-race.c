@@ -48,6 +48,6 @@ int main(int argc, const char *argv[]) {
 
 // CHECK: Hello world.
 // CHECK: addr=[[ADDR:0x[0-9,a-f]+]]
-// CHECK: WARNING: ThreadSanitizer: data race
+// CHECK: WARNING: PredictiveSanitizer: data race
 // CHECK: Location is global 'my_global' {{(of size 8 )?}}at [[ADDR]] (io-race.c.tmp+0x{{[0-9,a-f]+}})
 // CHECK: Done.

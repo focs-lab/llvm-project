@@ -32,7 +32,7 @@ int main() {
   return 0;
 }
 
-// CHECK: WARNING: ThreadSanitizer: data race
+// CHECK: WARNING: PredictiveSanitizer: data race
 // CHECK:   Write of size 4 at {{.*}} by thread T2:
 // CHECK:   Previous write of size 4 at {{.*}} by thread T1:
 // CHECK:     #0 foobar

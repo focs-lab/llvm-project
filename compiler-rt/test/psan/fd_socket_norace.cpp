@@ -65,5 +65,5 @@ int main() {
   fprintf(stderr, "OK\n");
 }
 
-// CHECK-NOT: WARNING: ThreadSanitizer: data race
+// CHECK-NOT: WARNING: PredictiveSanitizer: data race
 

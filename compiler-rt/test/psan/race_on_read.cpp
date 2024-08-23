@@ -36,7 +36,7 @@ int main() {
   fprintf(stderr, "DONE\n");
 }
 
-// CHECK: WARNING: ThreadSanitizer: data race
+// CHECK: WARNING: PredictiveSanitizer: data race
 // CHECK:   Write of size 1
 // CHECK:     #0 read
 // CHECK:   Previous write of size 1

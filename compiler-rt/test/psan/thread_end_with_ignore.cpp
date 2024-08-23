@@ -15,7 +15,7 @@ int main() {
   pthread_join(t, 0);
 }
 
-// CHECK: ThreadSanitizer: thread T1  finished with ignores enabled, created at:
+// CHECK: PredictiveSanitizer: thread T1  finished with ignores enabled, created at:
 // CHECK:     #0 pthread_create
 // CHECK:     #1 main
 // CHECK:   Ignore was enabled at:

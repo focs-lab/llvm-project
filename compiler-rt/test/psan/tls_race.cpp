@@ -19,7 +19,7 @@ int main() {
   pthread_join(t, 0);
 }
 
-// CHECK: WARNING: ThreadSanitizer: data race
+// CHECK: WARNING: PredictiveSanitizer: data race
 // CHECK-Linux:   Location is TLS of main thread.
 // CHECK-FreeBSD:   Location is TLS of main thread.
 // CHECK-NetBSD:   Location is TLS of main thread.

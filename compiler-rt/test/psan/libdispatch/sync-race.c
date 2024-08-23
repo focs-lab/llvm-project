@@ -37,6 +37,6 @@ int main() {
 
 // CHECK: Hello world.
 // CHECK: addr=[[ADDR:0x[0-9,a-f]+]]
-// CHECK: WARNING: ThreadSanitizer: data race
+// CHECK: WARNING: PredictiveSanitizer: data race
 // CHECK: Location is global 'global' {{(of size 8 )?}}at [[ADDR]] (sync-race.c.tmp+0x{{[0-9,a-f]+}})
 // CHECK: Done.

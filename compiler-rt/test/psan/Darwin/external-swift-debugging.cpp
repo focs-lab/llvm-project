@@ -39,12 +39,12 @@ int main(int argc, char *argv[]) {
     barrier_wait(&barrier);
     ExternalWrite(opaque_object);
   });
-  // CHECK: WARNING: ThreadSanitizer: Swift access race
+  // CHECK: WARNING: PredictiveSanitizer: Swift access race
   // CHECK: Modifying access of Swift variable at {{.*}} by thread {{.*}}
   // CHECK:   #0 ExternalWrite
   // CHECK: Previous modifying access of Swift variable at {{.*}} by thread {{.*}}
   // CHECK:   #0 ExternalWrite
-  // CHECK: SUMMARY: ThreadSanitizer: Swift access race
+  // CHECK: SUMMARY: PredictiveSanitizer: Swift access race
   t1.join();
   t2.join();
 
@@ -86,4 +86,4 @@ __psan_on_report(void *report) {
 }
 
 // CHECK: Done.
-// CHECK: ThreadSanitizer: reported 1 warnings
+// CHECK: PredictiveSanitizer: reported 1 warnings

@@ -1,5 +1,5 @@
 // RUN: %clang_psan -O1 %s -o %t && %run %t 2>&1 | FileCheck %s
-// CHECK-NOT: ThreadSanitizer: data race
+// CHECK-NOT: PredictiveSanitizer: data race
 // CHECK: DONE
 
 // pthread barriers are not available on OS X

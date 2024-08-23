@@ -125,5 +125,5 @@ int main() {
   pthread_join(th, 0);
 }
 
-// CHECK: WARNING: ThreadSanitizer: data race
-// CHECK: ThreadSanitizer: reported 224 warnings
+// CHECK: WARNING: PredictiveSanitizer: data race
+// CHECK: PredictiveSanitizer: reported 224 warnings

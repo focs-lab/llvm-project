@@ -21,6 +21,9 @@ elif config.tool_name == "hwasan":
 elif config.tool_name == "tsan":
     tool_cflags = ["-fsanitize=thread"]
     tool_options = "TSAN_OPTIONS"
+elif config.tool_name == "psan":
+    tool_cflags = ["-fsanitize=predict"]
+    tool_options = "PSAN_OPTIONS"
 elif config.tool_name == "msan":
     tool_cflags = ["-fsanitize=memory"]
     tool_options = "MSAN_OPTIONS"

@@ -59,7 +59,7 @@ int main() {
 }
 
 // CHECK: addr:[[BLOCK:0x[0-9,a-f]+]] [[ADDR:0x[0-9,a-f]+]]
-// CHECK: WARNING: ThreadSanitizer: data race
+// CHECK: WARNING: PredictiveSanitizer: data race
 // CHECK:   Write of size 1 at [[ADDR]] by thread T1:
 // CHECK:     #0 MyInnerFunc MyInnerFile.java:1234:56
 // CHECK:     #1 MyOuterFunc MyOuterFile.java:4321:65

@@ -23,7 +23,7 @@ int main() {
   pthread_join(t[1], NULL);
 }
 
-// CHECK: WARNING: ThreadSanitizer: data race
+// CHECK: WARNING: PredictiveSanitizer: data race
 // CHECK:   Location is file descriptor {{[0-9]+}} {{(destroyed by thread|created by main)}} 
 // CHECK:     #0 {{close|open}}
 // CHECK:     #1 {{Thread|main}}

@@ -31,7 +31,7 @@ int main() {
   close(fd);
 }
 
-// CHECK: WARNING: ThreadSanitizer: data race
+// CHECK: WARNING: PredictiveSanitizer: data race
 // CHECK:   Read of size 1
 // CHECK:     #0 write
 // CHECK:   Previous write of size 1

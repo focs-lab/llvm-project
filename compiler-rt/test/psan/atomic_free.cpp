@@ -3,7 +3,7 @@
 // Also check that atomics instrumentation can be configured by either driver or
 // legacy flags:
 
-// RUN: %clangxx_psan -O1 %s -o %t -fno-sanitize-thread-atomics && not %deflake %run %t 2>&1 \
+// RUN: %clangxx_psan -O1 %s -o %t -fno-sanitize-predict-atomics && not %deflake %run %t 2>&1 \
 // RUN:   | FileCheck --allow-empty --check-prefix=CHECK-NO-ATOMICS %s
 // RUN: %clangxx_psan -O1 %s -o %t -mllvm -psan-instrument-atomics=0 && not %deflake %run %t 2>&1 \
 // RUN:   | FileCheck --allow-empty --check-prefix=CHECK-NO-ATOMICS %s <%t
@@ -26,6 +26,6 @@ int main() {
   pthread_join(t, 0);
 }
 
-// CHECK: WARNING: ThreadSanitizer: data race
+// CHECK: WARNING: PredictiveSanitizer: data race
 
-// CHECK-NO-ATOMICS-NOT: WARNING: ThreadSanitizer: data race
+// CHECK-NO-ATOMICS-NOT: WARNING: PredictiveSanitizer: data race

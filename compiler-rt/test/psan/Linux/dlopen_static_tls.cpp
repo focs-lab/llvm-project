@@ -11,7 +11,7 @@
 // And this appears to be racing with initialization of TLS in the thread
 // since we model a write into the whole static TLS region (we don't know what part
 // of it is currently unused):
-// WARNING: ThreadSanitizer: data race (pid=2317365)
+// WARNING: PredictiveSanitizer: data race (pid=2317365)
 //   Write of size 1 at 0x7f1fa9bfcdd7 by main thread:
 //     #0 memset
 //     #1 init_one_static_tls

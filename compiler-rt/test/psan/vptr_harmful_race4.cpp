@@ -30,5 +30,5 @@ int main() {
   pthread_join(t, 0);
 }
 
-// CHECK: WARNING: ThreadSanitizer: heap-use-after-free (virtual call vs free)
+// CHECK: WARNING: PredictiveSanitizer: heap-use-after-free (virtual call vs free)
 

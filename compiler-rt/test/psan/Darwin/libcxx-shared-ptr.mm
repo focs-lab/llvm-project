@@ -47,4 +47,4 @@ int main(int argc, const char *argv[]) {
 
 // CHECK: Hello world.
 // CHECK: Done.
-// CHECK-NOT: WARNING: ThreadSanitizer
+// CHECK-NOT: WARNING: PredictiveSanitizer

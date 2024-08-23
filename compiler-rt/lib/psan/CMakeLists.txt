@@ -29,7 +29,7 @@ if(COMPILER_RT_LIBCXX_PATH AND
     set(LIBCXX_PREFIX ${CMAKE_CURRENT_BINARY_DIR}/libcxx_psan_${arch})
     add_custom_libcxx(libcxx_psan_${arch} ${LIBCXX_PREFIX}
       DEPS ${PSAN_RUNTIME_LIBRARIES}
-      CFLAGS ${TARGET_CFLAGS} -fsanitize=thread
+      CFLAGS ${TARGET_CFLAGS} -fsanitize=predict
       USE_TOOLCHAIN)
     list(APPEND libcxx_psan_deps libcxx_psan_${arch}-build)
   endforeach()

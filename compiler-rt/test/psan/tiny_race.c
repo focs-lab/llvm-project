@@ -19,4 +19,4 @@ int main() {
   return Global;
 }
 
-// CHECK: WARNING: ThreadSanitizer: data race
+// CHECK: WARNING: PredictiveSanitizer: data race

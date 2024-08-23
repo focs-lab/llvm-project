@@ -46,7 +46,7 @@ int main() {
 }
 
 // CHECK: Hello world.
-// CHECK: WARNING: ThreadSanitizer: data race
+// CHECK: WARNING: PredictiveSanitizer: data race
 // CHECK:   Write of size 8
 // CHECK:     #0 -[MyClass method:]
 // CHECK:   Previous write of size 8

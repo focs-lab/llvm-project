@@ -53,5 +53,5 @@ int main(int argc, char *argv[]) {
 
 #endif  // BUILD_SO
 
-// CHECK-NOT: WARNING: ThreadSanitizer: data race
+// CHECK-NOT: WARNING: PredictiveSanitizer: data race
 // CHECK: DONE

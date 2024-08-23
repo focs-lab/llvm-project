@@ -47,6 +47,6 @@ int main() {
 
 // CHECK: Hello world.
 // CHECK: pthread_threadid_np = [[ADDR:[0-9]+]]
-// CHECK: WARNING: ThreadSanitizer
+// CHECK: WARNING: PredictiveSanitizer
 // CHECK: tid = 0, os_id = [[ADDR]]
 // CHECK: Done.

@@ -14,5 +14,5 @@ int main() {
 }
 
 // CHECK: DONE
-// CHECK-NOT: WARNING: ThreadSanitizer: thread leak
+// CHECK-NOT: WARNING: PredictiveSanitizer: thread leak
 

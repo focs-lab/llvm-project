@@ -44,6 +44,6 @@ int main() {
   pthread_join(t[1], NULL);
 }
 
-// CHECK: WARNING: ThreadSanitizer: data race
+// CHECK: WARNING: PredictiveSanitizer: data race
 // CHECK:   Thread T1 'Thread1'
 // CHECK:   Thread T2 'Thread2'

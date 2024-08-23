@@ -1,6 +1,6 @@
 // RUN: %clangxx_psan -O1 %s -o %t && %deflake %run %t | FileCheck %s
 // CHECK-NOT: unlock of unlocked mutex
-// CHECK: ThreadSanitizer: data race
+// CHECK: PredictiveSanitizer: data race
 // CHECK: pthread_cond_signal
 
 #include "test.h"

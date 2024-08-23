@@ -21,5 +21,5 @@ int main(int argc, char *argv[]) {
   return 1;
 }
 
-// CHECK: Running under ThreadSanitizer
-// THREAD: ThreadSanitizer: memory flush check
+// CHECK: Running under PredictiveSanitizer
+// THREAD: PredictiveSanitizer: memory flush check

@@ -39,4 +39,4 @@ int main() {
   fprintf(stderr, "PASS\n");
 }
 
-// CHECK-NOT: WARNING: ThreadSanitizer: data race
+// CHECK-NOT: WARNING: PredictiveSanitizer: data race

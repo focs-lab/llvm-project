@@ -34,7 +34,7 @@ int main() {
 
 // CHECK: addr1=[[ADDR1:0x[0-9,a-f]+]]
 // CHECK: addr2=[[ADDR2:0x[0-9,a-f]+]]
-// CHECK: WARNING: ThreadSanitizer: data race
+// CHECK: WARNING: PredictiveSanitizer: data race
 // CHECK:   Write of size 4 at [[ADDR1]] by thread T2:
 // CHECK:     #0 {{.*mem(cpy|move)}}
 // CHECK:     #{{[12]}} Thread2

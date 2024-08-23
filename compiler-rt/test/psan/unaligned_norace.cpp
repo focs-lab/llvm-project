@@ -80,5 +80,5 @@ int main() {
   fprintf(stderr, "OK\n");
 }
 
-// CHECK-NOT: WARNING: ThreadSanitizer:
+// CHECK-NOT: WARNING: PredictiveSanitizer:
 // CHECK: OK

@@ -31,4 +31,4 @@ int main() {
 
 // CHECK: Hello world.
 // CHECK: Done.
-// CHECK-NOT: WARNING: ThreadSanitizer
+// CHECK-NOT: WARNING: PredictiveSanitizer

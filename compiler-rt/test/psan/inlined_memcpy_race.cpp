@@ -28,7 +28,7 @@ int main() {
   return 0;
 }
 
-// CHECK: WARNING: ThreadSanitizer: data race
+// CHECK: WARNING: PredictiveSanitizer: data race
 // CHECK:   #0 {{.*}}memset
 // CHECK:   #{{[12]}} MemSetThread
 // CHECK:  Previous write

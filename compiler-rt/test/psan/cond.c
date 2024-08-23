@@ -1,7 +1,7 @@
 // RUN: %clang_psan -O1 %s -o %t && %run %t 2>&1 | FileCheck %s
-// CHECK-NOT: WARNING: ThreadSanitizer: data race
-// CHECK-NOT: ThreadSanitizer WARNING: double lock
-// CHECK-NOT: ThreadSanitizer WARNING: mutex unlock by another thread
+// CHECK-NOT: WARNING: PredictiveSanitizer: data race
+// CHECK-NOT: PredictiveSanitizer WARNING: double lock
+// CHECK-NOT: PredictiveSanitizer WARNING: mutex unlock by another thread
 // CHECK: OK
 
 #include <stdio.h>

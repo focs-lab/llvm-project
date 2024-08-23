@@ -1,7 +1,7 @@
 // RUN: rm -rf %t-dir
 // RUN: mkdir %t-dir
 
-// RUN: %clangxx_psan -O1 -fno-builtin %s -DLIB -fPIC -fno-sanitize=thread -shared -o %t-dir/libignore_lib0.so
+// RUN: %clangxx_psan -O1 -fno-builtin %s -DLIB -fPIC -fno-sanitize=predict -shared -o %t-dir/libignore_lib0.so
 // RUN: %clangxx_psan -O1 %s -L%t-dir -lignore_lib0 %link_libcxx_psan -o %t
 // RUN: echo running w/o suppressions:
 // RUN: env LD_LIBRARY_PATH=%t-dir${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH} %deflake %run %t | FileCheck %s --check-prefix=CHECK-NOSUPP
@@ -32,9 +32,9 @@ int main() {
 
 #endif  // #ifdef LIB
 
-// CHECK-NOSUPP: WARNING: ThreadSanitizer: data race
+// CHECK-NOSUPP: WARNING: PredictiveSanitizer: data race
 // CHECK-NOSUPP: OK
 
-// CHECK-WITHSUPP-NOT: WARNING: ThreadSanitizer: data race
+// CHECK-WITHSUPP-NOT: WARNING: PredictiveSanitizer: data race
 // CHECK-WITHSUPP: OK
 

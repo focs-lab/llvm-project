@@ -18,7 +18,7 @@ int main() {
   t1.join();
   t2.join();
   printf("%d %d\n", v1, v2);
-  // CHECK-NOT: ThreadSanitizer: data race
+  // CHECK-NOT: PredictiveSanitizer: data race
   // CHECK: 42 42
   return 0;
 }

@@ -1,7 +1,7 @@
 // RUN: rm -rf %t-dir
 // RUN: mkdir %t-dir
 
-// RUN: %clangxx_psan -O1 %s -DLIB -fPIC -fno-sanitize=thread -shared -o %t-dir/libignore_lib3.so
+// RUN: %clangxx_psan -O1 %s -DLIB -fPIC -fno-sanitize=predict -shared -o %t-dir/libignore_lib3.so
 // RUN: %clangxx_psan -O1 %s %link_libcxx_psan -o %t-dir/executable
 // RUN: %env_psan_opts=suppressions='%s.supp' %deflake %run %t-dir/executable | FileCheck %s
 
@@ -34,6 +34,6 @@ extern "C" void libfunc() {
 
 #endif  // #ifdef LIB
 
-// CHECK: ThreadSanitizer: library {{.*}} that was matched against called_from_lib suppression 'ignore_lib3.so' is unloaded
+// CHECK: PredictiveSanitizer: library {{.*}} that was matched against called_from_lib suppression 'ignore_lib3.so' is unloaded
 // CHECK-NOT: OK
 

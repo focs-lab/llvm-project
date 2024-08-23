@@ -7,7 +7,7 @@ static void handler(int, siginfo_t *, void *) {
   write(2, "SIGNAL\n", 7);
   // CHECK: SIGNAL
   _exit(0);
-  // CHECK-NOT: ThreadSanitizer: signal-unsafe call
+  // CHECK-NOT: PredictiveSanitizer: signal-unsafe call
 }
 
 int main() {

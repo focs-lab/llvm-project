@@ -98,9 +98,9 @@ int main() {
   return 0;
 }
 
-// CHECK-REPORT: WARNING: ThreadSanitizer: data race
-// CHECK-REPORT: WARNING: ThreadSanitizer: data race
-// CHECK-REPORT: WARNING: ThreadSanitizer: data race
-// CHECK-REPORT: WARNING: ThreadSanitizer: data race
+// CHECK-REPORT: WARNING: PredictiveSanitizer: data race
+// CHECK-REPORT: WARNING: PredictiveSanitizer: data race
+// CHECK-REPORT: WARNING: PredictiveSanitizer: data race
+// CHECK-REPORT: WARNING: PredictiveSanitizer: data race
 // CHECK-REPORT: DONE
-// CHECK-REPORT: ThreadSanitizer: reported 4 warnings
+// CHECK-REPORT: PredictiveSanitizer: reported 4 warnings

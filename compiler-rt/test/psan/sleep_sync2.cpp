@@ -20,5 +20,5 @@ int main() {
   return 0;
 }
 
-// CHECK: WARNING: ThreadSanitizer: data race
+// CHECK: WARNING: PredictiveSanitizer: data race
 // CHECK-NOT: As if synchronized via sleep

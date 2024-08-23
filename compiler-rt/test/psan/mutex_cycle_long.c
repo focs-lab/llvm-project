@@ -37,6 +37,6 @@ int main(int argc, char *argv[]) {
   fprintf(stderr, "PASS\n");
 }
 
-// CHECK: ThreadSanitizer: lock-order-inversion (potential deadlock)
+// CHECK: PredictiveSanitizer: lock-order-inversion (potential deadlock)
 // CHECK-TOO-LONG-CYCLE: WARNING: too long mutex cycle found
 // CHECK: PASS

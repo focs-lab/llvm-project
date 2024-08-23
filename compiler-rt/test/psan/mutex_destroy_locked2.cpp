@@ -17,7 +17,7 @@ int main() {
   return 0;
 }
 
-// CHECK: WARNING: ThreadSanitizer: destroy of a locked mutex
+// CHECK: WARNING: PredictiveSanitizer: destroy of a locked mutex
 // CHECK:     #0 pthread_mutex_destroy
 // CHECK:     #1 thread
 // CHECK:   and:
@@ -26,4 +26,4 @@ int main() {
 // CHECK:   Mutex {{.*}} created at:
 // CHECK:     #0 pthread_mutex_init
 // CHECK:     #1 thread
-// CHECK: SUMMARY: ThreadSanitizer: destroy of a locked mutex {{.*}} in thread
+// CHECK: SUMMARY: PredictiveSanitizer: destroy of a locked mutex {{.*}} in thread

@@ -1,6 +1,6 @@
 // RUN: rm -rf %t-dir
 // RUN: mkdir %t-dir
-// RUN: %clangxx_psan -O1 %s -DLIB -fPIC -fno-sanitize=thread -shared -o %t-dir/libignore_lib.so
+// RUN: %clangxx_psan -O1 %s -DLIB -fPIC -fno-sanitize=predict -shared -o %t-dir/libignore_lib.so
 // RUN: %clangxx_psan -O1 %s %link_libcxx_psan -o %t-dir/executable
 // RUN: %env_psan_opts=suppressions='%s.supp' %run %t-dir/executable 2>&1 | FileCheck %s
 
@@ -51,9 +51,9 @@ int main(int argc, char **argv) {
   fprintf(stderr, "DONE\n");
 }
 
-// CHECK-NOT: WARNING: ThreadSanitizer:
+// CHECK-NOT: WARNING: PredictiveSanitizer:
 // CHECK: DONE
-// CHECK-NOT: WARNING: ThreadSanitizer:
+// CHECK-NOT: WARNING: PredictiveSanitizer:
 
 #else // #ifdef LIB
 

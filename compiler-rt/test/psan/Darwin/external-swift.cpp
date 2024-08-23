@@ -36,10 +36,10 @@ int main(int argc, char *argv[]) {
       barrier_wait(&barrier);
       ExternalWrite(opaque_object);
     });
-    // CHECK: WARNING: ThreadSanitizer: Swift access race
+    // CHECK: WARNING: PredictiveSanitizer: Swift access race
     // CHECK: Modifying access of Swift variable at {{.*}} by thread {{.*}}
     // CHECK: Previous modifying access of Swift variable at {{.*}} by thread {{.*}}
-    // CHECK: SUMMARY: ThreadSanitizer: Swift access race
+    // CHECK: SUMMARY: PredictiveSanitizer: Swift access race
     t1.join();
     t2.join();
   }
@@ -57,10 +57,10 @@ int main(int argc, char *argv[]) {
       barrier_wait(&barrier);
       RegularWrite(opaque_object);
     });
-    // CHECK: WARNING: ThreadSanitizer: Swift access race
+    // CHECK: WARNING: PredictiveSanitizer: Swift access race
     // CHECK: Write of size 8 at {{.*}} by thread {{.*}}
     // CHECK: Previous modifying access of Swift variable at {{.*}} by thread {{.*}}
-    // CHECK: SUMMARY: ThreadSanitizer: Swift access race
+    // CHECK: SUMMARY: PredictiveSanitizer: Swift access race
     t1.join();
     t2.join();
   }
@@ -78,10 +78,10 @@ int main(int argc, char *argv[]) {
       barrier_wait(&barrier);
       ExternalWrite(opaque_object);
     });
-    // CHECK: WARNING: ThreadSanitizer: Swift access race
+    // CHECK: WARNING: PredictiveSanitizer: Swift access race
     // CHECK: Modifying access of Swift variable at {{.*}} by thread {{.*}}
     // CHECK: Previous write of size 8 at {{.*}} by thread {{.*}}
-    // CHECK: SUMMARY: ThreadSanitizer: Swift access race
+    // CHECK: SUMMARY: PredictiveSanitizer: Swift access race
     t1.join();
     t2.join();
   }

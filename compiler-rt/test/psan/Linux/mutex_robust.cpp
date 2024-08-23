@@ -29,8 +29,8 @@ int main() {
 }
 
 // This is a correct code, and psan must not bark.
-// CHECK-NOT: WARNING: ThreadSanitizer
+// CHECK-NOT: WARNING: PredictiveSanitizer
 // CHECK-NOT: EOWNERDEAD
 // CHECK: DONE
-// CHECK-NOT: WARNING: ThreadSanitizer
+// CHECK-NOT: WARNING: PredictiveSanitizer
 

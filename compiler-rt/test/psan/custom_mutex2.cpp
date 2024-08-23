@@ -30,5 +30,5 @@ int main() {
   return 0;
 }
 
-// CHECK: ThreadSanitizer: data race
+// CHECK: PredictiveSanitizer: data race
 // CHECK: DONE

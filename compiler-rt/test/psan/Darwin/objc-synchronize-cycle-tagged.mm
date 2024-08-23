@@ -30,13 +30,13 @@ int main(int argc, char* argv[]) {
     // num2 -> obj1
     @synchronized(num2) {
       @synchronized(obj) {
-// SEVEN: ThreadSanitizer: lock-order-inversion (potential deadlock)
+// SEVEN: PredictiveSanitizer: lock-order-inversion (potential deadlock)
       }
     }
   }
 
   NSLog(@"PASS");
-// SIX-NOT: ThreadSanitizer
+// SIX-NOT: PredictiveSanitizer
 // SIX: PASS
   return 0;
 }

@@ -20,7 +20,7 @@ void *Thread2(void *x) {
 
 int main() {
   barrier_init(&barrier, 2);
-  // CHECK: WARNING: ThreadSanitizer: data race
+  // CHECK: WARNING: PredictiveSanitizer: data race
   // CHECK:   Write of size 4 at {{.*}} by thread T1
   // CHECK:                         (mutexes: write [[M1:M[0-9]+]]):
   // CHECK:   Previous write of size 4 at {{.*}} by thread T2:

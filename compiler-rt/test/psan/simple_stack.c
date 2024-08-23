@@ -51,12 +51,12 @@ int main() {
 // Also check that functions instrumentation can be configured by either driver
 // or legacy flags:
 
-// RUN: %clangxx_psan -O1 %s -o %t -fno-sanitize-thread-func-entry-exit && %deflake %run %t 2>&1 \
+// RUN: %clangxx_psan -O1 %s -o %t -fno-sanitize-predict-func-entry-exit && %deflake %run %t 2>&1 \
 // RUN:   | FileCheck --check-prefix=CHECK-FUNC-ENTRY-EXIT-OFF %s
 // RUN: %clangxx_psan -O1 %s -o %t -mllvm -psan-instrument-func-entry-exit=0 && %deflake %run %t 2>&1 \
 // RUN:   | FileCheck --check-prefix=CHECK-FUNC-ENTRY-EXIT-OFF %s
 
-// CHECK:      WARNING: ThreadSanitizer: data race
+// CHECK:      WARNING: PredictiveSanitizer: data race
 // CHECK-NEXT:   Write of size 4 at {{.*}} by thread T1:
 // CHECK-NEXT:     #0 foo1{{.*}} {{.*}}simple_stack.c:6{{(:10)?}} ({{.*}})
 // CHECK-NEXT:     #1 bar1{{.*}} {{.*}}simple_stack.c:11{{(:3)?}} ({{.*}})
@@ -74,7 +74,7 @@ int main() {
 // CHECK-NEXT:     #1 StartThread{{.*}} {{.*}}simple_stack.c:36{{(:3)?}} ({{.*}})
 // CHECK-NEXT:     #2 main{{.*}} {{.*}}simple_stack.c:43{{(:3)?}} ({{.*}})
 
-// CHECK-FUNC-ENTRY-EXIT-OFF:      WARNING: ThreadSanitizer: data race
+// CHECK-FUNC-ENTRY-EXIT-OFF:      WARNING: PredictiveSanitizer: data race
 // CHECK-FUNC-ENTRY-EXIT-OFF-NEXT:   Write of size 4 at {{.*}} by thread T1:
 // CHECK-FUNC-ENTRY-EXIT-OFF-NEXT:     #0 foo1{{.*}} {{.*}}simple_stack.c:6{{(:10)?}} ({{.*}})
 // CHECK-FUNC-ENTRY-EXIT-OFF:        Previous read of size 4 at {{.*}} by thread T2:

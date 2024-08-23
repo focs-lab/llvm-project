@@ -20,6 +20,6 @@ int main() {
 }
 
 // CHECK: addr2=[[ADDR2:0x[0-9,a-f]+]]
-// CHECK: WARNING: ThreadSanitizer: data race
+// CHECK: WARNING: PredictiveSanitizer: data race
 // CHECK: Location is global 'x' {{(of size 4 )?}}at [[ADDR2]] ({{.*}}+0x{{[0-9,a-f]+}})
 

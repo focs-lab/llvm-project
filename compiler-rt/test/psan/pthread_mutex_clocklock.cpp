@@ -25,5 +25,5 @@ int main() {
   fprintf(stderr, "PASS\n");
 }
 
-// CHECK-NOT: WARNING: ThreadSanitizer: unlock of an unlocked mutex
+// CHECK-NOT: WARNING: PredictiveSanitizer: unlock of an unlocked mutex
 // CHECK: PASS

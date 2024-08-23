@@ -35,6 +35,6 @@ int main() {
   fprintf(stderr, "OK\n");
 }
 
-// CHECK: ThreadSanitizer: data race
+// CHECK: PredictiveSanitizer: data race
 // CHECK: OK
 

@@ -44,7 +44,7 @@ int main() {
 }
 
 // CHECK-NOT: FAILED
-// CHECK: WARNING: ThreadSanitizer: destroy of a locked mutex
+// CHECK: WARNING: PredictiveSanitizer: destroy of a locked mutex
 // CHECK:   #0 pthread_mutex_destroy
 // CHECK:   #1 badguy
 // CHECK:   #2 mymain

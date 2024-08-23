@@ -8,7 +8,7 @@ int main() {
   AnnotateIgnoreWritesBegin("", 0);
 }
 
-// CHECK: ThreadSanitizer: main thread finished with ignores enabled
+// CHECK: PredictiveSanitizer: main thread finished with ignores enabled
 // CHECK:   Ignore was enabled at:
 // CHECK:     #0 AnnotateIgnoreWritesBegin
 // CHECK:     #1 main

@@ -73,4 +73,4 @@ int main(int argc, const char *argv[]) {
 }
 
 // CHECK: Done.
-// CHECK-NOT: WARNING: ThreadSanitizer
+// CHECK-NOT: WARNING: PredictiveSanitizer

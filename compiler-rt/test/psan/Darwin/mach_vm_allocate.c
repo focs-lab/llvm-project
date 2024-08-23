@@ -1,7 +1,7 @@
 // Test that mach_vm_[de]allocate resets shadow memory status.
 //
 // RUN: %clang_psan %s -o %t
-// RUN: %run %t 2>&1 | FileCheck %s --implicit-check-not='ThreadSanitizer'
+// RUN: %run %t 2>&1 | FileCheck %s --implicit-check-not='PredictiveSanitizer'
 
 // <mach/mach_vm.h> is not provided by the simulator SDK.
 // UNSUPPORTED: iossim

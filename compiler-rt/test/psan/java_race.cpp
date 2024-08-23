@@ -24,5 +24,5 @@ int main() {
   return __psan_java_fini();
 }
 
-// CHECK: WARNING: ThreadSanitizer: data race
+// CHECK: WARNING: PredictiveSanitizer: data race
 // CHECK: DONE

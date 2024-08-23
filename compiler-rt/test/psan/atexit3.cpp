@@ -36,6 +36,6 @@ int main() {
   atexit(atexit5);
 }
 
-// CHECK-NOT: FATAL: ThreadSanitizer
-// CHECK-NOT: WARNING: ThreadSanitizer
+// CHECK-NOT: FATAL: PredictiveSanitizer
+// CHECK-NOT: WARNING: PredictiveSanitizer
 // CHECK: 54321

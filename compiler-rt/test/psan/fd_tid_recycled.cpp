@@ -45,7 +45,7 @@ int main() {
 }
 
 // CHECK-NOT: CHECK failed
-// CHECK: WARNING: ThreadSanitizer: data race
+// CHECK: WARNING: PredictiveSanitizer: data race
 // CHECK:   Write of size 8
 // CHECK:     #0 close
 // CHECK:     #1 ThreadClose

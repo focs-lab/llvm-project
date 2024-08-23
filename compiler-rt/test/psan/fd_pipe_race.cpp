@@ -26,7 +26,7 @@ int main() {
   pthread_join(t[1], NULL);
 }
 
-// CHECK: WARNING: ThreadSanitizer: data race
+// CHECK: WARNING: PredictiveSanitizer: data race
 // CHECK:   Write of size 8
 // CHECK:     #0 close
 // CHECK:     #1 Thread2

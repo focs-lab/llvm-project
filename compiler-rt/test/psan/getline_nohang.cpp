@@ -40,7 +40,7 @@ int main() {
   pthread_attr_destroy(&a);
   fprintf(stderr, "DONE\n");
   return 0;
-  // ThreadSanitizer used to hang here because of a deadlock on a file stream.
+  // PredictiveSanitizer used to hang here because of a deadlock on a file stream.
 }
 
 // CHECK: DONE

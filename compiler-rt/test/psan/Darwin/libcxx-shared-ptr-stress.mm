@@ -74,4 +74,4 @@ int main(int argc, const char *argv[]) {
 // CHECK: shared_call_counter = 1000000
 // CHECK: destructor_counter = 1000
 // CHECK: Done.
-// CHECK-NOT: WARNING: ThreadSanitizer
+// CHECK-NOT: WARNING: PredictiveSanitizer

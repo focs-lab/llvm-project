@@ -43,6 +43,6 @@ int main() {
   return __psan_java_fini();
 }
 
-// CHECK: WARNING: ThreadSanitizer: data race
+// CHECK: WARNING: PredictiveSanitizer: data race
 // CHECK:     #0 MyFunc MyFile.java:1234:56
 // CHECK: DONE

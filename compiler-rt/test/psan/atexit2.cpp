@@ -20,7 +20,7 @@ int main() {
     atexit(atexit1);
 }
 
-// CHECK-NOT: FATAL: ThreadSanitizer
-// CHECK-NOT: WARNING: ThreadSanitizer
+// CHECK-NOT: FATAL: PredictiveSanitizer
+// CHECK-NOT: WARNING: PredictiveSanitizer
 // CHECK: run count: 10000
 

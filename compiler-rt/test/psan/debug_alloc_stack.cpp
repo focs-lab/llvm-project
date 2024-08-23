@@ -77,7 +77,7 @@ int main() {
   return 0;
 }
 
-// CHECK: WARNING: ThreadSanitizer: data race
+// CHECK: WARNING: PredictiveSanitizer: data race
 // CHECK: Location is heap block of size 10 at {{.*}} allocated by thread T1
 // CHECK: #0 [[ALLOC_FRAME_0]]
 // CHECK: #1 [[ALLOC_FRAME_1]] in alloc_func

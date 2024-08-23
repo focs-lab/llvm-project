@@ -5,9 +5,9 @@
 // feature) does.
 
 // RUN: %clang_psan %s -o %t
-// RUN: %clang_psan %s -o %t.dylib -fno-sanitize=thread -dynamiclib -DSHARED_LIB
+// RUN: %clang_psan %s -o %t.dylib -fno-sanitize=predict -dynamiclib -DSHARED_LIB
 //
-// RUN: env DYLD_INSERT_LIBRARIES=%t.dylib %run %t 2>&1 | FileCheck %s --implicit-check-not='ThreadSanitizer'
+// RUN: env DYLD_INSERT_LIBRARIES=%t.dylib %run %t 2>&1 | FileCheck %s --implicit-check-not='PredictiveSanitizer'
 //
 // XFAIL: ios
 

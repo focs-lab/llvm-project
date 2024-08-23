@@ -1,5 +1,5 @@
 // RUN: %clang_psan %s -o %t
-// RUN: %run %t 2>&1 | FileCheck %s --implicit-check-not='ThreadSanitizer'
+// RUN: %run %t 2>&1 | FileCheck %s --implicit-check-not='PredictiveSanitizer'
 
 #include <os/lock.h>
 #include <pthread.h>

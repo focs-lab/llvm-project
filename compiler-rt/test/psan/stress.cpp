@@ -95,8 +95,8 @@ int main() {
   return 0;
 }
 
-// CHECK-NORACE-NOT: ThreadSanitizer:
+// CHECK-NORACE-NOT: PredictiveSanitizer:
 // CHECK-NORACE: DONE
-// CHECK-NORACE-NOT: ThreadSanitizer:
-// CHECK-RACE: ThreadSanitizer: data race
+// CHECK-NORACE-NOT: PredictiveSanitizer:
+// CHECK-RACE: PredictiveSanitizer: data race
 // CHECK-RACE: DONE

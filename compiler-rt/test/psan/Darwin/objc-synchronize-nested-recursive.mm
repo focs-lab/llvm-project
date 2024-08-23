@@ -29,7 +29,7 @@ int main() {
   }
 
   NSLog(@"PASS");
-// CHECK-NOT: ThreadSanitizer
+// CHECK-NOT: PredictiveSanitizer
 // CHECK: PASS
   return 0;
 }

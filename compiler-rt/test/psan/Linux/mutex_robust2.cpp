@@ -33,9 +33,9 @@ int main() {
 
 // This is a false positive, psan must not bark at the data race.
 // But currently it does.
-// CHECK-NOT: WARNING: ThreadSanitizer WARNING: double lock of mutex
-// CHECK: WARNING: ThreadSanitizer: data race
+// CHECK-NOT: WARNING: PredictiveSanitizer WARNING: double lock of mutex
+// CHECK: WARNING: PredictiveSanitizer: data race
 // CHECK-NOT: EOWNERDEAD
 // CHECK: DONE
-// CHECK-NOT: WARNING: ThreadSanitizer
+// CHECK-NOT: WARNING: PredictiveSanitizer
 

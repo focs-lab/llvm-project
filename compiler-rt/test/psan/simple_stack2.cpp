@@ -42,7 +42,7 @@ int main() {
   pthread_join(t, NULL);
 }
 
-// CHECK:      WARNING: ThreadSanitizer: data race
+// CHECK:      WARNING: PredictiveSanitizer: data race
 // CHECK-NEXT:   Write of size 4 at {{.*}} by thread T1:
 // CHECK-NEXT:     #0 foo1{{.*}} {{.*}}simple_stack2.cpp:[[@LINE-40]]{{(:10)?}} ({{.*}})
 // CHECK-NEXT:     #1 bar1{{.*}} {{.*}}simple_stack2.cpp:[[@LINE-34]]{{(:3)?}} ({{.*}})

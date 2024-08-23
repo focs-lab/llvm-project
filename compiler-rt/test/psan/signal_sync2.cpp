@@ -70,5 +70,5 @@ int main() {
   return 0;
 }
 
-// CHECK-NOT: WARNING: ThreadSanitizer:
+// CHECK-NOT: WARNING: PredictiveSanitizer:
 // CHECK: DONE

@@ -67,5 +67,5 @@ int main() {
   fprintf(stderr, "PASS\n");
 }
 
-// CHECK-NOT: WARNING: ThreadSanitizer:
+// CHECK-NOT: WARNING: PredictiveSanitizer:
 // CHECK: PASS

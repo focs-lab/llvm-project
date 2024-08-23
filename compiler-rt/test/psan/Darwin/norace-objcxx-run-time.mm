@@ -110,4 +110,4 @@ int main(int argc, const char *argv[]) {
 }
 
 // CHECK: Done.
-// CHECK-NOT: ThreadSanitizer: data race
+// CHECK-NOT: PredictiveSanitizer: data race

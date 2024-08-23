@@ -54,4 +54,4 @@ int main() {
 }
 
 // CHECK: Hello world
-// CHECK-NOT: WARNING: ThreadSanitizer
+// CHECK-NOT: WARNING: PredictiveSanitizer

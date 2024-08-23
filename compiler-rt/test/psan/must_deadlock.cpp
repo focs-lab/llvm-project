@@ -17,7 +17,7 @@ void *Thread(void *p) {
   pthread_mutex_lock(&mu2);
   pthread_barrier_wait(&barrier);
   pthread_mutex_lock(&mu1);
-  // CHECK: ThreadSanitizer: lock-order-inversion (potential deadlock)
+  // CHECK: PredictiveSanitizer: lock-order-inversion (potential deadlock)
   pthread_mutex_unlock(&mu1);
   pthread_mutex_unlock(&mu2);
   return p;

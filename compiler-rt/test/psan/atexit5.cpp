@@ -19,7 +19,7 @@ int main() {
   return 0;
 }
 
-// CHECK: WARNING: ThreadSanitizer: data race
+// CHECK: WARNING: PredictiveSanitizer: data race
 // CHECK:   Write of size 8
 // The exact spelling and number of std frames is hard to guess.
 // CHECK:     unique_ptr

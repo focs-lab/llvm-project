@@ -25,5 +25,5 @@ int main() {
   return 0;
 }
 
-// CHECK: WARNING: ThreadSanitizer: data race
-// CHECK: SUMMARY: ThreadSanitizer: data race{{.*}}Thread
+// CHECK: WARNING: PredictiveSanitizer: data race
+// CHECK: SUMMARY: PredictiveSanitizer: data race{{.*}}Thread

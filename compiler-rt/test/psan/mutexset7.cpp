@@ -32,7 +32,7 @@ int main() {
   pthread_join(t[1], NULL);
 }
 
-// CHECK: WARNING: ThreadSanitizer: data race
+// CHECK: WARNING: PredictiveSanitizer: data race
 // CHECK: Write of size 4 at {{.*}} by thread T1:
 // CHECK: Previous write of size 4 at {{.*}} by thread T2
 // CHECK:                                      (mutexes: write [[M1:M[0-9]+]]):

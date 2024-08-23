@@ -15,12 +15,12 @@ def get_required_attr(config, attr_name):
 
 
 # Setup config name.
-config.name = "ThreadSanitizer" + config.name_suffix
+config.name = "PredictiveSanitizer" + config.name_suffix
 
 # Setup source root.
 config.test_source_root = os.path.dirname(__file__)
 
-# Setup environment variables for running ThreadSanitizer.
+# Setup environment variables for running PredictiveSanitizer.
 default_psan_opts = "atexit_sleep_ms=0"
 
 if config.host_os == "Darwin":
@@ -41,16 +41,16 @@ config.substitutions.append(
     ("%env_psan_opts=", "env PSAN_OPTIONS=" + default_psan_opts)
 )
 
-# GCC driver doesn't add necessary compile/link flags with -fsanitize=thread.
+# GCC driver doesn't add necessary compile/link flags with -fsanitize=predict.
 if config.compiler_id == "GNU":
     extra_cflags = ["-fPIE", "-pthread", "-ldl", "-lrt", "-pie"]
 else:
     extra_cflags = []
 
 psan_incdir = config.test_source_root + "/../"
-# Setup default compiler flags used with -fsanitize=thread option.
+# Setup default compiler flags used with -fsanitize=predict option.
 clang_psan_cflags = (
-    ["-fsanitize=thread", "-Wall"]
+    ["-fsanitize=predict", "-Wall"]
     + [config.target_cflags]
     + config.debug_info_flags
     + extra_cflags

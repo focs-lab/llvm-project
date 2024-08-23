@@ -50,4 +50,4 @@ int main(int argc, char **argv) {
   fprintf(stderr, "DONE\n");
 }
 
-// CHECK-NOT: ThreadSanitizer: data race
+// CHECK-NOT: PredictiveSanitizer: data race

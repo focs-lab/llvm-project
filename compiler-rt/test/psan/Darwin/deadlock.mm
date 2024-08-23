@@ -43,5 +43,5 @@ int main(int argc, const char *argv[]) {
 }
 
 // CHECK: Hello world.
-// CHECK: WARNING: ThreadSanitizer: lock-order-inversion (potential deadlock)
+// CHECK: WARNING: PredictiveSanitizer: lock-order-inversion (potential deadlock)
 // CHECK: Done.

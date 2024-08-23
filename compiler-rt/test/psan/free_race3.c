@@ -21,7 +21,7 @@ int main() {
   return 0;
 }
 
-// CHECK: WARNING: ThreadSanitizer: data race
+// CHECK: WARNING: PredictiveSanitizer: data race
 // CHECK:   Write of size 8 at {{.*}} by main thread{{.*}}:
 // CHECK:     #0 free
 // CHECK:     #{{(1|2)}} main

@@ -31,21 +31,21 @@ int main() {
   auto v0 = load(&data[1]);
   store(&data[0], v0);
   // CHECK: addr0:[[ADDR0_0:0x[0-9,a-f]+]] [[ADDR0_1:0x[0-9,a-f]+]]
-  // CHECK: WARNING: ThreadSanitizer: data race
+  // CHECK: WARNING: PredictiveSanitizer: data race
   // CHECK:   Write of size 8 at [[ADDR0_0]] by main thread:
   // CHECK:   Previous read of size 8 at [[ADDR0_1]] by thread T1:
 
   print_address("addr1:", 2, (char *)&data[2] + 8, (char *)&data[2] + 8);
   ((volatile unsigned long long *)(&data[2]))[1] = 42;
   // CHECK: addr1:[[ADDR1_0:0x[0-9,a-f]+]] [[ADDR1_1:0x[0-9,a-f]+]]
-  // CHECK: WARNING: ThreadSanitizer: data race
+  // CHECK: WARNING: PredictiveSanitizer: data race
   // CHECK:   Write of size 8 at [[ADDR1_0]] by main thread:
   // CHECK:   Previous read of size 8 at [[ADDR1_1]] by thread T1:
 
   print_address("addr2:", 2, (char *)&data[4] + 15, (char *)&data[4] + 8);
   ((volatile char *)(&data[4]))[15] = 42;
   // CHECK: addr2:[[ADDR2_0:0x[0-9,a-f]+]] [[ADDR2_1:0x[0-9,a-f]+]]
-  // CHECK: WARNING: ThreadSanitizer: data race
+  // CHECK: WARNING: PredictiveSanitizer: data race
   // CHECK:   Write of size 1 at [[ADDR2_0]] by main thread:
   // CHECK:   Previous read of size 8 at [[ADDR2_1]] by thread T1:
 
@@ -71,21 +71,21 @@ void *Thread(void *arg) {
   print_address("addr3:", 2, &data[12], &data[12]);
   store(&data[12], v0);
   // CHECK: addr3:[[ADDR3_0:0x[0-9,a-f]+]] [[ADDR3_1:0x[0-9,a-f]+]]
-  // CHECK: WARNING: ThreadSanitizer: data race
+  // CHECK: WARNING: PredictiveSanitizer: data race
   // CHECK:   Write of size 8 at [[ADDR3_0]] by thread T1:
   // CHECK:   Previous write of size 8 at [[ADDR3_1]] by main thread:
 
   print_address("addr4:", 2, (char *)&data[14] + 8, (char *)&data[14] + 8);
   store(&data[14], v0);
   // CHECK: addr4:[[ADDR4_0:0x[0-9,a-f]+]] [[ADDR4_1:0x[0-9,a-f]+]]
-  // CHECK: WARNING: ThreadSanitizer: data race
+  // CHECK: WARNING: PredictiveSanitizer: data race
   // CHECK:   Write of size 8 at [[ADDR4_0]] by thread T1:
   // CHECK:   Previous write of size 8 at [[ADDR4_1]] by main thread:
 
   print_address("addr5:", 2, (char *)&data[16] + 8, (char *)&data[16] + 15);
   store(&data[16], v0);
   // CHECK: addr5:[[ADDR5_0:0x[0-9,a-f]+]] [[ADDR5_1:0x[0-9,a-f]+]]
-  // CHECK: WARNING: ThreadSanitizer: data race
+  // CHECK: WARNING: PredictiveSanitizer: data race
   // CHECK:   Write of size 8 at [[ADDR5_0]] by thread T1:
   // CHECK:   Previous write of size 1 at [[ADDR5_1]] by main thread:
   return NULL;

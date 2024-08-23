@@ -7,12 +7,12 @@ int main() {
   return 0;
 }
 
-// CHECK: WARNING: ThreadSanitizer: unlock of an unlocked mutex (or by a wrong thread)
+// CHECK: WARNING: PredictiveSanitizer: unlock of an unlocked mutex (or by a wrong thread)
 // CHECK:     #0 AnnotateRWLockReleased
 // CHECK:     #1 main
 // CHECK: Location is stack of main thread.
 // CHECK:   Mutex {{.*}} created at:
 // CHECK:     #0 AnnotateRWLockReleased
 // CHECK:     #1 main
-// CHECK: SUMMARY: ThreadSanitizer: unlock of an unlocked mutex (or by a wrong thread)
+// CHECK: SUMMARY: PredictiveSanitizer: unlock of an unlocked mutex (or by a wrong thread)
 

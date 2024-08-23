@@ -25,6 +25,6 @@ int main(int argc, const char *argv[]) {
 }
 
 // CHECK: start
-// CHECK: WARNING: ThreadSanitizer: data race
+// CHECK: WARNING: PredictiveSanitizer: data race
 // CHECK: Location is global 'global'
 // CHECK: done

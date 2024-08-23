@@ -44,5 +44,5 @@ int main() {
   fprintf(stderr, "DONE\n");
 }
 
-// CHECK-NOT: ThreadSanitizer: data race
+// CHECK-NOT: PredictiveSanitizer: data race
 // CHECK: DONE

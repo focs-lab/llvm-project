@@ -67,4 +67,4 @@ __psan_on_report(void *report) {
 }
 
 // CHECK: Done.
-// CHECK: ThreadSanitizer: reported 1 warnings
+// CHECK: PredictiveSanitizer: reported 1 warnings

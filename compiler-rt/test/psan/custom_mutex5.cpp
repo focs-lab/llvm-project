@@ -26,8 +26,8 @@ int main() {
   return 0;
 }
 
-// CHECK: WARNING: ThreadSanitizer: destroy of a locked mutex
+// CHECK: WARNING: PredictiveSanitizer: destroy of a locked mutex
 // CHECK:   main {{.*}}custom_mutex5.cpp:14
-// CHECK: WARNING: ThreadSanitizer: destroy of a locked mutex
+// CHECK: WARNING: PredictiveSanitizer: destroy of a locked mutex
 // CHECK:   main {{.*}}custom_mutex5.cpp:22
 // CHECK: DONE

@@ -29,7 +29,7 @@ int main() {
 }
 
 // CHECK: on_exit_callback(2, 42)
-// CHECK: WARNING: ThreadSanitizer: data race
+// CHECK: WARNING: PredictiveSanitizer: data race
 // CHECK:   Write of size 8
 // CHECK:     #0 on_exit_callback
 // CHECK:     #1 on_exit_callback_installed_at

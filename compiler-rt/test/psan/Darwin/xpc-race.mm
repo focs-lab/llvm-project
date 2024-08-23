@@ -42,7 +42,7 @@ int main(int argc, const char *argv[]) {
           barrier_wait(&barrier);
 
         global++;
-        // CHECK: WARNING: ThreadSanitizer: data race
+        // CHECK: WARNING: PredictiveSanitizer: data race
         // CHECK:   Write of size 8
         // CHECK:     #0 {{.*}}xpc-race.mm:[[@LINE-3]]
         // CHECK:   Previous write of size 8

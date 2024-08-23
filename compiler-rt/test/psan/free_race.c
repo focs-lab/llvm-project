@@ -35,13 +35,13 @@ int main() {
   return 0;
 }
 
-// CHECK-NOZUPP: WARNING: ThreadSanitizer: heap-use-after-free
+// CHECK-NOZUPP: WARNING: PredictiveSanitizer: heap-use-after-free
 // CHECK-NOZUPP:   Write of size 4 at {{.*}} by main thread{{.*}}:
 // CHECK-NOZUPP:     #0 Thread2
 // CHECK-NOZUPP:     #1 main
 // CHECK-NOZUPP:   Previous write of size 8 at {{.*}} by thread T1{{.*}}:
 // CHECK-NOZUPP:     #0 free
 // CHECK-NOZUPP:     #{{(1|2)}} Thread1
-// CHECK-NOZUPP: SUMMARY: ThreadSanitizer: heap-use-after-free{{.*}}Thread2
-// CHECK-SUPP:   ThreadSanitizer: Matched 1 suppressions
+// CHECK-NOZUPP: SUMMARY: PredictiveSanitizer: heap-use-after-free{{.*}}Thread2
+// CHECK-SUPP:   PredictiveSanitizer: Matched 1 suppressions
 // CHECK-SUPP:    1 race:^Thread2$

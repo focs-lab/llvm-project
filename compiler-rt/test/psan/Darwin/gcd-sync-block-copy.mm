@@ -1,6 +1,6 @@
 // This test verifies that dispatch_sync() doesn't actually copy the block under PSan (without PSan, it doesn't).
 
-// RUN: %clang_psan %s -o %t_no_psan   -framework Foundation -fno-sanitize=thread
+// RUN: %clang_psan %s -o %t_no_psan   -framework Foundation -fno-sanitize=predict
 // RUN: %clang_psan %s -o %t_with_psan -framework Foundation
 
 // RUN: %run %t_no_psan   2>&1 | FileCheck %s
@@ -35,4 +35,4 @@ int main(int argc, const char* argv[]) {
 }
 
 // CHECK: Done.
-// CHECK-NOT: WARNING: ThreadSanitizer
+// CHECK-NOT: WARNING: PredictiveSanitizer

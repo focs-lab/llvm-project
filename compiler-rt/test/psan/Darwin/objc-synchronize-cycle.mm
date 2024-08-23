@@ -19,13 +19,13 @@ int main() {
     // obj1 -> obj1
     @synchronized(obj2) {
       @synchronized(obj1) {
-// CHECK: ThreadSanitizer: lock-order-inversion (potential deadlock)
+// CHECK: PredictiveSanitizer: lock-order-inversion (potential deadlock)
       }
     }
   }
 
   NSLog(@"PASS");
-// DISABLED-NOT: ThreadSanitizer
+// DISABLED-NOT: PredictiveSanitizer
 // DISABLED: PASS
   return 0;
 }

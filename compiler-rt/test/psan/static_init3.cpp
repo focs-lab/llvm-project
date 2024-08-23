@@ -44,4 +44,4 @@ int main() {
   pthread_join(t[1], 0);
 }
 
-// CHECK: WARNING: ThreadSanitizer: data race
+// CHECK: WARNING: PredictiveSanitizer: data race

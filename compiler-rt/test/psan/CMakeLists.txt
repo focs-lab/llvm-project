@@ -103,7 +103,7 @@ if(APPLE)
         ${CMAKE_CURRENT_SOURCE_DIR}/lit.site.cfg.py.in
         ${CMAKE_CURRENT_BINARY_DIR}/${CONFIG_NAME}/lit.site.cfg.py
         )
-      add_lit_testsuite(check-psan-${platform}-${arch} "ThreadSanitizer ${platform} ${arch} tests"
+      add_lit_testsuite(check-psan-${platform}-${arch} "PredictiveSanitizer ${platform} ${arch} tests"
         ${CMAKE_CURRENT_BINARY_DIR}/${CONFIG_NAME}/
         EXCLUDE_FROM_CHECK_ALL
         DEPENDS ${PSAN_TEST_DEPS})
@@ -127,13 +127,13 @@ if(COMPILER_RT_INCLUDE_TESTS)
   endif()
 endif()
 
-add_lit_testsuite(check-psan "Running ThreadSanitizer tests"
+add_lit_testsuite(check-psan "Running PredictiveSanitizer tests"
   ${PSAN_TESTSUITES}
   DEPENDS ${PSAN_TEST_DEPS})
 set_target_properties(check-psan PROPERTIES FOLDER "Compiler-RT Tests")
 
 if(COMPILER_RT_PSAN_HAS_STATIC_RUNTIME)
-  add_lit_testsuite(check-psan-dynamic "Running the ThreadSanitizer tests with dynamic runtime"
+  add_lit_testsuite(check-psan-dynamic "Running the PredictiveSanitizer tests with dynamic runtime"
                     ${PSAN_DYNAMIC_TESTSUITES}
                     EXCLUDE_FROM_CHECK_ALL
                     DEPENDS ${PSAN_DYNAMIC_TEST_DEPS})

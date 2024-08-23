@@ -52,5 +52,5 @@ int main(int argc, char **argv) {
 
 // Note: there is a race on the moved object (which we used to detect),
 // but now __psan_java_move resets the object shadow, so we don't detect it anymore.
-// CHECK-NOT: WARNING: ThreadSanitizer: data race
+// CHECK-NOT: WARNING: PredictiveSanitizer: data race
 // CHECK: DONE

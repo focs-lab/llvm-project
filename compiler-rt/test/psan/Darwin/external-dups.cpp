@@ -28,7 +28,7 @@ int main(int argc, char *argv[]) {
       barrier_wait(&barrier);
       ExternalWrite(opaque_object);
     });
-    // CHECK: WARNING: ThreadSanitizer: race on HelloWorld
+    // CHECK: WARNING: PredictiveSanitizer: race on HelloWorld
     t1.join();
     t2.join();
   }
@@ -46,7 +46,7 @@ int main(int argc, char *argv[]) {
       barrier_wait(&barrier);
       ExternalWrite(opaque_object);
     });
-    // CHECK: WARNING: ThreadSanitizer: race on HelloWorld
+    // CHECK: WARNING: PredictiveSanitizer: race on HelloWorld
     t1.join();
     t2.join();
   }
@@ -55,4 +55,4 @@ int main(int argc, char *argv[]) {
   // CHECK: Second phase done.
 }
 
-// CHECK: ThreadSanitizer: reported 2 warnings
+// CHECK: PredictiveSanitizer: reported 2 warnings

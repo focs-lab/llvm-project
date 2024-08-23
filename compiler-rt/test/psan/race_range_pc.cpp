@@ -34,7 +34,7 @@ int main() {
   return 0;
 }
 
-// CHECK: WARNING: ThreadSanitizer: data race
+// CHECK: WARNING: PredictiveSanitizer: data race
 // CHECK:     #0 foobar
 // CHECK:     #0 barbaz
 // CHECK: DONE

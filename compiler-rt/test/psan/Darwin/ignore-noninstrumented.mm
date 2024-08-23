@@ -52,5 +52,5 @@ int main(int argc, char *argv[]) {
 }
 
 // CHECK: Hello world.
-// CHECK-RACE: SUMMARY: ThreadSanitizer: data race
+// CHECK-RACE: SUMMARY: PredictiveSanitizer: data race
 // CHECK: Done.

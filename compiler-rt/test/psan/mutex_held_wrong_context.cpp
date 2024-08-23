@@ -22,13 +22,13 @@ int main() {
   return 0;
 }
 
-// CHECK: WARNING: ThreadSanitizer: mutex held in the wrong context
+// CHECK: WARNING: PredictiveSanitizer: mutex held in the wrong context
 // CHECK:     {{.*}}__psan_check_no_mutexes_held{{.*}}
 // CHECK:     {{.*}}Func1{{.*}}
 // CHECK:     {{.*}}main{{.*}}
 // CHECK:   Mutex {{.*}} created at:
 // CHECK:     {{.*}}pthread_mutex_init{{.*}}
 // CHECK:     {{.*}}main{{.*}}
-// CHECK: SUMMARY: ThreadSanitizer: mutex held in the wrong context {{.*}}mutex_held_wrong_context.cpp{{.*}}Func1
+// CHECK: SUMMARY: PredictiveSanitizer: mutex held in the wrong context {{.*}}mutex_held_wrong_context.cpp{{.*}}Func1
 
-// CHECK-NOT: SUMMARY: ThreadSanitizer: mutex held in the wrong context {{.*}}mutex_held_wrong_context.cpp{{.*}}Func2
+// CHECK-NOT: SUMMARY: PredictiveSanitizer: mutex held in the wrong context {{.*}}mutex_held_wrong_context.cpp{{.*}}Func2

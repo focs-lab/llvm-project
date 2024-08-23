@@ -23,8 +23,8 @@ int main() {
   // mu2 => mu1
   pthread_mutex_lock(&mu2);
   pthread_mutex_lock(&mu1);
-  // CHECK: ThreadSanitizer: lock-order-inversion (potential deadlock)
-  // DISABLED-NOT: ThreadSanitizer
+  // CHECK: PredictiveSanitizer: lock-order-inversion (potential deadlock)
+  // DISABLED-NOT: PredictiveSanitizer
   // DISABLED: PASS
   pthread_mutex_unlock(&mu1);
   pthread_mutex_unlock(&mu2);

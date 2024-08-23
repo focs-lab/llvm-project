@@ -35,7 +35,7 @@ int main() {
   pthread_join(t, 0);
 }
 
-// CHECK: WARNING: ThreadSanitizer: data race
+// CHECK: WARNING: PredictiveSanitizer: data race
 // CHECK:   Write
 // CHECK:     #0 main
 // CHECK:   Previous write

@@ -28,7 +28,7 @@ int main() {
   return 0;
 }
 
-// CHECK: WARNING: ThreadSanitizer: data race
+// CHECK: WARNING: PredictiveSanitizer: data race
 // CHECK-Linux:   Location is TLS of thread T1.
 // CHECK-FreeBSD:   Location is TLS of thread T1.
 // CHECK-NetBSD:   Location is TLS of thread T1.

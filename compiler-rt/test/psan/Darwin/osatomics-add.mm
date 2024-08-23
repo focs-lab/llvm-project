@@ -45,4 +45,4 @@ int main(int argc, const char * argv[]) {
 
 // CHECK: start
 // CHECK: end, g = 42
-// CHECK-NOT: WARNING: ThreadSanitizer
+// CHECK-NOT: WARNING: PredictiveSanitizer

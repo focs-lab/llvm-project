@@ -1,10 +1,10 @@
 // This test verifies that dispatch_sync() doesn't actually copy the block under PSan (without PSan, it doesn't).
 
-// RUN: %clangxx_psan %s -o %t_no_psan -fno-sanitize=thread
+// RUN: %clangxx_psan %s -o %t_no_psan -fno-sanitize=predict
 // RUN: %clangxx_psan %s -o %t_with_psan
 
 // RUN: %run %t_no_psan   2>&1 | FileCheck %s
-// RUN: %run %t_with_psan 2>&1 | FileCheck %s --implicit-check-not='ThreadSanitizer'
+// RUN: %run %t_with_psan 2>&1 | FileCheck %s --implicit-check-not='PredictiveSanitizer'
 
 #include <dispatch/dispatch.h>
 

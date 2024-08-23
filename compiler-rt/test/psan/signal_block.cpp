@@ -55,6 +55,6 @@ int main(int argc, char** argv) {
   return 0;
 }
 
-// CHECK-NOT: ThreadSanitizer CHECK
-// CHECK-NOT: WARNING: ThreadSanitizer:
+// CHECK-NOT: PredictiveSanitizer CHECK
+// CHECK-NOT: WARNING: PredictiveSanitizer:
 // CHECK: DONE

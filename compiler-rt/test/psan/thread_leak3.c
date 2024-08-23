@@ -15,5 +15,5 @@ int main() {
   return 0;
 }
 
-// CHECK: WARNING: ThreadSanitizer: thread leak
-// CHECK: SUMMARY: ThreadSanitizer: thread leak{{.*}}main
+// CHECK: WARNING: PredictiveSanitizer: thread leak
+// CHECK: SUMMARY: PredictiveSanitizer: thread leak{{.*}}main

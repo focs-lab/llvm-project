@@ -1,4 +1,4 @@
-// RUN: %clangxx_psan -c -O1 -fno-sanitize=thread %s -o %t.o
+// RUN: %clangxx_psan -c -O1 -fno-sanitize=predict %s -o %t.o
 // RUN: %clangxx_psan -O1 %s %t.o -o %t && %run %t 2>&1 | FileCheck %s
 
 #include <stdio.h>
@@ -31,5 +31,5 @@ int main() {
 #endif
 
 // CHECK: user malloc
-// CHECK-NOT: ThreadSanitizer
+// CHECK-NOT: PredictiveSanitizer
 

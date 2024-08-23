@@ -2,11 +2,11 @@
 // RUN:                               -o %t-lib-instrumented.dylib \
 // RUN:   -install_name @rpath/`basename %t-lib-instrumented.dylib`
 
-// RUN: %clangxx_psan %p/external-lib.cpp -shared -fno-sanitize=thread \
+// RUN: %clangxx_psan %p/external-lib.cpp -shared -fno-sanitize=predict \
 // RUN:                               -o %t-lib-noninstrumented.dylib \
 // RUN:   -install_name @rpath/`basename %t-lib-noninstrumented.dylib`
 
-// RUN: %clangxx_psan %p/external-lib.cpp -shared -fno-sanitize=thread -DUSE_PSAN_CALLBACKS \
+// RUN: %clangxx_psan %p/external-lib.cpp -shared -fno-sanitize=predict -DUSE_PSAN_CALLBACKS \
 // RUN:                               -o %t-lib-noninstrumented-callbacks.dylib \
 // RUN:   -install_name @rpath/`basename %t-lib-noninstrumented-callbacks.dylib`
 
@@ -47,7 +47,7 @@ int main(int argc, char *argv[]) {
     t2.join();
   }
   
-  // CHECK-NOT: WARNING: ThreadSanitizer
+  // CHECK-NOT: WARNING: PredictiveSanitizer
   
   fprintf(stderr, "RR test done\n");
   // CHECK: RR test done
@@ -60,21 +60,21 @@ int main(int argc, char *argv[]) {
     t2.join();
   }
   
-  // TEST1: WARNING: ThreadSanitizer: data race
+  // TEST1: WARNING: PredictiveSanitizer: data race
   // TEST1: {{Write|Read}} of size 8 at
   // TEST1: Previous {{write|read}} of size 8 at
   // TEST1: Location is heap block of size 16 at
   
-  // TEST2-NOT: WARNING: ThreadSanitizer
+  // TEST2-NOT: WARNING: PredictiveSanitizer
   
-  // TEST3: WARNING: ThreadSanitizer: race on MyLibrary::MyObject
+  // TEST3: WARNING: PredictiveSanitizer: race on MyLibrary::MyObject
   // TEST3: {{Modifying|read-only}} access of MyLibrary::MyObject at
   // TEST3: {{ObjectWrite|ObjectRead}}
   // TEST3: Previous {{modifying|read-only}} access of MyLibrary::MyObject at
   // TEST3: {{ObjectWrite|ObjectRead}}
   // TEST3: Location is MyLibrary::MyObject of size 16 at
   // TEST3: {{ObjectCreate}}
-  // TEST3: SUMMARY: ThreadSanitizer: race on MyLibrary::MyObject {{.*}} in {{ObjectWrite|ObjectRead}}
+  // TEST3: SUMMARY: PredictiveSanitizer: race on MyLibrary::MyObject {{.*}} in {{ObjectWrite|ObjectRead}}
 
   fprintf(stderr, "RW test done\n");
   // CHECK: RW test done
@@ -87,18 +87,18 @@ int main(int argc, char *argv[]) {
     t2.join();
   }
   
-  // TEST1-NOT: WARNING: ThreadSanitizer: data race
+  // TEST1-NOT: WARNING: PredictiveSanitizer: data race
   
-  // TEST2-NOT: WARNING: ThreadSanitizer
+  // TEST2-NOT: WARNING: PredictiveSanitizer
   
-  // TEST3: WARNING: ThreadSanitizer: race on MyLibrary::MyObject
+  // TEST3: WARNING: PredictiveSanitizer: race on MyLibrary::MyObject
   // TEST3: Modifying access of MyLibrary::MyObject at
   // TEST3: {{ObjectWrite|ObjectWriteAnother}}
   // TEST3: Previous modifying access of MyLibrary::MyObject at
   // TEST3: {{ObjectWrite|ObjectWriteAnother}}
   // TEST3: Location is MyLibrary::MyObject of size 16 at
   // TEST3: {{ObjectCreate}}
-  // TEST3: SUMMARY: ThreadSanitizer: race on MyLibrary::MyObject {{.*}} in {{ObjectWrite|ObjectWriteAnother}}
+  // TEST3: SUMMARY: PredictiveSanitizer: race on MyLibrary::MyObject {{.*}} in {{ObjectWrite|ObjectWriteAnother}}
 
   fprintf(stderr, "WW test done\n");
   // CHECK: WW test done

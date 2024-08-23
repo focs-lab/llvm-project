@@ -85,7 +85,7 @@ int main() {
 
 // CHECK: in atfork
 // CHECK: in handler
-// CHECK: ThreadSanitizer: data race
+// CHECK: PredictiveSanitizer: data race
 // CHECK:   Write of size 8
 // CHECK:     #0 handler
 // CHECK:   Previous write of size 8

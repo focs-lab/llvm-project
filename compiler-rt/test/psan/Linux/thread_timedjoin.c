@@ -34,6 +34,6 @@ int main() {
   return 0;
 }
 
-// CHECK-NOT: WARNING: ThreadSanitizer: data race
-// CHECK-NOT: WARNING: ThreadSanitizer: thread leak
+// CHECK-NOT: WARNING: PredictiveSanitizer: data race
+// CHECK-NOT: WARNING: PredictiveSanitizer: thread leak
 // CHECK: PASS

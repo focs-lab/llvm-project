@@ -156,7 +156,7 @@ class LockTest {
     // CHECK: Expecting lock inversion: [[A1:0x[a-f0-9]*]] [[A2:0x[a-f0-9]*]]
     Lock_0_1();
     Lock_1_0();
-    // CHECK: WARNING: ThreadSanitizer: lock-order-inversion (potential deadlock)
+    // CHECK: WARNING: PredictiveSanitizer: lock-order-inversion (potential deadlock)
     // CHECK: Cycle in lock order graph: [[M1:M[0-9]+]] ([[A1]]) => [[M2:M[0-9]+]] ([[A2]]) => [[M1]]
     // CHECK: Mutex [[M2]] acquired here while holding mutex [[M1]]
     // CHECK:   #0 pthread_
@@ -169,7 +169,7 @@ class LockTest {
     // CHECK-SECOND:   Mutex [[M2]] previously acquired by the same thread here:
     // CHECK-SECOND:   #0 pthread_
     // CHECK-NOT-SECOND-NOT:   #0 pthread_
-    // CHECK-NOT: WARNING: ThreadSanitizer:
+    // CHECK-NOT: WARNING: PredictiveSanitizer:
   }
 
   // Simple lock order inversion with 3 locks.
@@ -183,9 +183,9 @@ class LockTest {
     Lock2(0, 1);
     Lock2(1, 2);
     Lock2(2, 0);
-    // CHECK: WARNING: ThreadSanitizer: lock-order-inversion (potential deadlock)
+    // CHECK: WARNING: PredictiveSanitizer: lock-order-inversion (potential deadlock)
     // CHECK: Cycle in lock order graph: [[M1:M[0-9]+]] ([[A1]]) => [[M2:M[0-9]+]] ([[A2]]) => [[M3:M[0-9]+]] ([[A3]]) => [[M1]]
-    // CHECK-NOT: WARNING: ThreadSanitizer:
+    // CHECK-NOT: WARNING: PredictiveSanitizer:
   }
 
   // Lock order inversion with lots of new locks created (but not used)
@@ -201,8 +201,8 @@ class LockTest {
     CreateAndDestroyManyLocks();
     U(2);
     Lock_1_0();
-    // CHECK: WARNING: ThreadSanitizer: lock-order-inversion (potential deadlock)
-    // CHECK-NOT: WARNING: ThreadSanitizer:
+    // CHECK: WARNING: PredictiveSanitizer: lock-order-inversion (potential deadlock)
+    // CHECK-NOT: WARNING: PredictiveSanitizer:
   }
 
   // lock l0=>l1; then create and use lots of locks; then lock l1=>l0.
@@ -217,7 +217,7 @@ class LockTest {
     CreateLockUnlockAndDestroyManyLocks();
     U(2);
     Lock_1_0();
-    // CHECK-NOT: WARNING: ThreadSanitizer:
+    // CHECK-NOT: WARNING: PredictiveSanitizer:
   }
 
   void Test5() {
@@ -226,13 +226,13 @@ class LockTest {
     // CHECK: Starting Test5
     Init(5);
     RunThreads(&LockTest::Lock_0_1<true>, &LockTest::Lock_1_0<true>);
-    // CHECK: WARNING: ThreadSanitizer: lock-order-inversion
+    // CHECK: WARNING: PredictiveSanitizer: lock-order-inversion
     // CHECK: Cycle in lock order graph: [[M1:M[0-9]+]] ({{.*}}) => [[M2:M[0-9]+]] ({{.*}}) => [[M1]]
     // CHECK: Mutex [[M2]] acquired here while holding mutex [[M1]] in thread [[T1:T[0-9]+]]
     // CHECK: Mutex [[M1]] acquired here while holding mutex [[M2]] in thread [[T2:T[0-9]+]]
     // CHECK: Thread [[T1]] {{.*}} created by main thread
     // CHECK: Thread [[T2]] {{.*}} created by main thread
-    // CHECK-NOT: WARNING: ThreadSanitizer:
+    // CHECK-NOT: WARNING: PredictiveSanitizer:
   }
 
   void Test6() {
@@ -240,7 +240,7 @@ class LockTest {
     fprintf(stderr, "Starting Test6: 3 threads lock/unlock private mutexes\n");
     // CHECK: Starting Test6
     Init(100);
-    // CHECK-NOT: WARNING: ThreadSanitizer:
+    // CHECK-NOT: WARNING: PredictiveSanitizer:
     RunThreads(&LockTest::Lock1_Loop_0, &LockTest::Lock1_Loop_1,
                &LockTest::Lock1_Loop_2);
   }
@@ -252,25 +252,25 @@ class LockTest {
     Init(10);
     L(0); T(1); U(1); U(0);
     T(1); L(0); U(1); U(0);
-    // CHECK-NOT: WARNING: ThreadSanitizer:
+    // CHECK-NOT: WARNING: PredictiveSanitizer:
     fprintf(stderr, "No cycle: 0=>1\n");
     // CHECK: No cycle: 0=>1
 
     T(2); L(3); U(3); U(2);
     L(3); T(2); U(3); U(2);
-    // CHECK-NOT: WARNING: ThreadSanitizer:
+    // CHECK-NOT: WARNING: PredictiveSanitizer:
     fprintf(stderr, "No cycle: 2=>3\n");
     // CHECK: No cycle: 2=>3
 
     T(4); L(5); U(4); U(5);
     L(5); L(4); U(4); U(5);
-    // CHECK: WARNING: ThreadSanitizer: lock-order-inversion
+    // CHECK: WARNING: PredictiveSanitizer: lock-order-inversion
     fprintf(stderr, "Have cycle: 4=>5\n");
     // CHECK: Have cycle: 4=>5
 
     L(7); L(6); U(6); U(7);
     T(6); L(7); U(6); U(7);
-    // CHECK: WARNING: ThreadSanitizer: lock-order-inversion
+    // CHECK: WARNING: PredictiveSanitizer: lock-order-inversion
     fprintf(stderr, "Have cycle: 6=>7\n");
     // CHECK: Have cycle: 6=>7
   }
@@ -283,13 +283,13 @@ class LockTest {
     // CHECK-RD: Starting Test8
     RL(0); L(1); RU(0); U(1);
     L(1); RL(0); RU(0); U(1);
-    // CHECK-RD: WARNING: ThreadSanitizer: lock-order-inversion
+    // CHECK-RD: WARNING: PredictiveSanitizer: lock-order-inversion
     fprintf(stderr, "Have cycle: 0=>1\n");
     // CHECK-RD: Have cycle: 0=>1
 
     RL(2); RL(3); RU(2); RU(3);
     RL(3); RL(2); RU(2); RU(3);
-    // CHECK-RD: WARNING: ThreadSanitizer: lock-order-inversion
+    // CHECK-RD: WARNING: PredictiveSanitizer: lock-order-inversion
     fprintf(stderr, "Have cycle: 2=>3\n");
     // CHECK-RD: Have cycle: 2=>3
   }
@@ -302,7 +302,7 @@ class LockTest {
     Init(5);
     L(0); L(0); L(0); L(1); U(1); U(0); U(0); U(0);
     L(1); L(1); L(1); L(0); U(0); U(1); U(1); U(1);
-    // CHECK-REC: WARNING: ThreadSanitizer: lock-order-inversion
+    // CHECK-REC: WARNING: PredictiveSanitizer: lock-order-inversion
   }
 
   void Test10() {
@@ -310,7 +310,7 @@ class LockTest {
     fprintf(stderr, "Starting Test10: 4 threads lock/unlock 4 private mutexes, one under another\n");
     // CHECK: Starting Test10
     Init(100);
-    // CHECK-NOT: WARNING: ThreadSanitizer:
+    // CHECK-NOT: WARNING: PredictiveSanitizer:
     RunThreads(&LockTest::Test10_Thread1, &LockTest::Test10_Thread2,
                &LockTest::Test10_Thread3, &LockTest::Test10_Thread4);
   }
@@ -336,7 +336,7 @@ class LockTest {
     fprintf(stderr, "Starting Test11: 4 threads lock/unlock 4 private mutexes, all under another private mutex\n");
     // CHECK: Starting Test11
     Init(500);
-    // CHECK-NOT: WARNING: ThreadSanitizer:
+    // CHECK-NOT: WARNING: PredictiveSanitizer:
     RunThreads(&LockTest::Test11_Thread1, &LockTest::Test11_Thread2,
                &LockTest::Test11_Thread3, &LockTest::Test11_Thread4);
   }
@@ -365,7 +365,7 @@ class LockTest {
     fprintf(stderr, "Starting Test12: 4 threads read lock/unlock 4 shared mutexes, one under another\n");
     // CHECK-RD: Starting Test12
     Init(500);
-    // CHECK-RD-NOT: WARNING: ThreadSanitizer:
+    // CHECK-RD-NOT: WARNING: PredictiveSanitizer:
     RunThreads(&LockTest::Test12_Thread, &LockTest::Test12_Thread,
                &LockTest::Test12_Thread, &LockTest::Test12_Thread);
   }
@@ -388,7 +388,7 @@ class LockTest {
     fprintf(stderr, "Starting Test13: 4 threads read lock/unlock 4 shared mutexes, all under another shared mutex\n");
     // CHECK-RD: Starting Test13
     Init(500);
-    // CHECK-RD-NOT: WARNING: ThreadSanitizer:
+    // CHECK-RD-NOT: WARNING: PredictiveSanitizer:
     RunThreads(&LockTest::Test13_Thread, &LockTest::Test13_Thread,
                &LockTest::Test13_Thread, &LockTest::Test13_Thread);
   }
@@ -433,7 +433,7 @@ class LockTest {
     if (test_number > 0 && test_number != 16) return;
     fprintf(stderr, "Starting Test16: detailed output test with two locks\n");
     // CHECK: Starting Test16
-    // CHECK: WARNING: ThreadSanitizer: lock-order-inversion
+    // CHECK: WARNING: PredictiveSanitizer: lock-order-inversion
     // CHECK: acquired here while holding mutex
     // CHECK: LockTest::Acquire1
     // CHECK-NEXT: LockTest::Acquire_0_then_1
@@ -458,7 +458,7 @@ class LockTest {
     if (test_number > 0 && test_number != 17) return;
     fprintf(stderr, "Starting Test17: detailed output test with three locks\n");
     // CHECK: Starting Test17
-    // CHECK: WARNING: ThreadSanitizer: lock-order-inversion
+    // CHECK: WARNING: PredictiveSanitizer: lock-order-inversion
     // CHECK: LockTest::Acquire1
     // CHECK-NEXT: LockTest::Acquire_0_then_1
     // CHECK: LockTest::Acquire2

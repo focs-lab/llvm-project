@@ -36,7 +36,7 @@ int main() {
 }
 
 // CHECK: addr=[[ADDR:0x[0-9,a-f]+]]
-// CHECK: WARNING: ThreadSanitizer: data race
+// CHECK: WARNING: PredictiveSanitizer: data race
 // ...
 // CHECK: Location is heap block of size 99 at [[ADDR]] allocated by thread T1:
 // CHECK:     #0 malloc

@@ -21,4 +21,4 @@ int main() {
   delete p;
 }
 
-// CHECK: WARNING: ThreadSanitizer: data race
+// CHECK: WARNING: PredictiveSanitizer: data race

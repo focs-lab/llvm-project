@@ -1,5 +1,5 @@
 // RUN: %clangxx_psan %s %link_libcxx_psan -o %t
-// RUN: %run %t 2>&1 | FileCheck %s --implicit-check-not='ThreadSanitizer'
+// RUN: %run %t 2>&1 | FileCheck %s --implicit-check-not='PredictiveSanitizer'
 
 #include <dispatch/dispatch.h>
 

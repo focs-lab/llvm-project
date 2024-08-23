@@ -25,6 +25,6 @@ int main() {
   fprintf(stderr, "DONE");
 }
 
-// CHECK: WARNING: ThreadSanitizer: data race
+// CHECK: WARNING: PredictiveSanitizer: data race
 // CHECK: DONE
 

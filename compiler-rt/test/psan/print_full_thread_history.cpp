@@ -33,8 +33,8 @@ int main() {
   return 0;
 }
 
-// CHECK: WARNING: ThreadSanitizer: data race
+// CHECK: WARNING: PredictiveSanitizer: data race
 // CHECK:        Thread T2 {{.*}} created by thread T1 at
 // CHECK:        Thread T3 {{.*}} created by thread T1 at:
 // CHECK:        Thread T1 {{.*}} created by main thread at:
-// CHECK: SUMMARY: ThreadSanitizer: data race{{.*}}
+// CHECK: SUMMARY: PredictiveSanitizer: data race{{.*}}

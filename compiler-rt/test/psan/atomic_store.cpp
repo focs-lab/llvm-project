@@ -40,7 +40,7 @@ int main() {
   return 0;
 }
 
-// CHECK: WARNING: ThreadSanitizer: data race
+// CHECK: WARNING: PredictiveSanitizer: data race
 // CHECK:   Read
 // CHECK:     #0 main
 // CHECK:   Previous write

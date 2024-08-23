@@ -25,6 +25,6 @@ int main() {
   barrier_wait(&barrier);
   pthread_join(t, 0);
   fprintf(stderr, "PASS\n");
-  // CHECK-NOT: ThreadSanitizer: data race
+  // CHECK-NOT: PredictiveSanitizer: data race
   // CHECK: PASS
 }

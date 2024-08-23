@@ -27,7 +27,7 @@ int main() {
   return 0;
 }
 
-// CHECK: WARNING: ThreadSanitizer: heap-use-after-free
+// CHECK: WARNING: PredictiveSanitizer: heap-use-after-free
 // CHECK:   Write of size {{.*}} at {{.*}} by main thread:
 // CHECK:     #0 bar
 // CHECK:     #1 main

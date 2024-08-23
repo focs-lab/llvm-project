@@ -1279,17 +1279,17 @@ void SanitizerArgs::addArgs(const ToolChain &TC, const llvm::opt::ArgList &Args,
 
   if (!PsanMemoryAccess) {
     CmdArgs.push_back("-mllvm");
-    CmdArgs.push_back("-tsan-instrument-memory-accesses=0");
+    CmdArgs.push_back("-psan-instrument-memory-accesses=0");
     CmdArgs.push_back("-mllvm");
-    CmdArgs.push_back("-tsan-instrument-memintrinsics=0");
+    CmdArgs.push_back("-psan-instrument-memintrinsics=0");
   }
   if (!PsanFuncEntryExit) {
     CmdArgs.push_back("-mllvm");
-    CmdArgs.push_back("-tsan-instrument-func-entry-exit=0");
+    CmdArgs.push_back("-psan-instrument-func-entry-exit=0");
   }
   if (!PsanAtomics) {
     CmdArgs.push_back("-mllvm");
-    CmdArgs.push_back("-tsan-instrument-atomics=0");
+    CmdArgs.push_back("-psan-instrument-atomics=0");
   }
 
   if (HwasanUseAliases) {

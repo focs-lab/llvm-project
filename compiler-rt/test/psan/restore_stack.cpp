@@ -44,7 +44,7 @@ int main() {
 //     #2 __psan_thread_start_func rtl/psan_interceptors.cpp:886 (restore_stack.cpp.exe+0x00000040a749)
 //     #3 Thread(void*) restore_stack.cpp:18:3 (restore_stack.cpp.exe+0x000000406283)
 
-// CHECK: WARNING: ThreadSanitizer: data race
+// CHECK: WARNING: PredictiveSanitizer: data race
 // CHECK-NOT: __psan_thread_start_func
 // CHECK-NOT: #3 Thread
 // CHECK: DONE

@@ -1,7 +1,7 @@
-// RUN: %clangxx_psan -shared %p/external-lib.cpp -fno-sanitize=thread -DUSE_PSAN_CALLBACKS \
+// RUN: %clangxx_psan -shared %p/external-lib.cpp -fno-sanitize=predict -DUSE_PSAN_CALLBACKS \
 // RUN:   -o %t-lib.dylib -install_name @rpath/`basename %t-lib.dylib`
 
-// RUN: %clangxx_psan -shared %p/external-noninstrumented-module.cpp %t-lib.dylib -fno-sanitize=thread \
+// RUN: %clangxx_psan -shared %p/external-noninstrumented-module.cpp %t-lib.dylib -fno-sanitize=predict \
 // RUN:   -o %t-module.dylib -install_name @rpath/`basename %t-module.dylib`
 
 // RUN: %clangxx_psan %s %t-module.dylib -o %t
@@ -15,5 +15,5 @@ int main(int argc, char *argv[]) {
   fprintf(stderr, "Done.\n");
 }
 
-// CHECK-NOT: WARNING: ThreadSanitizer
+// CHECK-NOT: WARNING: PredictiveSanitizer
 // CHECK: Done.

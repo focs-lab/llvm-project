@@ -6,7 +6,7 @@ int Global;
 
 void *Thread2(void *x) {
   barrier_wait(&barrier);
-// CHECK:      WARNING: ThreadSanitizer: data race
+// CHECK:      WARNING: PredictiveSanitizer: data race
 // CHECK-NEXT:   Atomic read of size 1 at {{.*}} by thread T2:
 // CHECK-NEXT:     #0 pthread_mutex_lock
 // CHECK-NEXT:     #1 Thread2{{.*}} {{.*}}race_on_mutex.c:[[@LINE+1]]{{(:3)?}} ({{.*}})

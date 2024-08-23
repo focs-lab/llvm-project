@@ -40,4 +40,4 @@ int main(int argc, const char *argv[]) {
 
 // CHECK: data = 42
 // CHECK: done
-// CHECK-NOT: WARNING: ThreadSanitizer
+// CHECK-NOT: WARNING: PredictiveSanitizer

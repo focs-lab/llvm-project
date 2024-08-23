@@ -8,12 +8,12 @@ int main() {
   return 0;
 }
 
-// CHECK: WARNING: ThreadSanitizer: read lock of a write locked mutex
+// CHECK: WARNING: PredictiveSanitizer: read lock of a write locked mutex
 // CHECK:     #0 AnnotateRWLockAcquired
 // CHECK:     #1 main
 // CHECK: Location is stack of main thread.
 // CHECK:   Mutex {{.*}}) created at:
 // CHECK:     #0 AnnotateRWLockAcquired
 // CHECK:     #1 main
-// CHECK: SUMMARY: ThreadSanitizer: read lock of a write locked mutex
+// CHECK: SUMMARY: PredictiveSanitizer: read lock of a write locked mutex
 

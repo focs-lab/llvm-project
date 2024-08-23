@@ -39,6 +39,6 @@ int main() {
   pthread_join(t[1], NULL);
 }
 
-// CHECK: WARNING: ThreadSanitizer: data race
+// CHECK: WARNING: PredictiveSanitizer: data race
 // CHECK:   Thread T1 'foobar1'
 // CHECK:   Thread T2 'foobar2'

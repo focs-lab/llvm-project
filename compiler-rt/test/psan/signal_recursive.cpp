@@ -121,6 +121,6 @@ int main(int argc, const char *argv[]) {
 }
 
 // CHECK-NOT: FAILED
-// CHECK-NOT: ThreadSanitizer CHECK failed
-// CHECK-NOT: WARNING: ThreadSanitizer:
+// CHECK-NOT: PredictiveSanitizer CHECK failed
+// CHECK-NOT: WARNING: PredictiveSanitizer:
 // CHECK: DONE

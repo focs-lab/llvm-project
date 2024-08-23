@@ -1,4 +1,4 @@
-// RUN: %clang_psan -fno-sanitize=thread -shared -fPIC -O1 -DBUILD_SO=1 %s -o \
+// RUN: %clang_psan -fno-sanitize=predict -shared -fPIC -O1 -DBUILD_SO=1 %s -o \
 // RUN:  %t.so && \
 // RUN:   %clang_psan -O1 %s %t.so -o %t && %run %t 2>&1 | FileCheck %s
 // RUN: llvm-objdump -t %t | FileCheck %s --check-prefix=CHECK-DUMP

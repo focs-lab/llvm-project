@@ -7,7 +7,7 @@
 // XFAIL: ios
 
 // RUN: %clangxx_psan %s -o %t.so -shared -DSHARED_LIB
-// RUN: %clangxx_psan -fno-sanitize=thread %s -o %t
+// RUN: %clangxx_psan -fno-sanitize=predict %s -o %t
 
 // RUN: PSAN_DYLIB_PATH=`%clangxx_psan %s -### 2>&1 \
 // RUN:   | grep "libclang_rt.psan_osx_dynamic.dylib" \

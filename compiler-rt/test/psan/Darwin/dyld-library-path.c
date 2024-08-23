@@ -1,7 +1,7 @@
 // Test that dyld interposition works in the presence of DYLD_LIBRARY_PATH.
 
 // RUN: %clang_psan %s -o %t
-// RUN: env DYLD_LIBRARY_PATH=/usr/lib/system/introspection/ %run %t 2>&1 | FileCheck %s --implicit-check-not='ThreadSanitizer'
+// RUN: env DYLD_LIBRARY_PATH=/usr/lib/system/introspection/ %run %t 2>&1 | FileCheck %s --implicit-check-not='PredictiveSanitizer'
 
 #include <pthread.h>
 #include <stdio.h>

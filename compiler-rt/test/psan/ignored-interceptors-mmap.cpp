@@ -49,7 +49,7 @@ int main(int argc, const char *argv[]) {
   return 0;
 }
 
-// CHECK-RACE: WARNING: ThreadSanitizer: data race
+// CHECK-RACE: WARNING: PredictiveSanitizer: data race
 // CHECK-RACE: OK
-// CHECK-IGNORE-NOT: WARNING: ThreadSanitizer: data race
+// CHECK-IGNORE-NOT: WARNING: PredictiveSanitizer: data race
 // CHECK-IGNORE: OK

@@ -27,4 +27,4 @@ int main() {
   return 0;
 }
 
-// CHECK-NOT: ThreadSanitizer: data race
+// CHECK-NOT: PredictiveSanitizer: data race

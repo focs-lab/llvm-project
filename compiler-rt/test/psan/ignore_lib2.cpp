@@ -1,8 +1,8 @@
 // RUN: rm -rf %t-dir
 // RUN: mkdir %t-dir
 
-// RUN: %clangxx_psan -O1 %s -DLIB -fPIC -fno-sanitize=thread -shared -o %t-dir/libignore_lib2_0.so
-// RUN: %clangxx_psan -O1 %s -DLIB -fPIC -fno-sanitize=thread -shared -o %t-dir/libignore_lib2_1.so
+// RUN: %clangxx_psan -O1 %s -DLIB -fPIC -fno-sanitize=predict -shared -o %t-dir/libignore_lib2_0.so
+// RUN: %clangxx_psan -O1 %s -DLIB -fPIC -fno-sanitize=predict -shared -o %t-dir/libignore_lib2_1.so
 // RUN: %clangxx_psan -O1 %s %link_libcxx_psan -o %t-dir/executable
 // RUN: %env_psan_opts=suppressions='%s.supp' %deflake %run %t-dir/executable | FileCheck %s
 
@@ -31,6 +31,6 @@ extern "C" void libfunc() {
 
 #endif  // #ifdef LIB
 
-// CHECK: ThreadSanitizer: called_from_lib suppression 'ignore_lib2' is matched against 2 libraries
+// CHECK: PredictiveSanitizer: called_from_lib suppression 'ignore_lib2' is matched against 2 libraries
 // CHECK-NOT: OK
 

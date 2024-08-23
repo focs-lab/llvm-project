@@ -32,5 +32,5 @@ int main() {
   return 0;
 }
 
-// CHECK-NOT: WARNING: ThreadSanitizer: data race
+// CHECK-NOT: WARNING: PredictiveSanitizer: data race
 // CHECK: DONE

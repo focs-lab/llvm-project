@@ -13,7 +13,7 @@
 // The data race CHECK-NOT below actually must be CHECK, because the program
 // does contain the data race on global.
 
-// CHECK-NOT: WARNING: ThreadSanitizer: data race
+// CHECK-NOT: WARNING: PredictiveSanitizer: data race
 // CHECK: DONE
 
 long global;

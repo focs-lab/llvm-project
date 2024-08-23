@@ -30,5 +30,5 @@ int main() {
 }
 
 // CHECK: user fopen
-// CHECK-NOT: ThreadSanitizer
+// CHECK-NOT: PredictiveSanitizer
 
