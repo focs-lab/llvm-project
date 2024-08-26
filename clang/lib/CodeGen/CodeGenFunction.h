@@ -2356,6 +2356,10 @@ public:
   /// runtime.
   void markAsIgnoreThreadCheckingAtRuntime(llvm::Function *Fn);
 
+  /// Annotate the function with an attribute that disables PSan checking at
+  /// runtime.
+  void markAsIgnorePredictiveCheckingAtRuntime(llvm::Function *Fn);
+
   /// Emit code for the start of a function.
   /// \param Loc       The location to be associated with the function.
   /// \param StartLoc  The location of the function body.

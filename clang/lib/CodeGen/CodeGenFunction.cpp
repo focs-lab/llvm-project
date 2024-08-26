@@ -676,6 +676,9 @@ void CodeGenFunction::markAsIgnoreThreadCheckingAtRuntime(llvm::Function *Fn) {
     Fn->addFnAttr("sanitize_thread_no_checking_at_run_time");
     Fn->removeFnAttr(llvm::Attribute::SanitizeThread);
   }
+}
+
+void CodeGenFunction::markAsIgnorePredictiveCheckingAtRuntime(llvm::Function *Fn) {
   if (SanOpts.has(SanitizerKind::Predictive)) {
     Fn->addFnAttr("sanitize_predict_no_checking_at_run_time");
     Fn->removeFnAttr(llvm::Attribute::SanitizePredict);
@@ -856,7 +859,7 @@ void CodeGenFunction::StartFunction(GlobalDecl GD, QualType RetTy,
       if (OMD->getMethodFamily() == OMF_dealloc ||
           OMD->getMethodFamily() == OMF_initialize ||
           (OMD->getSelector().isUnarySelector() && II->isStr(".cxx_destruct"))) {
-        markAsIgnoreThreadCheckingAtRuntime(Fn);
+        markAsIgnorePredictiveCheckingAtRuntime(Fn);
       }
     }
   }
