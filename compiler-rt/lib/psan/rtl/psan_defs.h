@@ -76,16 +76,17 @@ inline bool EpochOverflow(Epoch epoch) { return epoch == kEpochOver; }
 const uptr kShadowStackSize = 64 * 1024;
 
 // Count of shadow values in a shadow cell.
-const uptr kShadowCnt = 4;
+const uptr kShadowCnt = 1;
 
 // That many user bytes are mapped onto a single shadow cell.
-const uptr kShadowCell = 8;
+const uptr kShadowCell = 1;
 
 // Single shadow value.
-enum class RawShadow : u32 {};
-const uptr kShadowSize = sizeof(RawShadow);
+enum class RawShadow : u64 {};
+enum class RawSubShadow : u32 {};
+const uptr kShadowSize = sizeof(RawSubShadow);
 
-// Shadow memory is kShadowMultiplier times larger than user memory.
+// SubShadow memory is kShadowMultiplier times larger than user memory.
 const uptr kShadowMultiplier = kShadowSize * kShadowCnt / kShadowCell;
 
 // That many user bytes are mapped onto a single meta shadow cell.

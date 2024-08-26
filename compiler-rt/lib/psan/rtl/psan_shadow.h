@@ -10,6 +10,7 @@
 #define PSAN_SHADOW_H
 
 #include "psan_defs.h"
+#include "psan_vector_clock.h"
 
 namespace __psan {
 
@@ -38,7 +39,7 @@ class FastState {
   bool GetIgnoreBit() const { return part_.ignore_accesses_; }
 
  private:
-  friend class Shadow;
+  friend class SubShadow;
   struct Parts {
     u32 unused0_ : 8;
     u32 sid_ : 8;
@@ -52,13 +53,13 @@ class FastState {
   };
 };
 
-static_assert(sizeof(FastState) == kShadowSize, "bad FastState size");
+// static_assert(sizeof(FastState) == kShadowSize, "bad FastState size");
 
-class Shadow {
+class SubShadow {
  public:
-  static constexpr RawShadow kEmpty = static_cast<RawShadow>(0);
+  static constexpr RawSubShadow kEmpty = static_cast<RawSubShadow>(0);
 
-  Shadow(FastState state, u32 addr, u32 size, AccessType typ) {
+  SubShadow(FastState state, u32 addr, u32 size, AccessType typ) {
     raw_ = state.raw_;
     DCHECK_GT(size, 0);
     DCHECK_LE(size, 8);
@@ -72,17 +73,20 @@ class Shadow {
     DCHECK_EQ(part_.is_read_, !!(typ & kAccessRead));
     DCHECK_EQ(sid(), sid0);
     DCHECK_EQ(epoch(), epoch0);
+
+    // also initialize a vector clock
+
   }
 
-  explicit Shadow(RawShadow x = Shadow::kEmpty) { raw_ = static_cast<u32>(x); }
+  explicit SubShadow(RawSubShadow x = SubShadow::kEmpty) { raw_ = static_cast<u32>(x); }
 
-  RawShadow raw() const { return static_cast<RawShadow>(raw_); }
+  RawSubShadow raw() const { return static_cast<RawSubShadow>(raw_); }
   Sid sid() const { return part_.sid_; }
   Epoch epoch() const { return static_cast<Epoch>(part_.epoch_); }
   u8 access() const { return part_.access_; }
 
   void GetAccess(uptr *addr, uptr *size, AccessType *typ) const {
-    DCHECK(part_.access_ != 0 || raw_ == static_cast<u32>(Shadow::kRodata));
+    DCHECK(part_.access_ != 0 || raw_ == static_cast<u32>(SubShadow::kRodata));
     if (addr)
       *addr = part_.access_ ? __builtin_ffs(part_.access_) - 1 : 0;
     if (size)
@@ -129,16 +133,16 @@ class Shadow {
 
   // The FreedMarker must not pass "the same access check" so that we don't
   // return from the race detection algorithm early.
-  static RawShadow FreedMarker() {
+  static RawSubShadow FreedMarker() {
     FastState fs;
     fs.SetSid(kFreeSid);
     fs.SetEpoch(kEpochLast);
-    Shadow s(fs, 0, 8, kAccessWrite);
+    SubShadow s(fs, 0, 8, kAccessWrite);
     return s.raw();
   }
 
-  static RawShadow FreedInfo(Sid sid, Epoch epoch) {
-    Shadow s;
+  static RawSubShadow FreedInfo(Sid sid, Epoch epoch) {
+    SubShadow s;
     s.part_.sid_ = sid;
     s.part_.epoch_ = static_cast<u16>(epoch);
     s.part_.access_ = kFreeAccess;
@@ -172,18 +176,22 @@ class Shadow {
 
  public:
   // .rodata shadow marker, see MapRodata and ContainsSameAccessFast.
-  static constexpr RawShadow kRodata =
-      static_cast<RawShadow>(1 << kIsReadShift);
+  static constexpr RawSubShadow kRodata =
+      static_cast<RawSubShadow>(1 << kIsReadShift);
 };
 
-static_assert(sizeof(Shadow) == kShadowSize, "bad Shadow size");
+// static_assert(sizeof(SubShadow) == kShadowSize, "bad SubShadow size");
 
-ALWAYS_INLINE RawShadow LoadShadow(RawShadow *p) {
-  return static_cast<RawShadow>(
+class Shadow {
+  SubShadow* subshadow;
+};
+
+ALWAYS_INLINE RawSubShadow LoadShadow(RawSubShadow *p) {
+  return static_cast<RawSubShadow>(
       atomic_load((atomic_uint32_t *)p, memory_order_relaxed));
 }
 
-ALWAYS_INLINE void StoreShadow(RawShadow *sp, RawShadow s) {
+ALWAYS_INLINE void StoreShadow(RawSubShadow *sp, RawSubShadow s) {
   atomic_store((atomic_uint32_t *)sp, static_cast<u32>(s),
                memory_order_relaxed);
 }

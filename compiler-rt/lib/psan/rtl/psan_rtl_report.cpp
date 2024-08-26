@@ -176,7 +176,7 @@ void ScopedReportBase::AddStack(StackTrace stack, bool suppressable) {
   (*rs)->suppressable = suppressable;
 }
 
-void ScopedReportBase::AddMemoryAccess(uptr addr, uptr external_tag, Shadow s,
+void ScopedReportBase::AddMemoryAccess(uptr addr, uptr external_tag, SubShadow s,
                                        Tid tid, StackTrace stack,
                                        const MutexSet *mset) {
   uptr addr0, size;
@@ -702,12 +702,12 @@ static bool IsFiredSuppression(Context *ctx, ReportType type, uptr addr) {
   return false;
 }
 
-static bool SpuriousRace(Shadow old) {
-  Shadow last(LoadShadow(&ctx->last_spurious_race));
+static bool SpuriousRace(SubShadow old) {
+  SubShadow last(LoadShadow(&ctx->last_spurious_race));
   return last.sid() == old.sid() && last.epoch() == old.epoch();
 }
 
-void ReportRace(ThreadState *thr, RawShadow *shadow_mem, Shadow cur, Shadow old,
+void ReportRace(ThreadState *thr, RawSubShadow *shadow_mem, SubShadow cur, SubShadow old,
                 AccessType typ0) {
   CheckedMutex::CheckNoLocks();
 
@@ -731,7 +731,7 @@ void ReportRace(ThreadState *thr, RawShadow *shadow_mem, Shadow cur, Shadow old,
     return;
 
   const uptr kMop = 2;
-  Shadow s[kMop] = {cur, old};
+  SubShadow s[kMop] = {cur, old};
   uptr addr0 = addr + addr_off0;
   uptr addr1 = addr + addr_off1;
   uptr end0 = addr0 + size0;

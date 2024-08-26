@@ -2365,7 +2365,7 @@ struct dl_iterate_phdr_data {
 };
 
 static bool IsAppNotRodata(uptr addr) {
-  return IsAppMem(addr) && *MemToShadow(addr) != Shadow::kRodata;
+  return IsAppMem(addr) && *MemToShadow(addr) != SubShadow::kRodata;
 }
 
 static int dl_iterate_phdr_cb(__sanitizer_dl_phdr_info *info, SIZE_T size,

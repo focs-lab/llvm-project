@@ -908,7 +908,7 @@ struct IsShadowMemImpl {
 };
 
 ALWAYS_INLINE
-bool IsShadowMem(RawShadow *p) {
+bool IsShadowMem(RawSubShadow *p) {
   return SelectMapping<IsShadowMemImpl>(reinterpret_cast<uptr>(p));
 }
 
@@ -936,8 +936,8 @@ struct MemToShadowImpl {
 };
 
 ALWAYS_INLINE
-RawShadow *MemToShadow(uptr x) {
-  return reinterpret_cast<RawShadow *>(SelectMapping<MemToShadowImpl>(x));
+RawSubShadow *MemToShadow(uptr x) {
+  return reinterpret_cast<RawSubShadow *>(SelectMapping<MemToShadowImpl>(x));
 }
 
 struct MemToMetaImpl {
@@ -979,7 +979,7 @@ struct ShadowToMemImpl {
 };
 
 ALWAYS_INLINE
-uptr ShadowToMem(RawShadow *s) {
+uptr ShadowToMem(RawSubShadow *s) {
   return SelectMapping<ShadowToMemImpl>(reinterpret_cast<uptr>(s));
 }
 
