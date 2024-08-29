@@ -14,7 +14,12 @@
 #include "../psan_shadow.h"
 #include "../psan_vector_clock.h"
 
+#include "sanitizer_common/sanitizer_placement_new.h"
+#include "../psan_mman.h"
+
 namespace __psan {
+
+enum class RawHBEpoch : u32 {};
 
 class HBEpoch {
 public:
@@ -66,7 +71,7 @@ public:
 #endif
   }
 
-  ALWAYS_INLINE HBEpoch() {
+  HBEpoch() {
     part_.sid_ = kFreeSid;
     part_.epoch_ = static_cast<u16>(kEpochZero);
   }
@@ -110,33 +115,6 @@ private:
 #endif
 };
 
-class HBShadow {
-public:
-    bool HandleRead(ThreadState *thr, RawShadow* shadow_mem, SubShadow cur, AccessType typ);
-    bool HandleWrite(ThreadState *thr, RawShadow* shadow_mem, SubShadow cur, AccessType typ);
-
-    HBEpoch wx() const { return wx_; };
-    HBEpoch rx() const { return rx_; };
-
-    RawHBEpoch* wx_raw_p() const { return (RawHBEpoch*) &wx_raw_; }
-    RawHBEpoch* rx_raw_p() const { return (RawHBEpoch*) &rx_raw_; }
-
-    void SetWx(Sid sid, Epoch epoch) { wx_.Set(sid, epoch); }
-    void SetRx(Sid sid, Epoch epoch) { rx_.Set(sid, epoch); }
-
-private:
-    union {
-        HBEpoch wx_;
-        u32 wx_raw_;
-    };
-    union {
-        HBEpoch rx_;
-        u32 rx_raw_;
-    };
-};
-
-enum class RawHBEpoch : u32 {};
-
 ALWAYS_INLINE RawHBEpoch LoadHBEpoch(RawHBEpoch* p) {
   return static_cast<RawHBEpoch>(
       atomic_load((atomic_uint32_t *)p, memory_order_relaxed));
@@ -147,6 +125,80 @@ ALWAYS_INLINE void StoreHBEpoch(RawHBEpoch *hp, RawHBEpoch h) {
                memory_order_relaxed);
 }
 
+class HBShadow {
+public:
+    bool HandleRead(ThreadState *thr, RawShadow* shadow_mem, SubShadow cur);
+    bool HandleWrite(ThreadState *thr, RawShadow* shadow_mem, SubShadow cur);
+
+    HBEpoch wx() const { return wx_; };
+    HBEpoch rx() const { return rx_; };
+
+    RawHBEpoch* wx_p() { return (RawHBEpoch*) &wx_; }
+    RawHBEpoch* rx_p() { return (RawHBEpoch*) &rx_; }
+
+    void SetWx(Sid sid, Epoch epoch) { wx_.Set(sid, epoch); }
+    void SetRx(Sid sid, Epoch epoch) { rx_.Set(sid, epoch); }
+
+private:
+    HBEpoch wx_;
+    HBEpoch rx_;
+};
+
+class HBShadowCell {
+public:
+  HBShadow* shadow(u8 i) { return &shadows_[i]; }
+private:
+  HBShadow shadows_[8];
+};
+
+class Shadow {
+public:
+  static constexpr RawShadow kEmpty = static_cast<RawShadow>(0);
+
+  HBShadowCell* subshadow() { return subshadow_; }
+  RawShadow raw() const { return static_cast<RawShadow>(raw_); }
+
+  explicit Shadow(HBShadowCell* hbsh) { subshadow_ = hbsh; }
+  explicit Shadow(RawShadow x = Shadow::kEmpty) { raw_ = static_cast<u64>(x); }
+
+private:
+  union {
+    HBShadowCell* subshadow_;
+    u64 raw_;
+  };
+
+ public:
+  // .rodata shadow marker, see MapRodata and ContainsSameAccessFast.
+  static constexpr RawShadow kRodata = static_cast<RawShadow>(1);
+};
+
+ALWAYS_INLINE RawShadow LoadShadow(RawShadow *p) {
+  return static_cast<RawShadow>(
+      atomic_load((atomic_uint64_t *)p, memory_order_relaxed));
+}
+
+ALWAYS_INLINE void StoreShadow(RawShadow *sp, RawShadow s) {
+  atomic_store((atomic_uint64_t *)sp, static_cast<u64>(s),
+               memory_order_relaxed);
+}
+
+ALWAYS_INLINE HBShadowCell* LoadHBShadowCell(RawShadow *p) {
+  RawShadow shadow = static_cast<RawShadow>(
+      atomic_load((atomic_uint64_t *)p, memory_order_relaxed));
+  if (LIKELY(shadow != Shadow::kEmpty)) return Shadow(shadow).subshadow();
+
+  // If there is no HBShadow, make a new one
+  // slow case, only needs to happen once per variable
+  Shadow newsh = Shadow(New<HBShadowCell>());
+  atomic_store((atomic_uint64_t *)p, static_cast<u64>(newsh.raw()), memory_order_relaxed);
+
+  RawShadow other_newsh_raw = static_cast<RawShadow>(atomic_load((atomic_uint64_t *)p, memory_order_acquire));
+  if (other_newsh_raw != newsh.raw())
+    FreeImpl(newsh.subshadow());
+  
+  Shadow other_newsh = Shadow(other_newsh_raw);
+  return other_newsh.subshadow();
+}
 
 }  // namespace __psan
 

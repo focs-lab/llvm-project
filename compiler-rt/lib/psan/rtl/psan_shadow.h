@@ -14,8 +14,6 @@
 
 namespace __psan {
 
-class HBShadow;
-
 class FastState {
  public:
   FastState() { Reset(); }
@@ -183,52 +181,6 @@ class SubShadow {
 };
 
 // static_assert(sizeof(SubShadow) == kShadowSize, "bad SubShadow size");
-
-class Shadow {
-public:
-  static constexpr RawShadow kEmpty = static_cast<RawShadow>(0);
-
-  HBShadow* subshadow() { return subshadow_; }
-  RawShadow raw() const { return static_cast<RawShadow>(raw_); }
-
-  explicit Shadow(HBShadow* hbsh) { subshadow_ = hbsh; }
-  explicit Shadow(RawShadow x = Shadow::kEmpty) { raw_ = static_cast<u64>(x); }
-
-private:
-  union {
-    HBShadow* subshadow_;
-    u64 raw_;
-  };
-
- public:
-  // .rodata shadow marker, see MapRodata and ContainsSameAccessFast.
-  static constexpr RawShadow kRodata = static_cast<RawShadow>(1);
-};
-
-ALWAYS_INLINE RawShadow LoadShadow(RawShadow *p) {
-  return static_cast<RawShadow>(
-      atomic_load((atomic_uint64_t *)p, memory_order_relaxed));
-}
-
-ALWAYS_INLINE HBShadow* LoadHBShadow(RawShadow *p) {
-  RawShadow shadow = static_cast<RawShadow>(
-      atomic_load((atomic_uint64_t *)p, memory_order_relaxed));
-  if (LIKELY(shadow != Shadow::kEmpty)) return Shadow(shadow).subshadow();
-
-  // If there is no HBShadow, make a new one
-  // slow case, only needs to happen once per variable
-  Shadow newsh = Shadow(New<HBShadow>());
-  atomic_store((atomic_uint64_t *)p, static_cast<u64>(newsh.raw()), memory_order_relaxed);
-
-  if (static_cast<RawShadow>(
-      atomic_load((atomic_uint64_t *)p, memory_order_acquire)) != newsh.raw())
-    FreeImpl(newsh.subshadow());
-}
-
-ALWAYS_INLINE void StoreShadow(RawShadow *sp, RawShadow s) {
-  atomic_store((atomic_uint64_t *)sp, static_cast<u64>(s),
-               memory_order_relaxed);
-}
 
 }  // namespace __psan
 
