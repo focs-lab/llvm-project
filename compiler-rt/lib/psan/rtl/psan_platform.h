@@ -936,8 +936,8 @@ struct MemToShadowImpl {
 };
 
 ALWAYS_INLINE
-RawSubShadow *MemToShadow(uptr x) {
-  return reinterpret_cast<RawSubShadow *>(SelectMapping<MemToShadowImpl>(x));
+RawShadow *MemToShadow(uptr x) {
+  return reinterpret_cast<RawShadow *>(SelectMapping<MemToShadowImpl>(x));
 }
 
 struct MemToMetaImpl {

@@ -50,6 +50,8 @@
 #include "psan_trace.h"
 #include "psan_vector_clock.h"
 
+#include "analysis/psan_hb.h"
+
 #if SANITIZER_WORDSIZE != 64
 # error "PredictiveSanitizer is supported only on 64-bit platforms"
 #endif
@@ -351,7 +353,7 @@ struct Context {
   // next thread trace part (which is still preserved in the thread trace),
   // we will also wrongly filter it out while RestoreStack would actually
   // succeed for that second memory access.
-  RawSubShadow last_spurious_race;
+  RawShadow last_spurious_race;
 
   Mutex racy_mtx;
   Vector<RacyStacks> racy_stacks;

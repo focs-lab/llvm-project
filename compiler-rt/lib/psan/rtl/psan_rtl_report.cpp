@@ -703,8 +703,8 @@ static bool IsFiredSuppression(Context *ctx, ReportType type, uptr addr) {
 }
 
 static bool SpuriousRace(SubShadow old) {
-  SubShadow last(LoadShadow(&ctx->last_spurious_race));
-  return last.sid() == old.sid() && last.epoch() == old.epoch();
+  Shadow last(LoadShadow(&ctx->last_spurious_race));
+  return last.subshadow()->sid() == old.sid() && last.epoch() == old.epoch();
 }
 
 void ReportRace(ThreadState *thr, RawSubShadow *shadow_mem, SubShadow cur, SubShadow old,
