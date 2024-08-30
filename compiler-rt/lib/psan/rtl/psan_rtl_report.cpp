@@ -26,6 +26,7 @@
 #include "psan_suppressions.h"
 #include "psan_symbolize.h"
 #include "psan_sync.h"
+#include "analysis/psan_hb.h"
 
 namespace __psan {
 
@@ -176,7 +177,7 @@ void ScopedReportBase::AddStack(StackTrace stack, bool suppressable) {
   (*rs)->suppressable = suppressable;
 }
 
-void ScopedReportBase::AddMemoryAccess(uptr addr, uptr external_tag, SubShadow s,
+void ScopedReportBase::AddMemoryAccess(uptr addr, uptr external_tag, HBEpoch s,
                                        Tid tid, StackTrace stack,
                                        const MutexSet *mset) {
   uptr addr0, size;
@@ -702,12 +703,12 @@ static bool IsFiredSuppression(Context *ctx, ReportType type, uptr addr) {
   return false;
 }
 
-static bool SpuriousRace(SubShadow old) {
-  Shadow last(LoadShadow(&ctx->last_spurious_race));
-  return last.subshadow()->sid() == old.sid() && last.epoch() == old.epoch();
+static bool SpuriousRace(HBEpoch old) {
+  HBEpoch last(LoadHBEpoch(&ctx->last_spurious_race));
+  return last.sid() == old.sid() && last.epoch() == old.epoch();
 }
 
-void ReportRace(ThreadState *thr, RawSubShadow *shadow_mem, SubShadow cur, SubShadow old,
+void ReportRace(ThreadState *thr, RawShadow *shadow_mem, HBEpoch cur, HBEpoch old,
                 AccessType typ0) {
   CheckedMutex::CheckNoLocks();
 
@@ -731,7 +732,7 @@ void ReportRace(ThreadState *thr, RawSubShadow *shadow_mem, SubShadow cur, SubSh
     return;
 
   const uptr kMop = 2;
-  SubShadow s[kMop] = {cur, old};
+  HBEpoch s[kMop] = {cur, old};
   uptr addr0 = addr + addr_off0;
   uptr addr1 = addr + addr_off1;
   uptr end0 = addr0 + size0;
@@ -772,7 +773,7 @@ void ReportRace(ThreadState *thr, RawSubShadow *shadow_mem, SubShadow cur, SubSh
     return;
   if (!RestoreStack(EventType::kAccessExt, s[1].sid(), s[1].epoch(), addr1,
                     size1, typ1, &tids[1], &traces[1], mset[1], &tags[1])) {
-    StoreShadow(&ctx->last_spurious_race, old.raw());
+    StoreHBEpoch(&ctx->last_spurious_race, old.raw());
     return;
   }
 

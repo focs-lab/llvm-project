@@ -225,7 +225,7 @@ static void DoResetImpl(uptr epoch) {
   }
   DPrintf("Resetting meta shadow...\n");
   ctx->metamap.ResetClocks();
-  StoreShadow(&ctx->last_spurious_race, SubShadow::kEmpty);
+  StoreHBEpoch(&ctx->last_spurious_race, HBEpoch::kEmpty);
   ctx->resetting = false;
 }
 

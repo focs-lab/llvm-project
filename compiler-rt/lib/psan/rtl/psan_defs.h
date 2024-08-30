@@ -79,14 +79,14 @@ const uptr kShadowStackSize = 64 * 1024;
 const uptr kShadowCnt = 1;
 
 // That many user bytes are mapped onto a single shadow cell.
-const uptr kShadowCell = 1;
+const uptr kShadowCell = 8;
 
 // Single shadow value.
 enum class RawShadow : u64 {};
 enum class RawSubShadow : u32 {};
-const uptr kShadowSize = sizeof(RawSubShadow);
+const uptr kShadowSize = sizeof(RawShadow);
 
-// SubShadow memory is kShadowMultiplier times larger than user memory.
+// Shadow memory is kShadowMultiplier times larger than user memory.
 const uptr kShadowMultiplier = kShadowSize * kShadowCnt / kShadowCell;
 
 // That many user bytes are mapped onto a single meta shadow cell.

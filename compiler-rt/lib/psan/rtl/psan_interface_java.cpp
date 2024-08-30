@@ -133,9 +133,9 @@ void __psan_java_move(jptr src, jptr dst, jptr size) {
   // Clear the destination shadow range.
   // We used to move shadow from src to dst, but the trace format does not
   // support that anymore as it contains addresses of accesses.
-  RawSubShadow *d = MemToShadow(dst);
-  RawSubShadow *dend = MemToShadow(dst + size);
-  ShadowSet(d, dend, SubShadow::kEmpty);
+  RawShadow *d = MemToShadow(dst);
+  RawShadow *dend = MemToShadow(dst + size);
+  ShadowSetWrite(d, dend, HBEpoch::kEmpty);
 }
 
 jptr __psan_java_find(jptr *from_ptr, jptr to) {

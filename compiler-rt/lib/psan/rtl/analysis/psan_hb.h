@@ -23,6 +23,30 @@ enum class RawHBEpoch : u32 {};
 
 class HBEpoch {
 public:
+  static constexpr RawHBEpoch kEmpty = static_cast<RawHBEpoch>(0);
+
+  HBEpoch(FastState state, u32 addr, u32 size, AccessType typ) {
+    raw_ = state.raw_;
+    DCHECK_GT(size, 0);
+    DCHECK_LE(size, 8);
+    UNUSED Sid sid0 = part_.sid_;
+    UNUSED u16 epoch0 = part_.epoch_;
+    raw_ |= (!!(typ & kAccessAtomic) << kIsAtomicShift) |
+            (!!(typ & kAccessRead) << kIsReadShift) |
+            (((((1u << size) - 1) << (addr & 0x7)) & 0xff) << kAccessShift);
+    // Note: we don't check kAccessAtomic because it overlaps with
+    // FastState::ignore_accesses_ and it may be set spuriously.
+    DCHECK_EQ(part_.is_read_, !!(typ & kAccessRead));
+    DCHECK_EQ(sid(), sid0);
+    DCHECK_EQ(epoch(), epoch0);
+  }
+
+  explicit HBEpoch(RawHBEpoch x = HBEpoch::kEmpty) { raw_ = static_cast<u32>(x); }
+  ALWAYS_INLINE HBEpoch(Sid sid, Epoch epoch) {
+    part_.sid_ = sid;
+    part_.epoch_ = static_cast<u16>(kEpochZero);
+  }
+
   RawHBEpoch raw() const { return static_cast<RawHBEpoch>(raw_); }
   Sid sid() const { return part_.sid_; }
   Epoch epoch() const { return static_cast<Epoch>(part_.epoch_); }
@@ -71,36 +95,41 @@ public:
 #endif
   }
 
-  HBEpoch() {
-    part_.sid_ = kFreeSid;
-    part_.epoch_ = static_cast<u16>(kEpochZero);
-  }
-
   void Set(Sid sid, Epoch epoch) {
     part_.sid_ = sid;
     part_.epoch_ = static_cast<u16>(epoch);
   }
 
-  explicit HBEpoch(RawHBEpoch x) {
-    raw_ = static_cast<u32>(x);
+  // The FreedMarker must not pass "the same access check" so that we don't
+  // return from the race detection algorithm early.
+  static RawHBEpoch FreedMarker() {
+    FastState fs;
+    fs.SetSid(kFreeSid);
+    fs.SetEpoch(kEpochLast);
+    HBEpoch s(fs, 0, 8, kAccessWrite);
+    return s.raw();
   }
 
-  ALWAYS_INLINE HBEpoch(Sid sid, Epoch epoch) {
-    part_.sid_ = sid;
-    part_.epoch_ = static_cast<u16>(kEpochZero);
+  static RawHBEpoch FreedInfo(Sid sid, Epoch epoch) {
+    HBEpoch s;
+    s.part_.sid_ = sid;
+    s.part_.epoch_ = static_cast<u16>(epoch);
+    s.part_.access_ = kFreeAccess;
+    return s.raw();
   }
+
 private:
-    struct Parts {
-      u8 access_;
-      Sid sid_;
-      u16 epoch_ : kEpochBits;
-      u16 is_read_ : 1;
-      u16 is_atomic_ : 1;
-    };
-    union {
-        Parts part_;
-        u32 raw_;
-    };
+  struct Parts {
+    u8 access_;
+    Sid sid_;
+    u16 epoch_ : kEpochBits;
+    u16 is_read_ : 1;
+    u16 is_atomic_ : 1;
+  };
+  union {
+      Parts part_;
+      u32 raw_;
+  };
 
   static constexpr u8 kFreeAccess = 0x81;
 
@@ -113,6 +142,11 @@ private:
   static constexpr uptr kIsReadShift = 1;
   static constexpr uptr kIsAtomicShift = 0;
 #endif
+
+ public:
+  // .rodata shadow marker, see MapRodata and ContainsSameAccessFast.
+  static constexpr RawHBEpoch kRodata =
+      static_cast<RawHBEpoch>(1 << kIsReadShift);
 };
 
 ALWAYS_INLINE RawHBEpoch LoadHBEpoch(RawHBEpoch* p) {
@@ -127,28 +161,36 @@ ALWAYS_INLINE void StoreHBEpoch(RawHBEpoch *hp, RawHBEpoch h) {
 
 class HBShadow {
 public:
-    bool HandleRead(ThreadState *thr, RawShadow* shadow_mem, SubShadow cur);
-    bool HandleWrite(ThreadState *thr, RawShadow* shadow_mem, SubShadow cur);
+  bool HandleRead(ThreadState *thr, HBEpoch cur);
+  bool HandleWrite(ThreadState *thr, HBEpoch cur);
 
-    HBEpoch wx() const { return wx_; };
-    HBEpoch rx() const { return rx_; };
+  HBEpoch wx() const { return wx_; };
+  HBEpoch rx() const { return rx_; };
 
-    RawHBEpoch* wx_p() { return (RawHBEpoch*) &wx_; }
-    RawHBEpoch* rx_p() { return (RawHBEpoch*) &rx_; }
+  RawHBEpoch* wx_p() { return (RawHBEpoch*) &wx_; }
+  RawHBEpoch* rx_p() { return (RawHBEpoch*) &rx_; }
 
-    void SetWx(Sid sid, Epoch epoch) { wx_.Set(sid, epoch); }
-    void SetRx(Sid sid, Epoch epoch) { rx_.Set(sid, epoch); }
+  void SetWx(HBEpoch wx) { wx_ = wx; }
+  void SetRx(HBEpoch rx) { rx_ = rx; }
+
+  void SetWx(FastState state, u32 addr, u32 size, AccessType typ) { wx_ = HBEpoch(state, addr, size, typ); }
+  void SetRx(FastState state, u32 addr, u32 size, AccessType typ) { rx_ = HBEpoch(state, addr, size, typ); }
+  void SetWx(RawHBEpoch x) { wx_ = HBEpoch(x); }
+  void SetRx(RawHBEpoch x) { rx_ = HBEpoch(x); }
 
 private:
-    HBEpoch wx_;
-    HBEpoch rx_;
+  HBEpoch wx_;
+  HBEpoch rx_;
 };
 
 class HBShadowCell {
 public:
   HBShadow* shadow(u8 i) { return &shadows_[i]; }
+
+  bool HandleRead(ThreadState *thr, HBEpoch cur);
+  bool HandleWrite(ThreadState *thr, HBEpoch cur);
 private:
-  HBShadow shadows_[8];
+  HBShadow shadows_[kShadowCell];
 };
 
 class Shadow {
@@ -195,7 +237,7 @@ ALWAYS_INLINE HBShadowCell* LoadHBShadowCell(RawShadow *p) {
   RawShadow other_newsh_raw = static_cast<RawShadow>(atomic_load((atomic_uint64_t *)p, memory_order_acquire));
   if (other_newsh_raw != newsh.raw())
     FreeImpl(newsh.subshadow());
-  
+
   Shadow other_newsh = Shadow(other_newsh_raw);
   return other_newsh.subshadow();
 }

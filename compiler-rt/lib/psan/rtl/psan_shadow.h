@@ -40,6 +40,7 @@ class FastState {
 
  private:
   friend class SubShadow;
+  friend class HBEpoch;
   struct Parts {
     u32 unused0_ : 8;
     u32 sid_ : 8;

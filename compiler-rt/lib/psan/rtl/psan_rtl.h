@@ -353,7 +353,7 @@ struct Context {
   // next thread trace part (which is still preserved in the thread trace),
   // we will also wrongly filter it out while RestoreStack would actually
   // succeed for that second memory access.
-  RawShadow last_spurious_race;
+  RawHBEpoch last_spurious_race;
 
   Mutex racy_mtx;
   Vector<RacyStacks> racy_stacks;
@@ -410,7 +410,7 @@ uptr TagFromShadowStackFrame(uptr pc);
 
 class ScopedReportBase {
  public:
-  void AddMemoryAccess(uptr addr, uptr external_tag, SubShadow s, Tid tid,
+  void AddMemoryAccess(uptr addr, uptr external_tag, HBEpoch s, Tid tid,
                        StackTrace stack, const MutexSet *mset);
   void AddStack(StackTrace stack, bool suppressable = false);
   void AddThread(const ThreadContext *tctx, bool suppressable = false);
@@ -547,7 +547,7 @@ void MemoryAccessRange(ThreadState *thr, uptr pc, uptr addr, uptr size,
     MemoryAccessRangeT<true>(thr, pc, addr, size);
 }
 
-void ShadowSet(RawSubShadow *p, RawSubShadow *end, RawSubShadow v);
+void ShadowSetWrite(RawShadow *p, RawShadow *end, RawHBEpoch v);
 void MemoryRangeFreed(ThreadState *thr, uptr pc, uptr addr, uptr size);
 void MemoryResetRange(ThreadState *thr, uptr pc, uptr addr, uptr size);
 void MemoryRangeImitateWrite(ThreadState *thr, uptr pc, uptr addr, uptr size);

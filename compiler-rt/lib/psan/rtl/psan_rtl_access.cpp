@@ -150,7 +150,7 @@ void TraceTime(ThreadState* thr) {
 NOINLINE void DoReportRace(ThreadState* thr, RawSubShadow* shadow_mem, SubShadow cur,
                            SubShadow old,
                            AccessType typ) SANITIZER_NO_THREAD_SAFETY_ANALYSIS {
-  // For the free shadow markers the first element (that contains kFreeSid)
+  // For the free shadow markers wx (that contains kFreeSid)
   // triggers the race, but the second element contains info about the freeing
   // thread, take it.
   if (old.sid() == kFreeSid)
@@ -170,32 +170,32 @@ NOINLINE void DoReportRace(ThreadState* thr, RawSubShadow* shadow_mem, SubShadow
     SlotLock(thr);
 }
 
-#if !PSAN_VECTORIZE
-ALWAYS_INLINE
-bool ContainsSameAccess(RawSubShadow* s, SubShadow cur, int unused0, int unused1,
-                        AccessType typ) {
-  for (uptr i = 0; i < kShadowCnt; i++) {
-    auto old = LoadShadow(&s[i]);
-    if (!(typ & kAccessRead)) {
-      if (old == cur.raw())
-        return true;
-      continue;
-    }
-    auto masked = static_cast<RawSubShadow>(static_cast<u32>(old) |
-                                         static_cast<u32>(SubShadow::kRodata));
-    if (masked == cur.raw())
-      return true;
-    if (!(typ & kAccessNoRodata) && !SANITIZER_GO) {
-      if (old == SubShadow::kRodata)
-        return true;
-    }
-  }
-  return false;
-}
+// #if !PSAN_VECTORIZE
+// ALWAYS_INLINE
+// bool ContainsSameAccess(RawSubShadow* s, SubShadow cur, int unused0, int unused1,
+//                         AccessType typ) {
+  // for (uptr i = 0; i < kShadowCnt; i++) {
+  //   auto old = LoadShadow(&s[i]);
+  //   if (!(typ & kAccessRead)) {
+  //     if (old == cur.raw())
+  //       return true;
+  //     continue;
+  //   }
+  //   auto masked = static_cast<RawSubShadow>(static_cast<u32>(old) |
+  //                                        static_cast<u32>(SubShadow::kRodata));
+  //   if (masked == cur.raw())
+  //     return true;
+  //   if (!(typ & kAccessNoRodata) && !SANITIZER_GO) {
+  //     if (old == SubShadow::kRodata)
+  //       return true;
+  //   }
+  // }
+  // return false;
+// }
 
-ALWAYS_INLINE
-bool CheckRaces(ThreadState* thr, RawSubShadow* shadow_mem, SubShadow cur,
-                int unused0, int unused1, AccessType typ) {
+// ALWAYS_INLINE
+// bool CheckRaces(ThreadState* thr, RawSubShadow* shadow_mem, SubShadow cur,
+//                 int unused0, int unused1, AccessType typ) {
   // bool stored = false;
   // for (uptr idx = 0; idx < kShadowCnt; idx++) {
   //   RawSubShadow* sp = &shadow_mem[idx];
@@ -230,170 +230,170 @@ bool CheckRaces(ThreadState* thr, RawSubShadow* shadow_mem, SubShadow cur,
   // uptr index =
   //     atomic_load_relaxed(&thr->trace_pos) / sizeof(Event) % kShadowCnt;
   // StoreShadow(&shadow_mem[index], cur.raw());
-  return false;
-}
+//   return false;
+// }
 
-#  define LOAD_CURRENT_SHADOW(cur, shadow_mem) UNUSED int access = 0, shadow = 0
+// #  define LOAD_CURRENT_SHADOW(cur, shadow_mem) UNUSED int access = 0, shadow = 0
 
-#else /* !PSAN_VECTORIZE */
+// #else /* !PSAN_VECTORIZE */
 
-ALWAYS_INLINE
-bool ContainsSameAccess(RawSubShadow* unused0, SubShadow unused1, m128 shadow,
-                        m128 access, AccessType typ) {
-  // Note: we could check if there is a larger access of the same type,
-  // e.g. we just allocated/memset-ed a block (so it contains 8 byte writes)
-  // and now do smaller reads/writes, these can also be considered as "same
-  // access". However, it will make the check more expensive, so it's unclear
-  // if it's worth it. But this would conserve trace space, so it's useful
-  // besides potential speed up.
-  if (!(typ & kAccessRead)) {
-    const m128 same = _mm_cmpeq_epi32(shadow, access);
-    return _mm_movemask_epi8(same);
-  }
-  // For reads we need to reset read bit in the shadow,
-  // because we need to match read with both reads and writes.
-  // SubShadow::kRodata has only read bit set, so it does what we want.
-  // We also abuse it for rodata check to save few cycles
-  // since we already loaded SubShadow::kRodata into a register.
-  // Reads from rodata can't race.
-  // Measurements show that they can be 10-20% of all memory accesses.
-  // SubShadow::kRodata has epoch 0 which cannot appear in shadow normally
-  // (thread epochs start from 1). So the same read bit mask
-  // serves as rodata indicator.
-  const m128 read_mask = _mm_set1_epi32(static_cast<u32>(SubShadow::kRodata));
-  const m128 masked_shadow = _mm_or_si128(shadow, read_mask);
-  m128 same = _mm_cmpeq_epi32(masked_shadow, access);
-  // Range memory accesses check SubShadow::kRodata before calling this,
-  // SubShadow::kRodatas is not possible for free memory access
-  // and Go does not use SubShadow::kRodata.
-  if (!(typ & kAccessNoRodata) && !SANITIZER_GO) {
-    const m128 ro = _mm_cmpeq_epi32(shadow, read_mask);
-    same = _mm_or_si128(ro, same);
-  }
-  return _mm_movemask_epi8(same);
-}
+// ALWAYS_INLINE
+// bool ContainsSameAccess(RawSubShadow* unused0, SubShadow unused1, m128 shadow,
+//                         m128 access, AccessType typ) {
+//   // Note: we could check if there is a larger access of the same type,
+//   // e.g. we just allocated/memset-ed a block (so it contains 8 byte writes)
+//   // and now do smaller reads/writes, these can also be considered as "same
+//   // access". However, it will make the check more expensive, so it's unclear
+//   // if it's worth it. But this would conserve trace space, so it's useful
+//   // besides potential speed up.
+//   if (!(typ & kAccessRead)) {
+//     const m128 same = _mm_cmpeq_epi32(shadow, access);
+//     return _mm_movemask_epi8(same);
+//   }
+//   // For reads we need to reset read bit in the shadow,
+//   // because we need to match read with both reads and writes.
+//   // SubShadow::kRodata has only read bit set, so it does what we want.
+//   // We also abuse it for rodata check to save few cycles
+//   // since we already loaded SubShadow::kRodata into a register.
+//   // Reads from rodata can't race.
+//   // Measurements show that they can be 10-20% of all memory accesses.
+//   // SubShadow::kRodata has epoch 0 which cannot appear in shadow normally
+//   // (thread epochs start from 1). So the same read bit mask
+//   // serves as rodata indicator.
+//   const m128 read_mask = _mm_set1_epi32(static_cast<u32>(SubShadow::kRodata));
+//   const m128 masked_shadow = _mm_or_si128(shadow, read_mask);
+//   m128 same = _mm_cmpeq_epi32(masked_shadow, access);
+//   // Range memory accesses check SubShadow::kRodata before calling this,
+//   // SubShadow::kRodatas is not possible for free memory access
+//   // and Go does not use SubShadow::kRodata.
+//   if (!(typ & kAccessNoRodata) && !SANITIZER_GO) {
+//     const m128 ro = _mm_cmpeq_epi32(shadow, read_mask);
+//     same = _mm_or_si128(ro, same);
+//   }
+//   return _mm_movemask_epi8(same);
+// }
 
-NOINLINE void DoReportRaceV(ThreadState* thr, RawSubShadow* shadow_mem, SubShadow cur,
-                            u32 race_mask, m128 shadow, AccessType typ) {
-  // race_mask points which of the shadow elements raced with the current
-  // access. Extract that element.
-  CHECK_NE(race_mask, 0);
-  u32 old;
-  // Note: _mm_extract_epi32 index must be a constant value.
-  switch (__builtin_ffs(race_mask) / 4) {
-    case 0:
-      old = _mm_extract_epi32(shadow, 0);
-      break;
-    case 1:
-      old = _mm_extract_epi32(shadow, 1);
-      break;
-    case 2:
-      old = _mm_extract_epi32(shadow, 2);
-      break;
-    case 3:
-      old = _mm_extract_epi32(shadow, 3);
-      break;
-  }
-  SubShadow prev(static_cast<RawSubShadow>(old));
-  // For the free shadow markers the first element (that contains kFreeSid)
-  // triggers the race, but the second element contains info about the freeing
-  // thread, take it.
-  if (prev.sid() == kFreeSid)
-    prev = SubShadow(static_cast<RawSubShadow>(_mm_extract_epi32(shadow, 1)));
-  DoReportRace(thr, shadow_mem, cur, prev, typ);
-}
+// NOINLINE void DoReportRaceV(ThreadState* thr, RawSubShadow* shadow_mem, SubShadow cur,
+//                             u32 race_mask, m128 shadow, AccessType typ) {
+//   // race_mask points which of the shadow elements raced with the current
+//   // access. Extract that element.
+//   CHECK_NE(race_mask, 0);
+//   u32 old;
+//   // Note: _mm_extract_epi32 index must be a constant value.
+//   switch (__builtin_ffs(race_mask) / 4) {
+//     case 0:
+//       old = _mm_extract_epi32(shadow, 0);
+//       break;
+//     case 1:
+//       old = _mm_extract_epi32(shadow, 1);
+//       break;
+//     case 2:
+//       old = _mm_extract_epi32(shadow, 2);
+//       break;
+//     case 3:
+//       old = _mm_extract_epi32(shadow, 3);
+//       break;
+//   }
+//   SubShadow prev(static_cast<RawSubShadow>(old));
+//   // For the free shadow markers the first element (that contains kFreeSid)
+//   // triggers the race, but the second element contains info about the freeing
+//   // thread, take it.
+//   if (prev.sid() == kFreeSid)
+//     prev = SubShadow(static_cast<RawSubShadow>(_mm_extract_epi32(shadow, 1)));
+//   DoReportRace(thr, shadow_mem, cur, prev, typ);
+// }
 
-ALWAYS_INLINE
-bool CheckRaces(ThreadState* thr, RawSubShadow* shadow_mem, SubShadow cur,
-                m128 shadow, m128 access, AccessType typ) {
-  // Note: empty/zero slots don't intersect with any access.
-  const m128 zero = _mm_setzero_si128();
-  const m128 mask_access = _mm_set1_epi32(0x000000ff);
-  const m128 mask_sid = _mm_set1_epi32(0x0000ff00);
-  const m128 mask_read_atomic = _mm_set1_epi32(0xc0000000);
-  const m128 access_and = _mm_and_si128(access, shadow);
-  const m128 access_xor = _mm_xor_si128(access, shadow);
-  const m128 intersect = _mm_and_si128(access_and, mask_access);
-  const m128 not_intersect = _mm_cmpeq_epi32(intersect, zero);
-  const m128 not_same_sid = _mm_and_si128(access_xor, mask_sid);
-  const m128 same_sid = _mm_cmpeq_epi32(not_same_sid, zero);
-  const m128 both_read_or_atomic = _mm_and_si128(access_and, mask_read_atomic);
-  const m128 no_race =
-      _mm_or_si128(_mm_or_si128(not_intersect, same_sid), both_read_or_atomic);
-  const int race_mask = _mm_movemask_epi8(_mm_cmpeq_epi32(no_race, zero));
-  if (UNLIKELY(race_mask))
-    goto SHARED;
+// ALWAYS_INLINE
+// bool CheckRaces(ThreadState* thr, RawSubShadow* shadow_mem, SubShadow cur,
+//                 m128 shadow, m128 access, AccessType typ) {
+//   // Note: empty/zero slots don't intersect with any access.
+//   const m128 zero = _mm_setzero_si128();
+//   const m128 mask_access = _mm_set1_epi32(0x000000ff);
+//   const m128 mask_sid = _mm_set1_epi32(0x0000ff00);
+//   const m128 mask_read_atomic = _mm_set1_epi32(0xc0000000);
+//   const m128 access_and = _mm_and_si128(access, shadow);
+//   const m128 access_xor = _mm_xor_si128(access, shadow);
+//   const m128 intersect = _mm_and_si128(access_and, mask_access);
+//   const m128 not_intersect = _mm_cmpeq_epi32(intersect, zero);
+//   const m128 not_same_sid = _mm_and_si128(access_xor, mask_sid);
+//   const m128 same_sid = _mm_cmpeq_epi32(not_same_sid, zero);
+//   const m128 both_read_or_atomic = _mm_and_si128(access_and, mask_read_atomic);
+//   const m128 no_race =
+//       _mm_or_si128(_mm_or_si128(not_intersect, same_sid), both_read_or_atomic);
+//   const int race_mask = _mm_movemask_epi8(_mm_cmpeq_epi32(no_race, zero));
+//   if (UNLIKELY(race_mask))
+//     goto SHARED;
 
-STORE : {
-  if (typ & kAccessCheckOnly)
-    return false;
-  // We could also replace different sid's if access is the same,
-  // rw weaker and happens before. However, just checking access below
-  // is not enough because we also need to check that !both_read_or_atomic
-  // (reads from different sids can be concurrent).
-  // Theoretically we could replace smaller accesses with larger accesses,
-  // but it's unclear if it's worth doing.
-  const m128 mask_access_sid = _mm_set1_epi32(0x0000ffff);
-  const m128 not_same_sid_access = _mm_and_si128(access_xor, mask_access_sid);
-  const m128 same_sid_access = _mm_cmpeq_epi32(not_same_sid_access, zero);
-  const m128 access_read_atomic =
-      _mm_set1_epi32((typ & (kAccessRead | kAccessAtomic)) << 30);
-  const m128 rw_weaker =
-      _mm_cmpeq_epi32(_mm_max_epu32(shadow, access_read_atomic), shadow);
-  const m128 rewrite = _mm_and_si128(same_sid_access, rw_weaker);
-  const int rewrite_mask = _mm_movemask_epi8(rewrite);
-  int index = __builtin_ffs(rewrite_mask);
-  if (UNLIKELY(index == 0)) {
-    const m128 empty = _mm_cmpeq_epi32(shadow, zero);
-    const int empty_mask = _mm_movemask_epi8(empty);
-    index = __builtin_ffs(empty_mask);
-    if (UNLIKELY(index == 0))
-      index = (atomic_load_relaxed(&thr->trace_pos) / 2) % 16;
-  }
-  StoreShadow(&shadow_mem[index / 4], cur.raw());
-  // We could zero other slots determined by rewrite_mask.
-  // That would help other threads to evict better slots,
-  // but it's unclear if it's worth it.
-  return false;
-}
+// STORE : {
+//   if (typ & kAccessCheckOnly)
+//     return false;
+//   // We could also replace different sid's if access is the same,
+//   // rw weaker and happens before. However, just checking access below
+//   // is not enough because we also need to check that !both_read_or_atomic
+//   // (reads from different sids can be concurrent).
+//   // Theoretically we could replace smaller accesses with larger accesses,
+//   // but it's unclear if it's worth doing.
+//   const m128 mask_access_sid = _mm_set1_epi32(0x0000ffff);
+//   const m128 not_same_sid_access = _mm_and_si128(access_xor, mask_access_sid);
+//   const m128 same_sid_access = _mm_cmpeq_epi32(not_same_sid_access, zero);
+//   const m128 access_read_atomic =
+//       _mm_set1_epi32((typ & (kAccessRead | kAccessAtomic)) << 30);
+//   const m128 rw_weaker =
+//       _mm_cmpeq_epi32(_mm_max_epu32(shadow, access_read_atomic), shadow);
+//   const m128 rewrite = _mm_and_si128(same_sid_access, rw_weaker);
+//   const int rewrite_mask = _mm_movemask_epi8(rewrite);
+//   int index = __builtin_ffs(rewrite_mask);
+//   if (UNLIKELY(index == 0)) {
+//     const m128 empty = _mm_cmpeq_epi32(shadow, zero);
+//     const int empty_mask = _mm_movemask_epi8(empty);
+//     index = __builtin_ffs(empty_mask);
+//     if (UNLIKELY(index == 0))
+//       index = (atomic_load_relaxed(&thr->trace_pos) / 2) % 16;
+//   }
+//   StoreShadow(&shadow_mem[index / 4], cur.raw());
+//   // We could zero other slots determined by rewrite_mask.
+//   // That would help other threads to evict better slots,
+//   // but it's unclear if it's worth it.
+//   return false;
+// }
 
-SHARED:
-  m128 thread_epochs = _mm_set1_epi32(0x7fffffff);
-  // Need to unwind this because _mm_extract_epi8/_mm_insert_epi32
-  // indexes must be constants.
-#  define LOAD_EPOCH(idx)                                                     \
-    if (LIKELY(race_mask & (1 << (idx * 4)))) {                               \
-      u8 sid = _mm_extract_epi8(shadow, idx * 4 + 1);                         \
-      u16 epoch = static_cast<u16>(thr->clock.Get(static_cast<Sid>(sid)));    \
-      thread_epochs = _mm_insert_epi32(thread_epochs, u32(epoch) << 16, idx); \
-    }
-  LOAD_EPOCH(0);
-  LOAD_EPOCH(1);
-  LOAD_EPOCH(2);
-  LOAD_EPOCH(3);
-#  undef LOAD_EPOCH
-  const m128 mask_epoch = _mm_set1_epi32(0x3fff0000);
-  const m128 shadow_epochs = _mm_and_si128(shadow, mask_epoch);
-  const m128 concurrent = _mm_cmplt_epi32(thread_epochs, shadow_epochs);
-  const int concurrent_mask = _mm_movemask_epi8(concurrent);
-  if (LIKELY(concurrent_mask == 0))
-    goto STORE;
+// SHARED:
+//   m128 thread_epochs = _mm_set1_epi32(0x7fffffff);
+//   // Need to unwind this because _mm_extract_epi8/_mm_insert_epi32
+//   // indexes must be constants.
+// #  define LOAD_EPOCH(idx)                                                     \
+//     if (LIKELY(race_mask & (1 << (idx * 4)))) {                               \
+//       u8 sid = _mm_extract_epi8(shadow, idx * 4 + 1);                         \
+//       u16 epoch = static_cast<u16>(thr->clock.Get(static_cast<Sid>(sid)));    \
+//       thread_epochs = _mm_insert_epi32(thread_epochs, u32(epoch) << 16, idx); \
+//     }
+//   LOAD_EPOCH(0);
+//   LOAD_EPOCH(1);
+//   LOAD_EPOCH(2);
+//   LOAD_EPOCH(3);
+// #  undef LOAD_EPOCH
+//   const m128 mask_epoch = _mm_set1_epi32(0x3fff0000);
+//   const m128 shadow_epochs = _mm_and_si128(shadow, mask_epoch);
+//   const m128 concurrent = _mm_cmplt_epi32(thread_epochs, shadow_epochs);
+//   const int concurrent_mask = _mm_movemask_epi8(concurrent);
+//   if (LIKELY(concurrent_mask == 0))
+//     goto STORE;
 
-  DoReportRaceV(thr, shadow_mem, cur, concurrent_mask, shadow, typ);
-  return true;
-}
+//   DoReportRaceV(thr, shadow_mem, cur, concurrent_mask, shadow, typ);
+//   return true;
+// }
 
-#  define LOAD_CURRENT_SHADOW(cur, shadow_mem)                         \
-    const m128 access = _mm_set1_epi32(static_cast<u32>((cur).raw())); \
-    const m128 shadow = _mm_load_si128(reinterpret_cast<m128*>(shadow_mem))
-#endif
+// #  define LOAD_CURRENT_SHADOW(cur, shadow_mem)                         \
+//     const m128 access = _mm_set1_epi32(static_cast<u32>((cur).raw())); \
+//     const m128 shadow = _mm_load_si128(reinterpret_cast<m128*>(shadow_mem))
+// #endif
 
-char* DumpShadow(char* buf, RawSubShadow raw) {
-  if (raw == SubShadow::kEmpty) {
+char* DumpShadow(char* buf, RawHBEpoch raw) {
+  if (raw == HBEpoch::kEmpty) {
     internal_snprintf(buf, 64, "0");
     return buf;
   }
-  SubShadow s(raw);
+  HBEpoch s(raw);
   AccessType typ;
   s.GetAccess(nullptr, nullptr, &typ);
   internal_snprintf(buf, 64, "{tid=%u@%u access=0x%x typ=%x}",
@@ -402,16 +402,25 @@ char* DumpShadow(char* buf, RawSubShadow raw) {
   return buf;
 }
 
-ALWAYS_INLINE USED void HandleRead(ThreadState* thr, RawShadow* shadow_mem, uptr addr, uptr size, AccessType typ) {
-  // things to do:
-  // 1. HB operations
-  // 2. check races
+ALWAYS_INLINE USED bool HandleRead(ThreadState* thr, RawShadow* shadow_mem, HBEpoch cur) {
+  // A wrapper to the actual HandleRead
+  Shadow shadow(LoadShadow(shadow_mem));
+  HBShadowCell* hb_shadow_cell = shadow.subshadow();
+  return hb_shadow_cell->HandleRead(thr, cur);
 }
 
-ALWAYS_INLINE USED void HandleWrite(ThreadState* thr, RawShadow* shadow_mem, uptr addr, uptr size, AccessType typ) {
-  // things to do:
-  // 1. HB operations
-  // 2. check races
+ALWAYS_INLINE USED bool HandleWrite(ThreadState* thr, RawShadow* shadow_mem, HBEpoch cur) {
+  // A wrapper to the actual HandleWrite
+  Shadow shadow(LoadShadow(shadow_mem));
+  HBShadowCell* hb_shadow_cell = shadow.subshadow();
+  return hb_shadow_cell->HandleWrite(thr, cur);
+}
+
+ALWAYS_INLINE USED bool HandleMemoryAccess(ThreadState* thr, RawShadow* shadow_mem, HBEpoch cur, AccessType typ) {
+  bool has_race = false;
+  if (typ & kAccessRead) has_race |= HandleRead(thr, shadow_mem, cur);
+  else has_race |= HandleWrite(thr, shadow_mem, cur);
+  return has_race;
 }
 
 // TryTrace* and TraceRestart* functions allow to turn memory access and func
@@ -444,9 +453,9 @@ ALWAYS_INLINE USED void MemoryAccess(ThreadState* thr, uptr pc, uptr addr,
            DumpShadow(memBuf[3], shadow_mem[3]));
 
   FastState fast_state = thr->fast_state;
-  SubShadow cur(fast_state, addr, size, typ);
+  HBEpoch cur(fast_state, addr, size, typ);
 
-  LOAD_CURRENT_SHADOW(cur, shadow_mem);
+  // LOAD_CURRENT_SHADOW(cur, shadow_mem);
   // if (LIKELY(ContainsSameAccess(shadow_mem, cur, shadow, access, typ)))
   //   return;
   if (UNLIKELY(fast_state.GetIgnoreBit()))
@@ -455,8 +464,7 @@ ALWAYS_INLINE USED void MemoryAccess(ThreadState* thr, uptr pc, uptr addr,
     return TraceRestartMemoryAccess(thr, pc, addr, size, typ);
   // CheckRaces(thr, shadow_mem, cur, shadow, access, typ);
 
-  if (typ & kAccessRead) HandleRead(thr, shadow_mem, addr, size, typ);
-  if (typ & kAccessWrite) HandleWrite(thr, shadow_mem, addr, size, typ);
+  HandleMemoryAccess(thr, shadow_mem, cur, typ);
 }
 
 void MemoryAccess16(ThreadState* thr, uptr pc, uptr addr, AccessType typ);
@@ -474,31 +482,32 @@ ALWAYS_INLINE USED void MemoryAccess16(ThreadState* thr, uptr pc, uptr addr,
   FastState fast_state = thr->fast_state;
   if (UNLIKELY(fast_state.GetIgnoreBit()))
     return;
-  SubShadow cur(fast_state, 0, 8, typ);
+  HBEpoch cur(fast_state, 0, 8, typ);
   RawShadow* shadow_mem = MemToShadow(addr);
   bool traced = false;
   {
-    LOAD_CURRENT_SHADOW(cur, shadow_mem);
-    if (LIKELY(ContainsSameAccess(shadow_mem, cur, shadow, access, typ)))
-      goto SECOND;
+    // LOAD_CURRENT_SHADOW(cur, shadow_mem);
+    // if (LIKELY(ContainsSameAccess(shadow_mem, cur, shadow, access, typ)))
+    //   goto SECOND;
     if (!TryTraceMemoryAccessRange(thr, pc, addr, size, typ))
       return RestartMemoryAccess16(thr, pc, addr, typ);
     traced = true;
+    // They dont care about the remaining bytes if the first part already detects a race.
+    // This works because they clear everything in the shadow after a race.
+    // In SHB we do it differently.
     // if (UNLIKELY(CheckRaces(thr, shadow_mem, cur, shadow, access, typ)))
     //   return;
-    if (typ & kAccessRead) HandleRead(thr, shadow_mem, addr, size, typ);
-    if (typ & kAccessWrite) HandleWrite(thr, shadow_mem, addr, size, typ);
+  HandleMemoryAccess(thr, shadow_mem, cur, typ);
   }
-SECOND:
+// SECOND:
   shadow_mem += kShadowCnt;
-  LOAD_CURRENT_SHADOW(cur, shadow_mem);
-  if (LIKELY(ContainsSameAccess(shadow_mem, cur, shadow, access, typ)))
-    return;
+  // LOAD_CURRENT_SHADOW(cur, shadow_mem);
+  // if (LIKELY(ContainsSameAccess(shadow_mem, cur, shadow, access, typ)))
+  //   return;
   if (!traced && !TryTraceMemoryAccessRange(thr, pc, addr, size, typ))
     return RestartMemoryAccess16(thr, pc, addr, typ);
   // CheckRaces(thr, shadow_mem, cur, shadow, access, typ);
-  if (typ & kAccessRead) HandleRead(thr, shadow_mem, addr, size, typ);
-  if (typ & kAccessWrite) HandleWrite(thr, shadow_mem, addr, size, typ);
+  HandleMemoryAccess(thr, shadow_mem, cur, typ);
 }
 
 NOINLINE
@@ -519,57 +528,63 @@ ALWAYS_INLINE USED void UnalignedMemoryAccess(ThreadState* thr, uptr pc,
   bool traced = false;
   uptr size1 = Min<uptr>(size, RoundUp(addr + 1, kShadowCell) - addr);
   {
-    SubShadow cur(fast_state, addr, size1, typ);
-    LOAD_CURRENT_SHADOW(cur, shadow_mem);
-    if (LIKELY(ContainsSameAccess(shadow_mem, cur, shadow, access, typ)))
-      goto SECOND;
-    if (!TryTraceMemoryAccessRange(thr, pc, addr, size, typ))
-      return RestartUnalignedMemoryAccess(thr, pc, addr, size, typ);
+    HBEpoch cur(fast_state, addr, size1, typ);
+    // LOAD_CURRENT_SHADOW(cur, shadow_mem);
+    // if (LIKELY(ContainsSameAccess(shadow_mem, cur, shadow, access, typ)))
+    //   goto SECOND;
+    HandleMemoryAccess(thr, shadow_mem, cur, typ);
     traced = true;
     // if (UNLIKELY(CheckRaces(thr, shadow_mem, cur, shadow, access, typ)))
     //   return;
-    if (typ & kAccessRead) HandleRead(thr, shadow_mem, addr, size, typ);
-    if (typ & kAccessWrite) HandleWrite(thr, shadow_mem, addr, size, typ);
+    HandleMemoryAccess(thr, shadow_mem, cur, typ);
   }
-SECOND:
+// SECOND:
   uptr size2 = size - size1;
   if (LIKELY(size2 == 0))
     return;
   shadow_mem += kShadowCnt;
-  SubShadow cur(fast_state, 0, size2, typ);
-  LOAD_CURRENT_SHADOW(cur, shadow_mem);
+  HBEpoch cur(fast_state, 0, size2, typ);
+  // LOAD_CURRENT_SHADOW(cur, shadow_mem);
   // if (LIKELY(ContainsSameAccess(shadow_mem, cur, shadow, access, typ)))
   //   return;
   if (!traced && !TryTraceMemoryAccessRange(thr, pc, addr, size, typ))
     return RestartUnalignedMemoryAccess(thr, pc, addr, size, typ);
   // CheckRaces(thr, shadow_mem, cur, shadow, access, typ);
-  if (typ & kAccessRead) HandleRead(thr, shadow_mem, addr, size, typ);
-  if (typ & kAccessWrite) HandleWrite(thr, shadow_mem, addr, size, typ);
+  HandleMemoryAccess(thr, shadow_mem, cur, typ);
 }
 
-void ShadowSet(RawShadow* p, RawShadow* end, RawShadow v) {
+void ShadowSetWrite(RawShadow* p, RawShadow* end, RawHBEpoch val) {
   DCHECK_LE(p, end);
   DCHECK(IsShadowMem(p));
   DCHECK(IsShadowMem(end));
   UNUSED const uptr kAlign = kShadowCnt * kShadowSize;
   DCHECK_EQ(reinterpret_cast<uptr>(p) % kAlign, 0);
   DCHECK_EQ(reinterpret_cast<uptr>(end) % kAlign, 0);
-#if !PSAN_VECTORIZE
+// #if !PSAN_VECTORIZE
+//   for (; p < end; p += kShadowCnt) {
+//     p[0] = v;
+//     for (uptr i = 1; i < kShadowCnt; i++) p[i] = SubShadow::kEmpty;
+//   }
+// #else
+//   m128 vv = _mm_setr_epi32(
+//       static_cast<u32>(v), static_cast<u32>(SubShadow::kEmpty),
+//       static_cast<u32>(SubShadow::kEmpty), static_cast<u32>(SubShadow::kEmpty));
+//   m128* vp = reinterpret_cast<m128*>(p);
+//   m128* vend = reinterpret_cast<m128*>(end);
+//   for (; vp < vend; vp++) _mm_store_si128(vp, vv);
+// #endif
+
+  // TSan doesnt use atomic here. Understandable since there is likely to be some
+  // synchronization in the user code that leads to this.
   for (; p < end; p += kShadowCnt) {
-    p[0] = v;
-    for (uptr i = 1; i < kShadowCnt; i++) p[i] = SubShadow::kEmpty;
+    Shadow shadow(*p);
+    u8 idx = reinterpret_cast<uptr>(p) % kAlign;
+    shadow.subshadow()->shadow(idx)->SetRx(HBEpoch::kEmpty);
+    shadow.subshadow()->shadow(idx)->SetWx(val);
   }
-#else
-  m128 vv = _mm_setr_epi32(
-      static_cast<u32>(v), static_cast<u32>(SubShadow::kEmpty),
-      static_cast<u32>(SubShadow::kEmpty), static_cast<u32>(SubShadow::kEmpty));
-  m128* vp = reinterpret_cast<m128*>(p);
-  m128* vend = reinterpret_cast<m128*>(end);
-  for (; vp < vend; vp++) _mm_store_si128(vp, vv);
-#endif
 }
 
-static void MemoryRangeSet(uptr addr, uptr size, RawShadow val) {
+static void MemoryRangeSet(uptr addr, uptr size, RawHBEpoch val) {
   if (size == 0)
     return;
   DCHECK_EQ(addr % kShadowCell, 0);
@@ -585,7 +600,7 @@ static void MemoryRangeSet(uptr addr, uptr size, RawShadow val) {
   // UnmapOrDie/MmapFixedNoReserve does not work on Windows.
   if (SANITIZER_WINDOWS ||
       size <= common_flags()->clear_shadow_mmap_threshold) {
-    ShadowSet(begin, end, val);
+    ShadowSetWrite(begin, end, val);
     return;
   }
   // The region is big, reset only beginning and end.
@@ -594,7 +609,7 @@ static void MemoryRangeSet(uptr addr, uptr size, RawShadow val) {
   RawShadow* mid1 =
       Min(end, reinterpret_cast<RawShadow*>(RoundUp(
                    reinterpret_cast<uptr>(begin) + kPageSize / 2, kPageSize)));
-  ShadowSet(begin, mid1, val);
+  ShadowSetWrite(begin, mid1, val);
   // Reset middle part.
   RawShadow* mid2 = RoundDown(end, kPageSize);
   if (mid2 > mid1) {
@@ -602,13 +617,13 @@ static void MemoryRangeSet(uptr addr, uptr size, RawShadow val) {
       Die();
   }
   // Set the ending.
-  ShadowSet(mid2, end, val);
+  ShadowSetWrite(mid2, end, val);
 }
 
 void MemoryResetRange(ThreadState* thr, uptr pc, uptr addr, uptr size) {
   uptr addr1 = RoundDown(addr, kShadowCell);
   uptr size1 = RoundUp(size + addr - addr1, kShadowCell);
-  MemoryRangeSet(addr1, size1, Shadow::kEmpty);
+  MemoryRangeSet(addr1, size1, HBEpoch::kEmpty);
 }
 
 void MemoryRangeFreed(ThreadState* thr, uptr pc, uptr addr, uptr size) {
@@ -631,35 +646,51 @@ void MemoryRangeFreed(ThreadState* thr, uptr pc, uptr addr, uptr size) {
                          kAccessCheckOnly | kAccessNoRodata;
   TraceMemoryAccessRange(thr, pc, addr, size, typ);
   RawShadow* shadow_mem = MemToShadow(addr);
-  SubShadow cur(thr->fast_state, 0, kShadowCell, typ);
-#if PSAN_VECTORIZE
-  const m128 access = _mm_set1_epi32(static_cast<u32>(cur.raw()));
-  const m128 freed = _mm_setr_epi32(
-      static_cast<u32>(SubShadow::FreedMarker()),
-      static_cast<u32>(SubShadow::FreedInfo(cur.sid(), cur.epoch())), 0, 0);
+  HBEpoch cur(thr->fast_state, 0, kShadowCell, typ);
+// #if PSAN_VECTORIZE
+//   const m128 access = _mm_set1_epi32(static_cast<u32>(cur.raw()));
+//   const m128 freed = _mm_setr_epi32(
+//       static_cast<u32>(SubShadow::FreedMarker()),
+//       static_cast<u32>(SubShadow::FreedInfo(cur.sid(), cur.epoch())), 0, 0);
+//   for (; size; size -= kShadowCell, shadow_mem += kShadowCnt) {
+//     const m128 shadow = _mm_load_si128((m128*)shadow_mem);
+//     if (UNLIKELY(CheckRaces(thr, shadow_mem, cur, shadow, access, typ)))
+//       return;
+//     _mm_store_si128((m128*)shadow_mem, freed);
+//   }
+// #else
+//   for (; size; size -= kShadowCell, shadow_mem += kShadowCnt) {
+//     if (UNLIKELY(CheckRaces(thr, shadow_mem, cur, 0, 0, typ)))
+//       return;
+//     StoreShadow(&shadow_mem[0], Shadow::FreedMarker());
+//     StoreShadow(&shadow_mem[1], Shadow::FreedInfo(cur.sid(), cur.epoch()));
+//     StoreShadow(&shadow_mem[2], Shadow::kEmpty);
+//     StoreShadow(&shadow_mem[3], Shadow::kEmpty);
+//   }
+// #endif
   for (; size; size -= kShadowCell, shadow_mem += kShadowCnt) {
-    const m128 shadow = _mm_load_si128((m128*)shadow_mem);
-    if (UNLIKELY(CheckRaces(thr, shadow_mem, cur, shadow, access, typ)))
+    // if (UNLIKELY(CheckRaces(thr, shadow_mem, cur, 0, 0, typ)))
+    //   return;
+    if (UNLIKELY(HandleMemoryAccess(thr, shadow_mem, cur, typ)))
       return;
-    _mm_store_si128((m128*)shadow_mem, freed);
+
+    for (u8 i = 0; i < kShadowCell; ++i) {
+      Shadow shadow(LoadShadow(shadow_mem));
+      StoreHBEpoch(shadow.subshadow()->shadow(i)->wx_p(), HBEpoch::FreedMarker());
+      StoreHBEpoch(shadow.subshadow()->shadow(i)->rx_p(), HBEpoch::FreedInfo(cur.sid(), cur.epoch()));
+    }
+    // StoreShadow(&shadow_mem[0], Shadow::FreedMarker());
+    // StoreShadow(&shadow_mem[1], Shadow::FreedInfo(cur.sid(), cur.epoch()));
+    // StoreShadow(&shadow_mem[2], Shadow::kEmpty);
+    // StoreShadow(&shadow_mem[3], Shadow::kEmpty);
   }
-#else
-  for (; size; size -= kShadowCell, shadow_mem += kShadowCnt) {
-    if (UNLIKELY(CheckRaces(thr, shadow_mem, cur, 0, 0, typ)))
-      return;
-    StoreShadow(&shadow_mem[0], Shadow::FreedMarker());
-    StoreShadow(&shadow_mem[1], Shadow::FreedInfo(cur.sid(), cur.epoch()));
-    StoreShadow(&shadow_mem[2], Shadow::kEmpty);
-    StoreShadow(&shadow_mem[3], Shadow::kEmpty);
-  }
-#endif
 }
 
 void MemoryRangeImitateWrite(ThreadState* thr, uptr pc, uptr addr, uptr size) {
   DCHECK_EQ(addr % kShadowCell, 0);
   size = RoundUp(size, kShadowCell);
   TraceMemoryAccessRange(thr, pc, addr, size, kAccessWrite);
-  SubShadow cur(thr->fast_state, 0, 8, kAccessWrite);
+  HBEpoch cur(thr->fast_state, 0, 8, kAccessWrite);
   MemoryRangeSet(addr, size, cur.raw());
 }
 
@@ -672,12 +703,14 @@ void MemoryRangeImitateWriteOrResetRange(ThreadState* thr, uptr pc, uptr addr,
 }
 
 ALWAYS_INLINE
-bool MemoryAccessRangeOne(ThreadState* thr, RawSubShadow* shadow_mem, SubShadow cur,
+bool MemoryAccessRangeOne(ThreadState* thr, RawShadow* shadow_mem, HBEpoch cur,
                           AccessType typ) {
-  LOAD_CURRENT_SHADOW(cur, shadow_mem);
-  if (LIKELY(ContainsSameAccess(shadow_mem, cur, shadow, access, typ)))
-    return false;
-  return CheckRaces(thr, shadow_mem, cur, shadow, access, typ);
+  // LOAD_CURRENT_SHADOW(cur, shadow_mem);
+  // if (LIKELY(ContainsSameAccess(shadow_mem, cur, shadow, access, typ)))
+  //   return false;
+
+  return HandleMemoryAccess(thr, shadow_mem, cur, typ);
+  // return CheckRaces(thr, shadow_mem, cur, shadow, access, typ);
 }
 
 template <bool is_read>
@@ -691,7 +724,7 @@ template <bool is_read>
 void MemoryAccessRangeT(ThreadState* thr, uptr pc, uptr addr, uptr size) {
   const AccessType typ =
       (is_read ? kAccessRead : kAccessWrite) | kAccessNoRodata;
-  RawSubShadow* shadow_mem = MemToShadow(addr);
+  RawShadow* shadow_mem = MemToShadow(addr);
   DPrintf2("#%d: MemoryAccessRange: @%p %p size=%d is_read=%d\n", thr->tid,
            (void*)pc, (void*)addr, (int)size, is_read);
 
@@ -723,7 +756,7 @@ void MemoryAccessRangeT(ThreadState* thr, uptr pc, uptr addr, uptr size) {
   // (writes shouldn't go to .rodata). But it happens in Chromium tests:
   // https://bugs.chromium.org/p/chromium/issues/detail?id=1275581#c19
   // Details are unknown since it happens only on CI machines.
-  if (*shadow_mem == SubShadow::kRodata)
+  if (Shadow(*shadow_mem).subshadow()->shadow(0)->rx().raw() == HBEpoch::kRodata)
     return;
 
   FastState fast_state = thr->fast_state;
@@ -737,20 +770,20 @@ void MemoryAccessRangeT(ThreadState* thr, uptr pc, uptr addr, uptr size) {
     // Handle unaligned beginning, if any.
     uptr size1 = Min(size, RoundUp(addr, kShadowCell) - addr);
     size -= size1;
-    SubShadow cur(fast_state, addr, size1, typ);
+    HBEpoch cur(fast_state, addr, size1, typ);
     if (UNLIKELY(MemoryAccessRangeOne(thr, shadow_mem, cur, typ)))
       return;
     shadow_mem += kShadowCnt;
   }
   // Handle middle part, if any.
-  SubShadow cur(fast_state, 0, kShadowCell, typ);
+  HBEpoch cur(fast_state, 0, kShadowCell, typ);
   for (; size >= kShadowCell; size -= kShadowCell, shadow_mem += kShadowCnt) {
     if (UNLIKELY(MemoryAccessRangeOne(thr, shadow_mem, cur, typ)))
       return;
   }
   // Handle ending, if any.
   if (UNLIKELY(size)) {
-    SubShadow cur(fast_state, 0, size, typ);
+    HBEpoch cur(fast_state, 0, size, typ);
     if (UNLIKELY(MemoryAccessRangeOne(thr, shadow_mem, cur, typ)))
       return;
   }

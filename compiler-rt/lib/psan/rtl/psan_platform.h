@@ -979,7 +979,7 @@ struct ShadowToMemImpl {
 };
 
 ALWAYS_INLINE
-uptr ShadowToMem(RawSubShadow *s) {
+uptr ShadowToMem(RawShadow *s) {
   return SelectMapping<ShadowToMemImpl>(reinterpret_cast<uptr>(s));
 }
 
