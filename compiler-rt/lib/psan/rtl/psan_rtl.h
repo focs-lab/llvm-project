@@ -497,7 +497,7 @@ void ForkBefore(ThreadState *thr, uptr pc);
 void ForkParentAfter(ThreadState *thr, uptr pc);
 void ForkChildAfter(ThreadState *thr, uptr pc, bool start_thread);
 
-void ReportRace(ThreadState *thr, RawSubShadow *shadow_mem, SubShadow cur, SubShadow old,
+void ReportRace(ThreadState *thr, RawShadow *shadow_mem, HBEpoch cur, HBEpoch old,
                 AccessType typ);
 bool OutputReport(ThreadState *thr, const ScopedReport &srep);
 bool IsFiredSuppression(Context *ctx, ReportType type, StackTrace trace);

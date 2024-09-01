@@ -17,11 +17,8 @@
 
 namespace __psan {
 bool HBShadowCell::HandleRead(ThreadState *thr, HBEpoch cur) {
-  Sid sid = cur.sid();
-  Epoch epoch = cur.epoch();
   uptr addr, size;
-  AccessType typ;
-  cur.GetAccess(&addr, &size, &typ);
+  cur.GetAccess(&addr, &size, nullptr);
 
   bool has_race = false;
 
@@ -29,6 +26,8 @@ bool HBShadowCell::HandleRead(ThreadState *thr, HBEpoch cur) {
     HBShadow* hb_shadow = shadow(addr+i);
     has_race |= hb_shadow->HandleRead(thr, cur);
   }
+
+  if (has_race) Printf("Wowzers!\n");
 
   return has_race;
 }
@@ -67,18 +66,15 @@ bool HBShadow::HandleRead(ThreadState *thr, HBEpoch cur) {
 
   // if HB-ordered then not a race
   if (LIKELY(thr->clock.Get(old_wx.sid()) >= old_wx.epoch())) {
-      StoreHBEpoch(rx_p(), HBEpoch(sid, epoch).raw());   // update the read epoch
+    StoreHBEpoch(rx_p(), HBEpoch(sid, epoch).raw());   // update the read epoch
     return false;
   }
   return true;
 }
 
 bool HBShadowCell::HandleWrite(ThreadState *thr, HBEpoch cur) {
-  Sid sid = cur.sid();
-  Epoch epoch = cur.epoch();
   uptr addr, size;
-  AccessType typ;
-  cur.GetAccess(&addr, &size, &typ);
+  cur.GetAccess(&addr, &size, nullptr);
 
   bool has_race = false;
 
@@ -87,10 +83,13 @@ bool HBShadowCell::HandleWrite(ThreadState *thr, HBEpoch cur) {
     has_race |= hb_shadow->HandleWrite(thr, cur);
   }
 
+  if (has_race) Printf("Wowzers!\n");
+
   return has_race;
 }
 
 bool HBShadow::HandleWrite(ThreadState *thr, HBEpoch cur) {
+  Printf("Handling write\n");
   Sid sid = cur.sid();
   Epoch epoch = cur.epoch();
   uptr addr, size;
@@ -105,7 +104,7 @@ bool HBShadow::HandleWrite(ThreadState *thr, HBEpoch cur) {
 
   // first access
   if (LIKELY(old_wx.sid() == kFreeSid)) {
-    if (!(typ & kAccessCheckOnly)) {
+    if (!(typ & kAccessCheckOnly))
       StoreHBEpoch(wx_p(), HBEpoch(sid, epoch).raw());   // update the read epoch
     is_w_race = false;
   }
@@ -116,7 +115,7 @@ bool HBShadow::HandleWrite(ThreadState *thr, HBEpoch cur) {
 
   // same thread accessing, only update the epoch if the access type is weaker
   if (LIKELY(old_wx.sid() == sid)) {
-    if (!(typ & kAccessCheckOnly) && old_rx.IsWeakerOrEqual(typ)) {
+    if (!(typ & kAccessCheckOnly) && old_rx.IsWeakerOrEqual(typ))
       StoreHBEpoch(wx_p(), HBEpoch(sid, epoch).raw());   // update the read epoch
     is_w_race = false;
   }
@@ -126,18 +125,18 @@ bool HBShadow::HandleWrite(ThreadState *thr, HBEpoch cur) {
   if (!(is_w_race || is_r_race)) return false;
 
   // if both are atomic then not a race
-  if (LIKELY(old_wx.IsBothAtomic(typ))){
+  if (LIKELY(old_wx.IsBothAtomic(typ))) {
     StoreHBEpoch(wx_p(), HBEpoch(sid, epoch).raw());     // update the read epoch
     is_w_race = false;
   }
-  if (LIKELY(old_rx.IsBothAtomic(typ))){
+  if (LIKELY(old_rx.IsBothAtomic(typ))) {
     is_r_race = false;
   }
   if (!(is_w_race || is_r_race)) return false;
 
   // if HB-ordered then not a race
   if (LIKELY(thr->clock.Get(old_wx.sid()) >= old_wx.epoch())) {
-      StoreHBEpoch(wx_p(), HBEpoch(sid, epoch).raw());   // update the read epoch
+    StoreHBEpoch(wx_p(), HBEpoch(sid, epoch).raw());   // update the read epoch
     is_w_race = false;
   }
   if (LIKELY(thr->clock.Get(old_rx.sid()) >= old_rx.epoch())) {

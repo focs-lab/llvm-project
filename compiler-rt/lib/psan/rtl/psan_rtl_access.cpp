@@ -147,17 +147,20 @@ void TraceTime(ThreadState* thr) {
   TraceEvent(thr, ev);
 }
 
-NOINLINE void DoReportRace(ThreadState* thr, RawSubShadow* shadow_mem, SubShadow cur,
-                           SubShadow old,
+NOINLINE void DoReportRace(ThreadState* thr, RawShadow* shadow_mem, HBEpoch cur,
+                           HBEpoch old,
                            AccessType typ) SANITIZER_NO_THREAD_SAFETY_ANALYSIS {
+  HBShadowCell* hb_shadow_cell = LoadHBShadowCell(shadow_mem);
+  uptr addr;
+  cur.GetAccess(&addr, nullptr, nullptr);
   // For the free shadow markers wx (that contains kFreeSid)
   // triggers the race, but the second element contains info about the freeing
   // thread, take it.
   if (old.sid() == kFreeSid)
-    old = Shadow(LoadShadow(&shadow_mem[1]));
+    old = HBEpoch(LoadHBEpoch(hb_shadow_cell->shadow(addr)->rx_p()));
   // This prevents trapping on this address in future.
-  for (uptr i = 0; i < kShadowCnt; i++)
-    StoreShadow(&shadow_mem[i], i == 0 ? SubShadow::kRodata : SubShadow::kEmpty);
+  StoreHBEpoch(hb_shadow_cell->shadow(addr)->wx_p(), HBEpoch::kRodata);
+  StoreHBEpoch(hb_shadow_cell->shadow(addr)->rx_p(), HBEpoch::kRodata);
   // See the comment in MemoryRangeFreed as to why the slot is locked
   // for free memory accesses. ReportRace must not be called with
   // the slot locked because of the fork. But MemoryRangeFreed is not
@@ -165,7 +168,7 @@ NOINLINE void DoReportRace(ThreadState* thr, RawSubShadow* shadow_mem, SubShadow
   // so simply unlocking the slot should be fine.
   if (typ & kAccessSlotLocked)
     SlotUnlock(thr);
-  ReportRace(thr, shadow_mem, cur, SubShadow(old), typ);
+  ReportRace(thr, shadow_mem, cur, old, typ);
   if (typ & kAccessSlotLocked)
     SlotLock(thr);
 }
@@ -402,21 +405,22 @@ char* DumpShadow(char* buf, RawHBEpoch raw) {
   return buf;
 }
 
-ALWAYS_INLINE USED bool HandleRead(ThreadState* thr, RawShadow* shadow_mem, HBEpoch cur) {
+ALWAYS_INLINE
+bool HandleRead(ThreadState* thr, RawShadow* shadow_mem, HBEpoch cur) {
   // A wrapper to the actual HandleRead
-  Shadow shadow(LoadShadow(shadow_mem));
-  HBShadowCell* hb_shadow_cell = shadow.subshadow();
+  HBShadowCell* hb_shadow_cell = LoadHBShadowCell(shadow_mem);
   return hb_shadow_cell->HandleRead(thr, cur);
 }
 
-ALWAYS_INLINE USED bool HandleWrite(ThreadState* thr, RawShadow* shadow_mem, HBEpoch cur) {
+ALWAYS_INLINE
+bool HandleWrite(ThreadState* thr, RawShadow* shadow_mem, HBEpoch cur) {
   // A wrapper to the actual HandleWrite
-  Shadow shadow(LoadShadow(shadow_mem));
-  HBShadowCell* hb_shadow_cell = shadow.subshadow();
+  HBShadowCell* hb_shadow_cell = LoadHBShadowCell(shadow_mem);
   return hb_shadow_cell->HandleWrite(thr, cur);
 }
 
-ALWAYS_INLINE USED bool HandleMemoryAccess(ThreadState* thr, RawShadow* shadow_mem, HBEpoch cur, AccessType typ) {
+ALWAYS_INLINE
+bool HandleMemoryAccess(ThreadState* thr, RawShadow* shadow_mem, HBEpoch cur, AccessType typ) {
   bool has_race = false;
   if (typ & kAccessRead) has_race |= HandleRead(thr, shadow_mem, cur);
   else has_race |= HandleWrite(thr, shadow_mem, cur);
@@ -577,10 +581,11 @@ void ShadowSetWrite(RawShadow* p, RawShadow* end, RawHBEpoch val) {
   // TSan doesnt use atomic here. Understandable since there is likely to be some
   // synchronization in the user code that leads to this.
   for (; p < end; p += kShadowCnt) {
-    Shadow shadow(*p);
-    u8 idx = reinterpret_cast<uptr>(p) % kAlign;
-    shadow.subshadow()->shadow(idx)->SetRx(HBEpoch::kEmpty);
-    shadow.subshadow()->shadow(idx)->SetWx(val);
+    HBShadowCell* hb_shadow_cell = LoadHBShadowCell(p);
+    for (u8 i = 0; i < 8; ++i) {
+      hb_shadow_cell->shadow(i)->SetRx(HBEpoch::kEmpty);
+      hb_shadow_cell->shadow(i)->SetWx(val);
+    }
   }
 }
 
@@ -674,10 +679,10 @@ void MemoryRangeFreed(ThreadState* thr, uptr pc, uptr addr, uptr size) {
     if (UNLIKELY(HandleMemoryAccess(thr, shadow_mem, cur, typ)))
       return;
 
+    HBShadowCell* hb_shadow_cell = LoadHBShadowCell(shadow_mem);
     for (u8 i = 0; i < kShadowCell; ++i) {
-      Shadow shadow(LoadShadow(shadow_mem));
-      StoreHBEpoch(shadow.subshadow()->shadow(i)->wx_p(), HBEpoch::FreedMarker());
-      StoreHBEpoch(shadow.subshadow()->shadow(i)->rx_p(), HBEpoch::FreedInfo(cur.sid(), cur.epoch()));
+      StoreHBEpoch(hb_shadow_cell->shadow(i)->wx_p(), HBEpoch::FreedMarker());
+      StoreHBEpoch(hb_shadow_cell->shadow(i)->rx_p(), HBEpoch::FreedInfo(cur.sid(), cur.epoch()));
     }
     // StoreShadow(&shadow_mem[0], Shadow::FreedMarker());
     // StoreShadow(&shadow_mem[1], Shadow::FreedInfo(cur.sid(), cur.epoch()));
@@ -756,7 +761,8 @@ void MemoryAccessRangeT(ThreadState* thr, uptr pc, uptr addr, uptr size) {
   // (writes shouldn't go to .rodata). But it happens in Chromium tests:
   // https://bugs.chromium.org/p/chromium/issues/detail?id=1275581#c19
   // Details are unknown since it happens only on CI machines.
-  if (Shadow(*shadow_mem).subshadow()->shadow(0)->rx().raw() == HBEpoch::kRodata)
+  HBShadowCell* hb_shadow_cell = LoadHBShadowCell(shadow_mem);
+  if (hb_shadow_cell->shadow(0)->rx().raw() == HBEpoch::kRodata)
     return;
 
   FastState fast_state = thr->fast_state;

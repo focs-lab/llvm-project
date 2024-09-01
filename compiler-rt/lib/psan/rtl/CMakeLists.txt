@@ -49,6 +49,7 @@ set(PSAN_SOURCES
   psan_symbolize.cpp
   psan_sync.cpp
   psan_vector_clock.cpp
+  analysis/psan_hb.cpp
   )
 
 set(PSAN_CXX_SOURCES

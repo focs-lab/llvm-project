@@ -214,15 +214,15 @@ private:
   static constexpr RawShadow kRodata = static_cast<RawShadow>(1);
 };
 
-ALWAYS_INLINE RawShadow LoadShadow(RawShadow *p) {
-  return static_cast<RawShadow>(
-      atomic_load((atomic_uint64_t *)p, memory_order_relaxed));
-}
+// ALWAYS_INLINE RawShadow LoadShadow(RawShadow *p) {
+//   return static_cast<RawShadow>(
+//       atomic_load((atomic_uint64_t *)p, memory_order_relaxed));
+// }
 
-ALWAYS_INLINE void StoreShadow(RawShadow *sp, RawShadow s) {
-  atomic_store((atomic_uint64_t *)sp, static_cast<u64>(s),
-               memory_order_relaxed);
-}
+// ALWAYS_INLINE void StoreShadow(RawShadow *sp, RawShadow s) {
+//   atomic_store((atomic_uint64_t *)sp, static_cast<u64>(s),
+//                memory_order_relaxed);
+// }
 
 ALWAYS_INLINE HBShadowCell* LoadHBShadowCell(RawShadow *p) {
   RawShadow shadow = static_cast<RawShadow>(
