@@ -150,6 +150,9 @@ void TraceTime(ThreadState* thr) {
 NOINLINE void DoReportRace(ThreadState* thr, RawShadow* shadow_mem, HBEpoch cur,
                            HBEpoch old,
                            AccessType typ) SANITIZER_NO_THREAD_SAFETY_ANALYSIS {
+  // Printf("DoReportRace!\n");
+  // Printf("- old sid: %u, epoch: %u!\n", old.sid(), old.epoch());
+  // Printf("- cur sid: %u, epoch: %u!\n", cur.sid(), cur.epoch());
   HBShadowCell* hb_shadow_cell = LoadHBShadowCell(shadow_mem);
   uptr addr;
   cur.GetAccess(&addr, nullptr, nullptr);
@@ -406,25 +409,39 @@ char* DumpShadow(char* buf, RawHBEpoch raw) {
 }
 
 ALWAYS_INLINE
-bool HandleRead(ThreadState* thr, RawShadow* shadow_mem, HBEpoch cur) {
+HBEpoch HandleRead(ThreadState* thr, RawShadow* shadow_mem, HBEpoch cur) {
   // A wrapper to the actual HandleRead
   HBShadowCell* hb_shadow_cell = LoadHBShadowCell(shadow_mem);
-  return hb_shadow_cell->HandleRead(thr, cur);
+  HBEpoch race = hb_shadow_cell->HandleRead(thr, cur);
+  return race;
 }
 
 ALWAYS_INLINE
-bool HandleWrite(ThreadState* thr, RawShadow* shadow_mem, HBEpoch cur) {
+HBEpoch HandleWrite(ThreadState* thr, RawShadow* shadow_mem, HBEpoch cur) {
   // A wrapper to the actual HandleWrite
   HBShadowCell* hb_shadow_cell = LoadHBShadowCell(shadow_mem);
-  return hb_shadow_cell->HandleWrite(thr, cur);
+  HBEpoch race = hb_shadow_cell->HandleWrite(thr, cur);
+  return race;
 }
 
 ALWAYS_INLINE
 bool HandleMemoryAccess(ThreadState* thr, RawShadow* shadow_mem, HBEpoch cur, AccessType typ) {
-  bool has_race = false;
-  if (typ & kAccessRead) has_race |= HandleRead(thr, shadow_mem, cur);
-  else has_race |= HandleWrite(thr, shadow_mem, cur);
-  return has_race;
+  HBEpoch race;
+  if (typ & kAccessRead) {
+    race = HandleRead(thr, shadow_mem, cur);
+    if (race.raw() != HBEpoch::kEmpty) {
+      DoReportRace(thr, shadow_mem, cur, race, typ);
+      return true;
+    }
+  }
+  else {
+    race = HandleWrite(thr, shadow_mem, cur);
+    if (race.raw() != HBEpoch::kEmpty) {
+      DoReportRace(thr, shadow_mem, cur, race, typ);
+      return true;
+    }
+  }
+  return false;
 }
 
 // TryTrace* and TraceRestart* functions allow to turn memory access and func
@@ -580,6 +597,7 @@ void ShadowSetWrite(RawShadow* p, RawShadow* end, RawHBEpoch val) {
 
   // TSan doesnt use atomic here. Understandable since there is likely to be some
   // synchronization in the user code that leads to this.
+  // Printf("Create HB Shadow Cells - %u\n", end - p);
   for (; p < end; p += kShadowCnt) {
     HBShadowCell* hb_shadow_cell = LoadHBShadowCell(p);
     for (u8 i = 0; i < 8; ++i) {

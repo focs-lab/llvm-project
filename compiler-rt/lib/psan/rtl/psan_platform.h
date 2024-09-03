@@ -908,7 +908,7 @@ struct IsShadowMemImpl {
 };
 
 ALWAYS_INLINE
-bool IsShadowMem(RawSubShadow *p) {
+bool IsShadowMem(RawShadow *p) {
   return SelectMapping<IsShadowMemImpl>(reinterpret_cast<uptr>(p));
 }
 

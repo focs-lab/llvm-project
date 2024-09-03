@@ -15,6 +15,7 @@
 #include "../psan_vector_clock.h"
 
 #include "sanitizer_common/sanitizer_placement_new.h"
+#include "sanitizer_common/sanitizer_common.h"
 #include "../psan_mman.h"
 
 namespace __psan {
@@ -44,7 +45,7 @@ public:
   explicit HBEpoch(RawHBEpoch x = HBEpoch::kEmpty) { raw_ = static_cast<u32>(x); }
   ALWAYS_INLINE HBEpoch(Sid sid, Epoch epoch) {
     part_.sid_ = sid;
-    part_.epoch_ = static_cast<u16>(kEpochZero);
+    part_.epoch_ = static_cast<u16>(epoch);
   }
 
   RawHBEpoch raw() const { return static_cast<RawHBEpoch>(raw_); }
@@ -161,8 +162,8 @@ ALWAYS_INLINE void StoreHBEpoch(RawHBEpoch *hp, RawHBEpoch h) {
 
 class HBShadow {
 public:
-  bool HandleRead(ThreadState *thr, HBEpoch cur);
-  bool HandleWrite(ThreadState *thr, HBEpoch cur);
+  HBEpoch HandleRead(ThreadState *thr, HBEpoch cur);
+  HBEpoch HandleWrite(ThreadState *thr, HBEpoch cur);
 
   HBEpoch wx() const { return wx_; };
   HBEpoch rx() const { return rx_; };
@@ -187,8 +188,8 @@ class HBShadowCell {
 public:
   HBShadow* shadow(u8 i) { return &shadows_[i]; }
 
-  bool HandleRead(ThreadState *thr, HBEpoch cur);
-  bool HandleWrite(ThreadState *thr, HBEpoch cur);
+  HBEpoch HandleRead(ThreadState *thr, HBEpoch cur);
+  HBEpoch HandleWrite(ThreadState *thr, HBEpoch cur);
 private:
   HBShadow shadows_[kShadowCell];
 };
@@ -235,8 +236,11 @@ ALWAYS_INLINE HBShadowCell* LoadHBShadowCell(RawShadow *p) {
   atomic_store((atomic_uint64_t *)p, static_cast<u64>(newsh.raw()), memory_order_relaxed);
 
   RawShadow other_newsh_raw = static_cast<RawShadow>(atomic_load((atomic_uint64_t *)p, memory_order_acquire));
-  if (other_newsh_raw != newsh.raw())
+  if (other_newsh_raw != newsh.raw()) {
+    Printf("Free HBShadowCell because it was allocated concurrently.\n");
     FreeImpl(newsh.subshadow());
+  }
+  // Printf("Allocated: %p!\n", newsh.raw());
 
   Shadow other_newsh = Shadow(other_newsh_raw);
   return other_newsh.subshadow();

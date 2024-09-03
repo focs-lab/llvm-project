@@ -45,6 +45,7 @@ SUFFIX="${GOOS}_${GOARCH}"
 
 SRCS="
 	psan_go.cpp
+	../rtl/analysis/psan_hb.cpp
 	../rtl/psan_external.cpp
 	../rtl/psan_flags.cpp
 	../rtl/psan_interface_atomic.cpp
@@ -206,7 +207,7 @@ for F in $SRCS; do
 	cat $F
 done > $DIR/gopsan.cpp
 
-FLAGS=" -I../rtl -I../.. -I../../sanitizer_common -I../../../include -std=c++17 -Wall -fno-exceptions -fno-rtti -DSANITIZER_GO=1 -DSANITIZER_DEADLOCK_DETECTOR_VERSION=2 $OSCFLAGS $ARCHCFLAGS $EXTRA_CFLAGS"
+FLAGS=" -I../rtl -I../rtl/analysis -I../.. -I../../sanitizer_common -I../../../include -std=c++17 -Wall -fno-exceptions -fno-rtti -DSANITIZER_GO=1 -DSANITIZER_DEADLOCK_DETECTOR_VERSION=2 $OSCFLAGS $ARCHCFLAGS $EXTRA_CFLAGS"
 DEBUG_FLAGS="$FLAGS -DSANITIZER_DEBUG=1 -g"
 FLAGS="$FLAGS -DSANITIZER_DEBUG=0 -O3 -fomit-frame-pointer"
 

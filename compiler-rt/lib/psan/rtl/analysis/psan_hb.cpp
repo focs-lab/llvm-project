@@ -16,25 +16,42 @@
 #include "../psan_mman.h"
 
 namespace __psan {
-bool HBShadowCell::HandleRead(ThreadState *thr, HBEpoch cur) {
+HBEpoch HBShadowCell::HandleRead(ThreadState *thr, HBEpoch cur) {
   uptr addr, size;
   cur.GetAccess(&addr, &size, nullptr);
 
-  bool has_race = false;
-
+  // Printf("read thr.sid: %u, &this: %p, addr: %u, size: %u\n", thr->fast_state.sid(), this, addr, size);
   for (u8 i = 0; i < size; ++i) {
     HBShadow* hb_shadow = shadow(addr+i);
-    has_race |= hb_shadow->HandleRead(thr, cur);
+    HBEpoch race = hb_shadow->HandleRead(thr, cur);
+    if (race.raw() != HBEpoch::kEmpty) {
+      // Printf("Race!\n");
+      return race;
+    }
   }
 
-  if (has_race) Printf("Wowzers!\n");
-
-  return has_race;
+  return HBEpoch(HBEpoch::kEmpty);
 }
 
-bool HBShadow::HandleRead(ThreadState *thr, HBEpoch cur) {
+HBEpoch HBShadowCell::HandleWrite(ThreadState *thr, HBEpoch cur) {
+  uptr addr, size;
+  cur.GetAccess(&addr, &size, nullptr);
+
+  // Printf("write thr.sid: %u, &this: %p, addr: %u, size: %u\n", thr->fast_state.sid(), this, addr, size);
+  for (u8 i = 0; i < size; ++i) {
+    HBShadow* hb_shadow = shadow(addr+i);
+    HBEpoch race = hb_shadow->HandleWrite(thr, cur);
+    if (race.raw() != HBEpoch::kEmpty) {
+      // Printf("Race!\n");
+      return race;
+    }
+  }
+
+  return HBEpoch(HBEpoch::kEmpty);
+}
+
+HBEpoch HBShadow::HandleRead(ThreadState *thr, HBEpoch cur) {
   Sid sid = cur.sid();
-  Epoch epoch = cur.epoch();
   uptr addr, size;
   AccessType typ;
   cur.GetAccess(&addr, &size, &typ);
@@ -44,54 +61,46 @@ bool HBShadow::HandleRead(ThreadState *thr, HBEpoch cur) {
 
   // first access
   if (LIKELY(old_wx.sid() == kFreeSid)) {
+    // Printf("- old wx is free sid\n");
     if (!(typ & kAccessCheckOnly)) {
-      StoreHBEpoch(rx_p(), HBEpoch(sid, epoch).raw());   // update the read epoch
-      return false;
+      StoreHBEpoch(rx_p(), cur.raw());   // update the read epoch
+      // Printf("- store hb epoch - sid: %u, epoch: %u\n", sid, epoch);
     }
+    return HBEpoch(HBEpoch::kEmpty);
   }
 
   // same thread accessing, only update the epoch if the access type is weaker
   if (LIKELY(old_wx.sid() == sid)) {
+    // Printf("- old wx is same sid\n");
     if (!(typ & kAccessCheckOnly) && old_rx.IsWeakerOrEqual(typ)) {
-      StoreHBEpoch(rx_p(), HBEpoch(sid, epoch).raw());   // update the read epoch
-      return false;
+      StoreHBEpoch(rx_p(), cur.raw());   // update the read epoch
+      // Printf("- store hb epoch - sid: %u, epoch: %u\n", sid, epoch);
     }
+    return HBEpoch(HBEpoch::kEmpty);
   }
 
   // if both are atomic then not a race
   if (LIKELY(old_wx.IsBothAtomic(typ))){
-    StoreHBEpoch(rx_p(), HBEpoch(sid, epoch).raw());     // update the read epoch
-    return false;
+    // Printf("- old wx is also atomic sid\n");
+    StoreHBEpoch(rx_p(), cur.raw());     // update the read epoch
+    // Printf("- store hb epoch - sid: %u, epoch: %u\n", sid, epoch);
+    return HBEpoch(HBEpoch::kEmpty);
   }
 
   // if HB-ordered then not a race
   if (LIKELY(thr->clock.Get(old_wx.sid()) >= old_wx.epoch())) {
-    StoreHBEpoch(rx_p(), HBEpoch(sid, epoch).raw());   // update the read epoch
-    return false;
+    // Printf("- old wx is hb ordered\n");
+    // Printf("- old sid: %u, old: %u, cur sid: %u, cur: %u\n", old_wx.sid(), old_wx.epoch(), sid, thr->clock.Get(old_wx.sid()));
+    StoreHBEpoch(rx_p(), cur.raw());   // update the read epoch
+    // Printf("- store hb epoch - sid: %u, epoch: %u\n", sid, epoch);
+    return HBEpoch(HBEpoch::kEmpty);
   }
-  return true;
+  return old_wx;
 }
 
-bool HBShadowCell::HandleWrite(ThreadState *thr, HBEpoch cur) {
-  uptr addr, size;
-  cur.GetAccess(&addr, &size, nullptr);
-
-  bool has_race = false;
-
-  for (u8 i = 0; i < size; ++i) {
-    HBShadow* hb_shadow = shadow(addr+i);
-    has_race |= hb_shadow->HandleWrite(thr, cur);
-  }
-
-  if (has_race) Printf("Wowzers!\n");
-
-  return has_race;
-}
-
-bool HBShadow::HandleWrite(ThreadState *thr, HBEpoch cur) {
-  Printf("Handling write\n");
+HBEpoch HBShadow::HandleWrite(ThreadState *thr, HBEpoch cur) {
+  // Printf("Handling write\n");
   Sid sid = cur.sid();
-  Epoch epoch = cur.epoch();
   uptr addr, size;
   AccessType typ;
   cur.GetAccess(&addr, &size, &typ);
@@ -99,49 +108,87 @@ bool HBShadow::HandleWrite(ThreadState *thr, HBEpoch cur) {
   HBEpoch old_wx = HBEpoch(LoadHBEpoch(wx_p()));
   HBEpoch old_rx = HBEpoch(LoadHBEpoch(rx_p()));
 
-  bool is_w_race = false;
-  bool is_r_race = false;
+  bool is_w_race = true;
+  bool is_r_race = true;
 
   // first access
   if (LIKELY(old_wx.sid() == kFreeSid)) {
-    if (!(typ & kAccessCheckOnly))
-      StoreHBEpoch(wx_p(), HBEpoch(sid, epoch).raw());   // update the read epoch
+    // Printf("- old wx is empty\n");
+    if (!(typ & kAccessCheckOnly)) {
+      StoreHBEpoch(wx_p(), cur.raw());   // update the read epoch
+      // Printf("- store hb epoch - sid: %u, epoch: %u\n", sid, epoch);
+    }
     is_w_race = false;
   }
   if (old_rx.sid() == kFreeSid) {
+    // Printf("- old rx is empty\n");
+    if (!(typ & kAccessCheckOnly)) {
+      StoreHBEpoch(wx_p(), cur.raw());   // update the read epoch
+      // Printf("- store hb epoch - sid: %u, epoch: %u\n", sid, epoch);
+    }
     is_r_race = false;
   }
-  if (!(is_w_race || is_r_race)) return false;
+  if (!(is_w_race || is_r_race)) return HBEpoch(HBEpoch::kEmpty);
 
   // same thread accessing, only update the epoch if the access type is weaker
   if (LIKELY(old_wx.sid() == sid)) {
-    if (!(typ & kAccessCheckOnly) && old_rx.IsWeakerOrEqual(typ))
-      StoreHBEpoch(wx_p(), HBEpoch(sid, epoch).raw());   // update the read epoch
+    // Printf("- old wx has same sid\n");
+    if (!(typ & kAccessCheckOnly) && old_wx.IsWeakerOrEqual(typ)) {
+      StoreHBEpoch(wx_p(), cur.raw());   // update the read epoch
+      // Printf("- store hb epoch - sid: %u, epoch: %u\n", sid, epoch);
+    }
     is_w_race = false;
   }
   if (LIKELY(old_rx.sid() == sid)) {
+    // Printf("- old rx has same sid\n");
+    if (!(typ & kAccessCheckOnly) && old_rx.IsWeakerOrEqual(typ)) {
+      StoreHBEpoch(wx_p(), cur.raw());   // update the read epoch
+      // Printf("- store hb epoch - sid: %u, epoch: %u\n", sid, epoch);
+    }
     is_r_race = false;
   }
-  if (!(is_w_race || is_r_race)) return false;
+  if (!(is_w_race || is_r_race)) return HBEpoch(HBEpoch::kEmpty);
 
   // if both are atomic then not a race
   if (LIKELY(old_wx.IsBothAtomic(typ))) {
-    StoreHBEpoch(wx_p(), HBEpoch(sid, epoch).raw());     // update the read epoch
+    // Printf("- old wx is atomic\n");
+    StoreHBEpoch(wx_p(), cur.raw());     // update the read epoch
+    // Printf("- store hb epoch - sid: %u, epoch: %u\n", sid, epoch);
     is_w_race = false;
   }
   if (LIKELY(old_rx.IsBothAtomic(typ))) {
+    // Printf("- old rx is atomic\n");
+    StoreHBEpoch(wx_p(), cur.raw());     // update the read epoch
+    // Printf("- store hb epoch - sid: %u, epoch: %u\n", sid, epoch);
     is_r_race = false;
   }
-  if (!(is_w_race || is_r_race)) return false;
+  if (!(is_w_race || is_r_race)) return HBEpoch(HBEpoch::kEmpty);
 
   // if HB-ordered then not a race
   if (LIKELY(thr->clock.Get(old_wx.sid()) >= old_wx.epoch())) {
-    StoreHBEpoch(wx_p(), HBEpoch(sid, epoch).raw());   // update the read epoch
+    // Printf("- old wx is hb ordered\n");
+    // Printf("- old sid: %u, old: %u, cur sid: %u, cur: %u\n", old_wx.sid(), old_wx.epoch(), sid, thr->clock.Get(old_wx.sid()));
+    StoreHBEpoch(wx_p(), cur.raw());   // update the read epoch
+    // Printf("- store hb epoch - sid: %u, epoch: %u\n", sid, epoch);
+    // HBEpoch test = HBEpoch(LoadHBEpoch(wx_p()));
+    // Printf("- stored then loaded - sid: %u, epoch: %u\n", test.sid(), test.epoch());
     is_w_race = false;
   }
+  else
+    return old_wx;
+
   if (LIKELY(thr->clock.Get(old_rx.sid()) >= old_rx.epoch())) {
+    // Printf("- old rx is hb ordered\n");
+    // Printf("- old sid: %u, old: %u, cur sid: %u, cur: %u\n", old_rx.sid(), old_rx.epoch(), sid, thr->clock.Get(old_rx.sid()));
+    StoreHBEpoch(wx_p(), cur.raw());     // update the read epoch
+    // Printf("- store hb epoch - sid: %u, epoch: %u\n", sid, epoch);
     is_r_race = false;
   }
-  return is_w_race || is_r_race;
+  else {
+    // Printf("- there is race with old rx\n");
+    return old_rx;
+  }
+
+  return HBEpoch(HBEpoch::kEmpty);
 }
 }  // namespace __psan

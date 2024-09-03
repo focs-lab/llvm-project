@@ -22,6 +22,7 @@ append_list_if(COMPILER_RT_HAS_LIBM m PSAN_DYNAMIC_LINK_LIBS)
 append_list_if(COMPILER_RT_HAS_LIBPTHREAD pthread PSAN_DYNAMIC_LINK_LIBS)
 
 set(PSAN_SOURCES
+  analysis/psan_hb.cpp
   psan_debugging.cpp
   psan_external.cpp
   psan_fd.cpp
@@ -49,7 +50,6 @@ set(PSAN_SOURCES
   psan_symbolize.cpp
   psan_sync.cpp
   psan_vector_clock.cpp
-  analysis/psan_hb.cpp
   )
 
 set(PSAN_CXX_SOURCES

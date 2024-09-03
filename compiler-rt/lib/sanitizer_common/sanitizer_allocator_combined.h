@@ -65,10 +65,14 @@ class CombinedAllocator {
     // alignment without such requirement, and allocating 'size' would use
     // extraneous memory, so we employ 'original_size'.
     void *res;
-    if (primary_.CanAllocate(size, alignment))
+    if (primary_.CanAllocate(size, alignment)) {
+      // Printf("Primary allocate\n");
       res = cache->Allocate(&primary_, primary_.ClassID(size));
-    else
+    }
+    else {
+      // Printf("Secondary allocate\n");
       res = secondary_.Allocate(&stats_, original_size, alignment);
+    }
     if (alignment > 8)
       CHECK_EQ(reinterpret_cast<uptr>(res) & (alignment - 1), 0);
     return res;
