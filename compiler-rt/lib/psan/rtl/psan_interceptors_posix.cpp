@@ -263,7 +263,20 @@ static ThreadSignalContext *SigCtx(ThreadState *thr) {
   if (ctx == 0 && !thr->is_dead) {
     uptr pctx =
         (uptr)MmapOrDie(sizeof(ThreadSignalContext), "ThreadSignalContext");
-    MemoryResetRange(thr, (uptr)&SigCtx, pctx, sizeof(ThreadSignalContext));
+    // FIXME(dwslim): this is a hacky solution, im not sure yet what's the correct solution, maybe
+    // make our own allocator for shadow cells
+    // Problem 1 is that either Proc is not initialized yet, in turn
+    // thr->proc1->internal_alloc_cache is an invalid pointer, any attempts
+    // to allocate will cause a segfault
+    // Problem 2 is that when the allocator needs to be refilled,
+    // Allocate calls AllocateBatch which locks a mutex.
+    // There may be deadlock if this signal is handled in the middle of a call to
+    // AllocateBatch.
+    // Current solution below just ignores resetting the shadow for sctx
+    // I think this is acceptable since if it is not yet allocated, then skipping
+    // the reset is as good as allocating then resetting
+    if (LoadRawShadowFromUserAddress(pctx) != Shadow::kEmpty)
+      MemoryResetRange(thr, (uptr)&SigCtx, pctx, sizeof(ThreadSignalContext));
     if (atomic_compare_exchange_strong(&thr->signal_ctx, &ctx, pctx,
                                        memory_order_relaxed)) {
       ctx = pctx;

@@ -17,6 +17,7 @@
 #include "sanitizer_common/sanitizer_placement_new.h"
 #include "sanitizer_common/sanitizer_common.h"
 #include "../psan_mman.h"
+#include "../psan_platform.h"
 
 namespace __psan {
 
@@ -43,10 +44,10 @@ public:
   }
 
   explicit HBEpoch(RawHBEpoch x = HBEpoch::kEmpty) { raw_ = static_cast<u32>(x); }
-  ALWAYS_INLINE HBEpoch(Sid sid, Epoch epoch) {
-    part_.sid_ = sid;
-    part_.epoch_ = static_cast<u16>(epoch);
-  }
+  // ALWAYS_INLINE HBEpoch(Sid sid, Epoch epoch) {
+  //   part_.sid_ = sid;
+  //   part_.epoch_ = static_cast<u16>(epoch);
+  // }
 
   RawHBEpoch raw() const { return static_cast<RawHBEpoch>(raw_); }
   Sid sid() const { return part_.sid_; }
@@ -83,10 +84,10 @@ public:
   bool IsWeakerOrEqual(AccessType typ) const {
     u32 is_atomic = !!(typ & kAccessAtomic);
     UNUSED u32 res0 =
-        (part_.is_atomic_ > is_atomic);
+        (part_.is_atomic_ >= is_atomic);
 #if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
-    const u32 kAtomicReadMask = (1 << kIsAtomicShift) | (1 << kIsReadShift);
-    bool res = (raw_ & kAtomicReadMask) >=
+    const u32 kAtomicMask = (1 << kIsAtomicShift);
+    bool res = (raw_ & kAtomicMask) >=
                ((is_atomic << kIsAtomicShift));
 
     DCHECK_EQ(res, res0);
@@ -233,7 +234,7 @@ ALWAYS_INLINE HBShadowCell* LoadHBShadowCell(RawShadow *p) {
   // If there is no HBShadow, make a new one
   // slow case, only needs to happen once per variable
   Shadow newsh = Shadow(New<HBShadowCell>());
-  atomic_store((atomic_uint64_t *)p, static_cast<u64>(newsh.raw()), memory_order_relaxed);
+  atomic_store((atomic_uint64_t *)p, static_cast<u64>(newsh.raw()), memory_order_release);
 
   RawShadow other_newsh_raw = static_cast<RawShadow>(atomic_load((atomic_uint64_t *)p, memory_order_acquire));
   if (other_newsh_raw != newsh.raw()) {
@@ -244,6 +245,12 @@ ALWAYS_INLINE HBShadowCell* LoadHBShadowCell(RawShadow *p) {
 
   Shadow other_newsh = Shadow(other_newsh_raw);
   return other_newsh.subshadow();
+}
+
+ALWAYS_INLINE RawShadow LoadRawShadowFromUserAddress(uptr p) {
+  RawShadow* rawp = MemToShadow(p);
+  RawShadow raw = static_cast<RawShadow>(atomic_load((atomic_uint64_t *)rawp, memory_order_relaxed));
+  return raw;
 }
 
 }  // namespace __psan

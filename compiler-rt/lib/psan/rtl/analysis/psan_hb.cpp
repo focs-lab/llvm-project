@@ -141,10 +141,10 @@ HBEpoch HBShadow::HandleWrite(ThreadState *thr, HBEpoch cur) {
   }
   if (LIKELY(old_rx.sid() == sid)) {
     // Printf("- old rx has same sid\n");
-    if (!(typ & kAccessCheckOnly) && old_rx.IsWeakerOrEqual(typ)) {
-      StoreHBEpoch(wx_p(), cur.raw());   // update the read epoch
-      // Printf("- store hb epoch - sid: %u, epoch: %u\n", sid, epoch);
-    }
+    // if (!(typ & kAccessCheckOnly) && old_rx.IsWeakerOrEqual(typ)) {
+    //   StoreHBEpoch(wx_p(), cur.raw());   // update the read epoch
+    //   // Printf("- store hb epoch - sid: %u, epoch: %u\n", sid, epoch);
+    // }
     is_r_race = false;
   }
   if (!(is_w_race || is_r_race)) return HBEpoch(HBEpoch::kEmpty);
