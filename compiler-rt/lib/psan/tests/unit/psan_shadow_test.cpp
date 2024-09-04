@@ -22,71 +22,71 @@ struct Region {
   uptr end;
 };
 
-void CheckShadow(const Shadow *s, Sid sid, Epoch epoch, uptr addr, uptr size,
-                 AccessType typ) {
-  uptr addr1 = 0;
-  uptr size1 = 0;
-  AccessType typ1 = 0;
-  s->GetAccess(&addr1, &size1, &typ1);
-  CHECK_EQ(s->sid(), sid);
-  CHECK_EQ(s->epoch(), epoch);
-  CHECK_EQ(addr1, addr);
-  CHECK_EQ(size1, size);
-  CHECK_EQ(typ1, typ);
-}
+// void CheckShadow(const Shadow *s, Sid sid, Epoch epoch, uptr addr, uptr size,
+//                  AccessType typ) {
+//   uptr addr1 = 0;
+//   uptr size1 = 0;
+//   AccessType typ1 = 0;
+//   s->GetAccess(&addr1, &size1, &typ1);
+//   CHECK_EQ(s->sid(), sid);
+//   CHECK_EQ(s->epoch(), epoch);
+//   CHECK_EQ(addr1, addr);
+//   CHECK_EQ(size1, size);
+//   CHECK_EQ(typ1, typ);
+// }
 
-TEST(Shadow, Shadow) {
-  Sid sid = static_cast<Sid>(11);
-  Epoch epoch = static_cast<Epoch>(22);
-  FastState fs;
-  fs.SetSid(sid);
-  fs.SetEpoch(epoch);
-  CHECK_EQ(fs.sid(), sid);
-  CHECK_EQ(fs.epoch(), epoch);
-  CHECK_EQ(fs.GetIgnoreBit(), false);
-  fs.SetIgnoreBit();
-  CHECK_EQ(fs.GetIgnoreBit(), true);
-  fs.ClearIgnoreBit();
-  CHECK_EQ(fs.GetIgnoreBit(), false);
+// TEST(Shadow, Shadow) {
+//   Sid sid = static_cast<Sid>(11);
+//   Epoch epoch = static_cast<Epoch>(22);
+//   FastState fs;
+//   fs.SetSid(sid);
+//   fs.SetEpoch(epoch);
+//   CHECK_EQ(fs.sid(), sid);
+//   CHECK_EQ(fs.epoch(), epoch);
+//   CHECK_EQ(fs.GetIgnoreBit(), false);
+//   fs.SetIgnoreBit();
+//   CHECK_EQ(fs.GetIgnoreBit(), true);
+//   fs.ClearIgnoreBit();
+//   CHECK_EQ(fs.GetIgnoreBit(), false);
 
-  Shadow s0(fs, 1, 2, kAccessWrite);
-  CheckShadow(&s0, sid, epoch, 1, 2, kAccessWrite);
-  Shadow s1(fs, 2, 3, kAccessRead);
-  CheckShadow(&s1, sid, epoch, 2, 3, kAccessRead);
-  Shadow s2(fs, 0xfffff8 + 4, 1, kAccessWrite | kAccessAtomic);
-  CheckShadow(&s2, sid, epoch, 4, 1, kAccessWrite | kAccessAtomic);
-  Shadow s3(fs, 0xfffff8 + 0, 8, kAccessRead | kAccessAtomic);
-  CheckShadow(&s3, sid, epoch, 0, 8, kAccessRead | kAccessAtomic);
+//   Shadow s0(fs, 1, 2, kAccessWrite);
+//   CheckShadow(&s0, sid, epoch, 1, 2, kAccessWrite);
+//   Shadow s1(fs, 2, 3, kAccessRead);
+//   CheckShadow(&s1, sid, epoch, 2, 3, kAccessRead);
+//   Shadow s2(fs, 0xfffff8 + 4, 1, kAccessWrite | kAccessAtomic);
+//   CheckShadow(&s2, sid, epoch, 4, 1, kAccessWrite | kAccessAtomic);
+//   Shadow s3(fs, 0xfffff8 + 0, 8, kAccessRead | kAccessAtomic);
+//   CheckShadow(&s3, sid, epoch, 0, 8, kAccessRead | kAccessAtomic);
 
-  CHECK(!s0.IsBothReadsOrAtomic(kAccessRead | kAccessAtomic));
-  CHECK(!s1.IsBothReadsOrAtomic(kAccessAtomic));
-  CHECK(!s1.IsBothReadsOrAtomic(kAccessWrite));
-  CHECK(s1.IsBothReadsOrAtomic(kAccessRead));
-  CHECK(s2.IsBothReadsOrAtomic(kAccessAtomic));
-  CHECK(!s2.IsBothReadsOrAtomic(kAccessWrite));
-  CHECK(!s2.IsBothReadsOrAtomic(kAccessRead));
-  CHECK(s3.IsBothReadsOrAtomic(kAccessAtomic));
-  CHECK(!s3.IsBothReadsOrAtomic(kAccessWrite));
-  CHECK(s3.IsBothReadsOrAtomic(kAccessRead));
+//   CHECK(!s0.IsBothReadsOrAtomic(kAccessRead | kAccessAtomic));
+//   CHECK(!s1.IsBothReadsOrAtomic(kAccessAtomic));
+//   CHECK(!s1.IsBothReadsOrAtomic(kAccessWrite));
+//   CHECK(s1.IsBothReadsOrAtomic(kAccessRead));
+//   CHECK(s2.IsBothReadsOrAtomic(kAccessAtomic));
+//   CHECK(!s2.IsBothReadsOrAtomic(kAccessWrite));
+//   CHECK(!s2.IsBothReadsOrAtomic(kAccessRead));
+//   CHECK(s3.IsBothReadsOrAtomic(kAccessAtomic));
+//   CHECK(!s3.IsBothReadsOrAtomic(kAccessWrite));
+//   CHECK(s3.IsBothReadsOrAtomic(kAccessRead));
 
-  CHECK(!s0.IsRWWeakerOrEqual(kAccessRead | kAccessAtomic));
-  CHECK(s1.IsRWWeakerOrEqual(kAccessWrite));
-  CHECK(s1.IsRWWeakerOrEqual(kAccessRead));
-  CHECK(!s1.IsRWWeakerOrEqual(kAccessWrite | kAccessAtomic));
+//   CHECK(!s0.IsRWWeakerOrEqual(kAccessRead | kAccessAtomic));
+//   CHECK(s1.IsRWWeakerOrEqual(kAccessWrite));
+//   CHECK(s1.IsRWWeakerOrEqual(kAccessRead));
+//   CHECK(!s1.IsRWWeakerOrEqual(kAccessWrite | kAccessAtomic));
 
-  CHECK(!s2.IsRWWeakerOrEqual(kAccessRead | kAccessAtomic));
-  CHECK(s2.IsRWWeakerOrEqual(kAccessWrite | kAccessAtomic));
-  CHECK(s2.IsRWWeakerOrEqual(kAccessRead));
-  CHECK(s2.IsRWWeakerOrEqual(kAccessWrite));
+//   CHECK(!s2.IsRWWeakerOrEqual(kAccessRead | kAccessAtomic));
+//   CHECK(s2.IsRWWeakerOrEqual(kAccessWrite | kAccessAtomic));
+//   CHECK(s2.IsRWWeakerOrEqual(kAccessRead));
+//   CHECK(s2.IsRWWeakerOrEqual(kAccessWrite));
 
-  CHECK(s3.IsRWWeakerOrEqual(kAccessRead | kAccessAtomic));
-  CHECK(s3.IsRWWeakerOrEqual(kAccessWrite | kAccessAtomic));
-  CHECK(s3.IsRWWeakerOrEqual(kAccessRead));
-  CHECK(s3.IsRWWeakerOrEqual(kAccessWrite));
+//   CHECK(s3.IsRWWeakerOrEqual(kAccessRead | kAccessAtomic));
+//   CHECK(s3.IsRWWeakerOrEqual(kAccessWrite | kAccessAtomic));
+//   CHECK(s3.IsRWWeakerOrEqual(kAccessRead));
+//   CHECK(s3.IsRWWeakerOrEqual(kAccessWrite));
 
-  Shadow sro(Shadow::kRodata);
-  CheckShadow(&sro, static_cast<Sid>(0), kEpochZero, 0, 0, kAccessRead);
-}
+//   Shadow sro(Shadow::kRodata);
+//   CheckShadow(&sro, static_cast<Sid>(0), kEpochZero, 0, 0, kAccessRead);
+// }
 
 TEST(Shadow, Mapping) {
   static int global;

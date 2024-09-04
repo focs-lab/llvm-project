@@ -411,6 +411,7 @@ char* DumpShadow(char* buf, RawHBEpoch raw) {
 ALWAYS_INLINE
 HBEpoch HandleRead(ThreadState* thr, RawShadow* shadow_mem, HBEpoch cur) {
   // A wrapper to the actual HandleRead
+  Printf("%u: HandleRead: @ %p\n", thr->fast_state.sid(), ShadowToMem(shadow_mem));
   HBShadowCell* hb_shadow_cell = LoadHBShadowCell(shadow_mem);
   HBEpoch race = hb_shadow_cell->HandleRead(thr, cur);
   return race;
@@ -419,6 +420,7 @@ HBEpoch HandleRead(ThreadState* thr, RawShadow* shadow_mem, HBEpoch cur) {
 ALWAYS_INLINE
 HBEpoch HandleWrite(ThreadState* thr, RawShadow* shadow_mem, HBEpoch cur) {
   // A wrapper to the actual HandleWrite
+  Printf("%u: HandleWrite: @ %p\n", thr->fast_state.sid(), ShadowToMem(shadow_mem));
   HBShadowCell* hb_shadow_cell = LoadHBShadowCell(shadow_mem);
   HBEpoch race = hb_shadow_cell->HandleWrite(thr, cur);
   return race;

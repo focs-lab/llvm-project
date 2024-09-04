@@ -122,6 +122,7 @@ struct Processor {
 #endif
   DenseSlabAllocCache block_cache;
   DenseSlabAllocCache sync_cache;
+  DenseSlabAllocCache shadow_cache;
   DDPhysicalThread *dd_pt;
 };
 

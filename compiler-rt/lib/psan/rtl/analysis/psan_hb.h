@@ -14,10 +14,10 @@
 #include "../psan_shadow.h"
 #include "../psan_vector_clock.h"
 
-#include "sanitizer_common/sanitizer_placement_new.h"
-#include "sanitizer_common/sanitizer_common.h"
 #include "../psan_mman.h"
 #include "../psan_platform.h"
+
+#include "sanitizer_common/sanitizer_mutex.h"
 
 namespace __psan {
 
@@ -120,6 +120,14 @@ public:
     return s.raw();
   }
 
+  static RawHBEpoch ReadSharedMarker() {
+    FastState fs;
+    fs.SetSid(kFreeSid);
+    fs.SetEpoch(kEpochLast);
+    HBEpoch s(fs, 0, 0, kAccessRead);
+    return s.raw();
+  }
+
 private:
   struct Parts {
     u8 access_;
@@ -180,9 +188,16 @@ public:
   void SetWx(RawHBEpoch x) { wx_ = HBEpoch(x); }
   void SetRx(RawHBEpoch x) { rx_ = HBEpoch(x); }
 
+  void TransitionToReadShared();
+  HBEpoch SetRv(HBEpoch cur);
+
 private:
   HBEpoch wx_;
+  HBEpoch wxa_;
   HBEpoch rx_;
+  HBEpoch rxa_;
+  HBEpoch rv_[kThreadSlotCount];
+  HBEpoch rva_[kThreadSlotCount];
 };
 
 class HBShadowCell {
@@ -205,11 +220,14 @@ public:
   explicit Shadow(HBShadowCell* hbsh) { subshadow_ = hbsh; }
   explicit Shadow(RawShadow x = Shadow::kEmpty) { raw_ = static_cast<u64>(x); }
 
+  static Shadow MakeHBShadowCell();
+
 private:
   union {
     HBShadowCell* subshadow_;
     u64 raw_;
   };
+  StaticSpinMutex mtx;
 
  public:
   // .rodata shadow marker, see MapRodata and ContainsSameAccessFast.
@@ -233,7 +251,7 @@ ALWAYS_INLINE HBShadowCell* LoadHBShadowCell(RawShadow *p) {
 
   // If there is no HBShadow, make a new one
   // slow case, only needs to happen once per variable
-  Shadow newsh = Shadow(New<HBShadowCell>());
+  Shadow newsh = Shadow::MakeHBShadowCell();
   atomic_store((atomic_uint64_t *)p, static_cast<u64>(newsh.raw()), memory_order_release);
 
   RawShadow other_newsh_raw = static_cast<RawShadow>(atomic_load((atomic_uint64_t *)p, memory_order_acquire));

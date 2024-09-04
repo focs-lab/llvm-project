@@ -14,8 +14,18 @@
 #include "psan_hb.h"
 #include "../psan_rtl.h"
 #include "../psan_mman.h"
+#include "sanitizer_common/sanitizer_common.h"
+#include "sanitizer_common/sanitizer_placement_new.h"
 
 namespace __psan {
+// TODO(dwslim): Can't put this in psan_hb.h because including sanitizer_placement_new.h
+// will cause the unit tests to fail building.
+// Anyway, need to measure to know if inability to inline this function affects performance.
+Shadow Shadow::MakeHBShadowCell() {
+  return Shadow(New<HBShadowCell>());
+}
+
+
 HBEpoch HBShadowCell::HandleRead(ThreadState *thr, HBEpoch cur) {
   uptr addr, size;
   cur.GetAccess(&addr, &size, nullptr);
@@ -60,8 +70,8 @@ HBEpoch HBShadow::HandleRead(ThreadState *thr, HBEpoch cur) {
   HBEpoch old_rx = HBEpoch(LoadHBEpoch(rx_p()));
 
   // first access
-  if (LIKELY(old_wx.sid() == kFreeSid)) {
-    // Printf("- old wx is free sid\n");
+  if (LIKELY(old_wx.raw() == HBEpoch::kEmpty)) {
+    // Printf("- old wx is empty\n");
     if (!(typ & kAccessCheckOnly)) {
       StoreHBEpoch(rx_p(), cur.raw());   // update the read epoch
       // Printf("- store hb epoch - sid: %u, epoch: %u\n", sid, epoch);
@@ -80,8 +90,8 @@ HBEpoch HBShadow::HandleRead(ThreadState *thr, HBEpoch cur) {
   }
 
   // if both are atomic then not a race
-  if (LIKELY(old_wx.IsBothAtomic(typ))){
-    // Printf("- old wx is also atomic sid\n");
+  if (LIKELY(old_wx.IsBothAtomic(typ))) {
+    // Printf("- old wx is also atomic\n");
     StoreHBEpoch(rx_p(), cur.raw());     // update the read epoch
     // Printf("- store hb epoch - sid: %u, epoch: %u\n", sid, epoch);
     return HBEpoch(HBEpoch::kEmpty);
@@ -92,9 +102,10 @@ HBEpoch HBShadow::HandleRead(ThreadState *thr, HBEpoch cur) {
     // Printf("- old wx is hb ordered\n");
     // Printf("- old sid: %u, old: %u, cur sid: %u, cur: %u\n", old_wx.sid(), old_wx.epoch(), sid, thr->clock.Get(old_wx.sid()));
     StoreHBEpoch(rx_p(), cur.raw());   // update the read epoch
-    // Printf("- store hb epoch - sid: %u, epoch: %u\n", sid, epoch);
+    Printf("- store hb epoch - sid: %u, epoch: %u\n", sid, cur.epoch());
     return HBEpoch(HBEpoch::kEmpty);
   }
+  Printf("Race r with w!\n");
   return old_wx;
 }
 
@@ -112,7 +123,7 @@ HBEpoch HBShadow::HandleWrite(ThreadState *thr, HBEpoch cur) {
   bool is_r_race = true;
 
   // first access
-  if (LIKELY(old_wx.sid() == kFreeSid)) {
+  if (LIKELY(old_wx.raw() == HBEpoch::kEmpty)) {
     // Printf("- old wx is empty\n");
     if (!(typ & kAccessCheckOnly)) {
       StoreHBEpoch(wx_p(), cur.raw());   // update the read epoch
@@ -120,7 +131,7 @@ HBEpoch HBShadow::HandleWrite(ThreadState *thr, HBEpoch cur) {
     }
     is_w_race = false;
   }
-  if (old_rx.sid() == kFreeSid) {
+  if (old_rx.raw() == HBEpoch::kEmpty) {
     // Printf("- old rx is empty\n");
     if (!(typ & kAccessCheckOnly)) {
       StoreHBEpoch(wx_p(), cur.raw());   // update the read epoch
@@ -157,6 +168,7 @@ HBEpoch HBShadow::HandleWrite(ThreadState *thr, HBEpoch cur) {
     is_w_race = false;
   }
   if (LIKELY(old_rx.IsBothAtomic(typ))) {
+    // Printf("Both are atomic\n");
     // Printf("- old rx is atomic\n");
     StoreHBEpoch(wx_p(), cur.raw());     // update the read epoch
     // Printf("- store hb epoch - sid: %u, epoch: %u\n", sid, epoch);
@@ -174,8 +186,10 @@ HBEpoch HBShadow::HandleWrite(ThreadState *thr, HBEpoch cur) {
     // Printf("- stored then loaded - sid: %u, epoch: %u\n", test.sid(), test.epoch());
     is_w_race = false;
   }
-  else
+  else {
+    Printf("Race w with w!\n");
     return old_wx;
+  }
 
   if (LIKELY(thr->clock.Get(old_rx.sid()) >= old_rx.epoch())) {
     // Printf("- old rx is hb ordered\n");
@@ -186,6 +200,7 @@ HBEpoch HBShadow::HandleWrite(ThreadState *thr, HBEpoch cur) {
   }
   else {
     // Printf("- there is race with old rx\n");
+    Printf("Race w with r!\n");
     return old_rx;
   }
 
