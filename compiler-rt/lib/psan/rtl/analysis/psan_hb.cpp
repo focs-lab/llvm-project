@@ -72,6 +72,8 @@ ALWAYS_INLINE USED bool CheckRace(ThreadState *thr, HBEpoch cur, HBEpoch old) {
   // same thread accessing
   if (LIKELY(old.sid() == sid)) return false;
 
+  if (LIKELY(old.IsBothAtomic(typ))) return false;
+
   // if HB-ordered then not a race
   if (LIKELY(thr->clock.Get(old.sid()) >= old.epoch())) return false;
 
@@ -105,19 +107,12 @@ HBEpoch HBShadow::HandleRead(ThreadState *thr, HBEpoch cur) {
   AccessType typ;
   cur.GetAccess(&addr, &size, &typ);
 
-  u32 is_atomic = !!(typ & kAccessAtomic);
-
   // Consider the scenario where the wx is written just right when we reach this check.
   // Neither will we detect that write, nor will that write detect us.
   {
     // Lock lock(&wmtx_);
     HBEpoch old_wx = HBEpoch(LoadHBEpoch(wx_p()));
     if (CheckRace(thr, cur, old_wx)) return old_wx;
-
-    if (!is_atomic) {
-      HBEpoch old_wxa = HBEpoch(LoadHBEpoch(wxa_p()));
-      if (CheckRace(thr, cur, old_wxa)) return old_wxa;
-    }
   }
 
   // Finished checking race. Now update read epoch if necessary.
@@ -131,18 +126,18 @@ HBEpoch HBShadow::HandleRead(ThreadState *thr, HBEpoch cur) {
     // 1. Update rx because same sid
     // 2. Transition to VC because different sid
     Lock lock(&rmtx_);
-    RawHBEpoch* rp = is_atomic ? rxa_p() : rx_p();
-    HBEpoch old_r = HBEpoch(LoadHBEpoch(rp));
-    if (sid == old_r.sid()) StoreHBEpoch(rp, cur.raw());
+    RawHBEpoch* rxp = rx_p();
+    HBEpoch old_r = HBEpoch(LoadHBEpoch(rxp));
+    if (sid == old_r.sid()) StoreHBEpoch(rxp, cur.raw());
     else {
-      RawHBEpoch* rv = is_atomic ? rva_p() : rv_p();
+      RawHBEpoch* rv = rv_p();
       // We store the epochs into the VC first, then update rx with ReadSharedMarker with release order
       // So, when a write event loads rx with acquire order, it will also see the VC with its latest updates,
       // without needing to lock the mutex.
       StoreHBEpoch(&rv[static_cast<u8>(cur.sid())], cur.raw());
       if (old_r.raw() != HBEpoch::ReadSharedMarker()) {
         StoreHBEpoch(&rv[static_cast<u8>(old_r.sid())], old_r.raw());
-        StoreReleaseHBEpoch(rp, HBEpoch::ReadSharedMarker());
+        StoreReleaseHBEpoch(rxp, HBEpoch::ReadSharedMarker());
       }
     }
   }
@@ -156,19 +151,12 @@ HBEpoch HBShadow::HandleWrite(ThreadState *thr, HBEpoch cur) {
   AccessType typ;
   cur.GetAccess(&addr, &size, &typ);
 
-  u32 is_atomic = !!(typ & kAccessAtomic);
-
   // Consider the scenario where the wx is written just right when we reach this check.
   // Neither will we detect that write, nor will that write detect us.
   {
     // Lock lock(&wmtx_);
     HBEpoch old_wx = HBEpoch(LoadHBEpoch(wx_p()));
     if (CheckRace(thr, cur, old_wx)) return old_wx;
-
-    if (!is_atomic) {
-      HBEpoch old_wxa = HBEpoch(LoadHBEpoch(wxa_p()));
-      if (CheckRace(thr, cur, old_wxa)) return old_wxa;
-    }
   }
 
   // Then check race with reads
@@ -186,20 +174,6 @@ HBEpoch HBShadow::HandleWrite(ThreadState *thr, HBEpoch cur) {
         if (CheckRace(thr, cur, old_rx)) return old_rx;
       }
     }
-
-    if (!is_atomic) {
-      HBEpoch old_rxa = HBEpoch(LoadAcquireHBEpoch(rxa_p()));
-      if (old_rxa.raw() != HBEpoch::ReadSharedMarker()) {
-        if (CheckRace(thr, cur, old_rxa)) return old_rxa;
-      }
-      else {
-        // kFreeSid does not mean anything for read epochs
-        for (u32 i = 0; i < kThreadSlotCount-1; ++i) {
-          HBEpoch old_rxa = HBEpoch(LoadHBEpoch(&rva_p()[i]));
-          if (CheckRace(thr, cur, old_rxa)) return old_rxa;
-        }
-      }
-    }
   }
 
   // Finished checking race. Now update read epoch if necessary.
@@ -207,8 +181,8 @@ HBEpoch HBShadow::HandleWrite(ThreadState *thr, HBEpoch cur) {
   // If we want to check only and don't store
   if ((typ & kAccessCheckOnly)) return HBEpoch(HBEpoch::kEmpty);
 
-  RawHBEpoch* wp = is_atomic ? wxa_p() : wx_p();
-  StoreHBEpoch(wp, cur.raw());
+  RawHBEpoch* wxp = wx_p();
+  StoreHBEpoch(wxp, cur.raw());
 
   return HBEpoch(HBEpoch::kEmpty);
 }

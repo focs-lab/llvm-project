@@ -191,11 +191,11 @@ public:
   HBEpoch rx() const { return rx_; };
 
   RawHBEpoch* wx_p() { return (RawHBEpoch*) &wx_; }
-  RawHBEpoch* wxa_p() { return (RawHBEpoch*) &wx_; }
+  // RawHBEpoch* wxa_p() { return (RawHBEpoch*) &wx_; }
   RawHBEpoch* rx_p() { return (RawHBEpoch*) &rx_; }
-  RawHBEpoch* rxa_p() { return (RawHBEpoch*) &rx_; }
+  // RawHBEpoch* rxa_p() { return (RawHBEpoch*) &rx_; }
   RawHBEpoch* rv_p() { return (RawHBEpoch*) rv_; }
-  RawHBEpoch* rva_p() { return (RawHBEpoch*) rv_; }
+  // RawHBEpoch* rva_p() { return (RawHBEpoch*) rv_; }
   RawHBEpoch* free_p() { return (RawHBEpoch*) &free_; }
 
   // This is not supposed to be used, unless we are very sure we don't need atomic!
@@ -205,7 +205,7 @@ public:
   // void SetWx(FastState state, u32 addr, u32 size, AccessType typ) { wx_ = HBEpoch(state, addr, size, typ); }
   // void SetRx(FastState state, u32 addr, u32 size, AccessType typ) { rx_ = HBEpoch(state, addr, size, typ); }
   void SetWx(RawHBEpoch x) { wx_ = HBEpoch(x); }
-  void SetWxa(RawHBEpoch x) { /* wxa_ = HBEpoch(x); */ }
+  // void SetWxa(RawHBEpoch x) { /* wxa_ = HBEpoch(x); */ }
   void SetRx(RawHBEpoch x) { rx_ = HBEpoch(x); }
 
   void Clear();

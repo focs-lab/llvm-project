@@ -150,9 +150,9 @@ void TraceTime(ThreadState* thr) {
 NOINLINE void DoReportRace(ThreadState* thr, RawShadow* shadow_mem, HBEpoch cur,
                            HBEpoch old,
                            AccessType typ) SANITIZER_NO_THREAD_SAFETY_ANALYSIS {
-  Printf("DoReportRace!\n");
-  Printf("- old sid: %u, epoch: %u!\n", old.sid(), old.epoch());
-  Printf("- cur sid: %u, epoch: %u!\n", cur.sid(), cur.epoch());
+  // Printf("DoReportRace!\n");
+  // Printf("- old sid: %u, epoch: %u!\n", old.sid(), old.epoch());
+  // Printf("- cur sid: %u, epoch: %u!\n", cur.sid(), cur.epoch());
   HBShadowCell* hb_shadow_cell = LoadHBShadowCell(shadow_mem);
   uptr addr, size;
   cur.GetAccess(&addr, &size, nullptr);
@@ -489,7 +489,7 @@ ALWAYS_INLINE USED void MemoryAccess(ThreadState* thr, uptr pc, uptr addr,
     return TraceRestartMemoryAccess(thr, pc, addr, size, typ);
   // CheckRaces(thr, shadow_mem, cur, shadow, access, typ);
 
-  if (HandleMemoryAccess(thr, shadow_mem, cur, typ)) Printf("Race was at %p\n", addr);
+  HandleMemoryAccess(thr, shadow_mem, cur, typ);
 }
 
 void MemoryAccess16(ThreadState* thr, uptr pc, uptr addr, AccessType typ);
@@ -608,7 +608,7 @@ void ShadowSetWrite(RawShadow* p, RawShadow* end, RawHBEpoch val) {
     for (u8 i = 0; i < 8; ++i) {
       hb_shadow_cell->shadow(i)->SetRx(HBEpoch::kEmpty);
       hb_shadow_cell->shadow(i)->SetWx(val);
-      hb_shadow_cell->shadow(i)->SetWxa(val);
+      // hb_shadow_cell->shadow(i)->SetWxa(val);
     }
   }
 }
@@ -707,7 +707,7 @@ void MemoryRangeFreed(ThreadState* thr, uptr pc, uptr addr, uptr size) {
     HBShadowCell* hb_shadow_cell = LoadHBShadowCell(shadow_mem);
     for (u8 i = 0; i < kShadowCell; ++i) {
       StoreHBEpoch(hb_shadow_cell->shadow(i)->wx_p(), HBEpoch::FreedMarker());
-      StoreHBEpoch(hb_shadow_cell->shadow(i)->wxa_p(), HBEpoch::FreedMarker());
+      // StoreHBEpoch(hb_shadow_cell->shadow(i)->wxa_p(), HBEpoch::FreedMarker());
       StoreHBEpoch(hb_shadow_cell->shadow(i)->free_p(), HBEpoch::FreedInfo(cur.sid(), cur.epoch()));
     }
     // StoreShadow(&shadow_mem[0], Shadow::FreedMarker());
