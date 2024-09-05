@@ -60,149 +60,155 @@ HBEpoch HBShadowCell::HandleWrite(ThreadState *thr, HBEpoch cur) {
   return HBEpoch(HBEpoch::kEmpty);
 }
 
+ALWAYS_INLINE USED bool CheckRace(ThreadState *thr, HBEpoch cur, HBEpoch old) {
+  Sid sid = cur.sid();
+  uptr addr, size;
+  AccessType typ;
+  cur.GetAccess(&addr, &size, &typ);
+
+  // no writes before
+  if (LIKELY(old.raw() == HBEpoch::kEmpty)) return false;
+
+  // same thread accessing
+  if (LIKELY(old.sid() == sid)) return false;
+
+  // if HB-ordered then not a race
+  if (LIKELY(thr->clock.Get(old.sid()) >= old.epoch())) return false;
+
+  return true;
+}
+
+ALWAYS_INLINE USED void HBShadow::Clear() {
+  // lock might not be necessary
+  // deadlock shouldnt happen
+  {
+    Lock lockr(&rmtx_);
+    StoreHBEpoch((RawHBEpoch*) &rx_, HBEpoch::kEmpty);
+    // StoreHBEpoch((RawHBEpoch*) &rxa_, HBEpoch::kEmpty);
+
+    for (u16 i = 0; i < kThreadSlotCount; ++i) {
+      StoreHBEpoch((RawHBEpoch*) &rv_[i], HBEpoch::kEmpty);
+      // StoreHBEpoch((RawHBEpoch*) &rva_[i], HBEpoch::kEmpty);
+    }
+  }
+  {
+    Lock lockw(&wmtx_);
+    StoreHBEpoch((RawHBEpoch*) &wx_, HBEpoch::kEmpty);
+    // StoreHBEpoch((RawHBEpoch*) &wxa_, HBEpoch::kEmpty);
+  }
+  StoreHBEpoch((RawHBEpoch*) &free_, HBEpoch::kEmpty);
+}
+
 HBEpoch HBShadow::HandleRead(ThreadState *thr, HBEpoch cur) {
   Sid sid = cur.sid();
   uptr addr, size;
   AccessType typ;
   cur.GetAccess(&addr, &size, &typ);
 
-  HBEpoch old_wx = HBEpoch(LoadHBEpoch(wx_p()));
-  HBEpoch old_rx = HBEpoch(LoadHBEpoch(rx_p()));
+  u32 is_atomic = !!(typ & kAccessAtomic);
 
-  // first access
-  if (LIKELY(old_wx.raw() == HBEpoch::kEmpty)) {
-    // Printf("- old wx is empty\n");
-    if (!(typ & kAccessCheckOnly)) {
-      StoreHBEpoch(rx_p(), cur.raw());   // update the read epoch
-      // Printf("- store hb epoch - sid: %u, epoch: %u\n", sid, epoch);
+  // Consider the scenario where the wx is written just right when we reach this check.
+  // Neither will we detect that write, nor will that write detect us.
+  {
+    // Lock lock(&wmtx_);
+    HBEpoch old_wx = HBEpoch(LoadHBEpoch(wx_p()));
+    if (CheckRace(thr, cur, old_wx)) return old_wx;
+
+    if (!is_atomic) {
+      HBEpoch old_wxa = HBEpoch(LoadHBEpoch(wxa_p()));
+      if (CheckRace(thr, cur, old_wxa)) return old_wxa;
     }
-    return HBEpoch(HBEpoch::kEmpty);
   }
 
-  // same thread accessing, only update the epoch if the access type is weaker
-  if (LIKELY(old_wx.sid() == sid)) {
-    // Printf("- old wx is same sid\n");
-    if (!(typ & kAccessCheckOnly) && old_rx.IsWeakerOrEqual(typ)) {
-      StoreHBEpoch(rx_p(), cur.raw());   // update the read epoch
-      // Printf("- store hb epoch - sid: %u, epoch: %u\n", sid, epoch);
+  // Finished checking race. Now update read epoch if necessary.
+
+  // If we want to check only and don't store
+  if ((typ & kAccessCheckOnly)) return HBEpoch(HBEpoch::kEmpty);
+
+  // Update the read epoch, we may need to transition to vector clock
+  {
+    // Lock because consider 2 threads doing the following concurrently:
+    // 1. Update rx because same sid
+    // 2. Transition to VC because different sid
+    Lock lock(&rmtx_);
+    RawHBEpoch* rp = is_atomic ? rxa_p() : rx_p();
+    HBEpoch old_r = HBEpoch(LoadHBEpoch(rp));
+    if (sid == old_r.sid()) StoreHBEpoch(rp, cur.raw());
+    else {
+      RawHBEpoch* rv = is_atomic ? rva_p() : rv_p();
+      // We store the epochs into the VC first, then update rx with ReadSharedMarker with release order
+      // So, when a write event loads rx with acquire order, it will also see the VC with its latest updates,
+      // without needing to lock the mutex.
+      StoreHBEpoch(&rv[static_cast<u8>(cur.sid())], cur.raw());
+      if (old_r.raw() != HBEpoch::ReadSharedMarker()) {
+        StoreHBEpoch(&rv[static_cast<u8>(old_r.sid())], old_r.raw());
+        StoreReleaseHBEpoch(rp, HBEpoch::ReadSharedMarker());
+      }
     }
-    return HBEpoch(HBEpoch::kEmpty);
   }
 
-  // if both are atomic then not a race
-  if (LIKELY(old_wx.IsBothAtomic(typ))) {
-    // Printf("- old wx is also atomic\n");
-    StoreHBEpoch(rx_p(), cur.raw());     // update the read epoch
-    // Printf("- store hb epoch - sid: %u, epoch: %u\n", sid, epoch);
-    return HBEpoch(HBEpoch::kEmpty);
-  }
-
-  // if HB-ordered then not a race
-  if (LIKELY(thr->clock.Get(old_wx.sid()) >= old_wx.epoch())) {
-    // Printf("- old wx is hb ordered\n");
-    // Printf("- old sid: %u, old: %u, cur sid: %u, cur: %u\n", old_wx.sid(), old_wx.epoch(), sid, thr->clock.Get(old_wx.sid()));
-    StoreHBEpoch(rx_p(), cur.raw());   // update the read epoch
-    Printf("- store hb epoch - sid: %u, epoch: %u\n", sid, cur.epoch());
-    return HBEpoch(HBEpoch::kEmpty);
-  }
-  Printf("Race r with w!\n");
-  return old_wx;
+  return HBEpoch(HBEpoch::kEmpty);
 }
 
 HBEpoch HBShadow::HandleWrite(ThreadState *thr, HBEpoch cur) {
   // Printf("Handling write\n");
-  Sid sid = cur.sid();
   uptr addr, size;
   AccessType typ;
   cur.GetAccess(&addr, &size, &typ);
 
-  HBEpoch old_wx = HBEpoch(LoadHBEpoch(wx_p()));
-  HBEpoch old_rx = HBEpoch(LoadHBEpoch(rx_p()));
+  u32 is_atomic = !!(typ & kAccessAtomic);
 
-  bool is_w_race = true;
-  bool is_r_race = true;
+  // Consider the scenario where the wx is written just right when we reach this check.
+  // Neither will we detect that write, nor will that write detect us.
+  {
+    // Lock lock(&wmtx_);
+    HBEpoch old_wx = HBEpoch(LoadHBEpoch(wx_p()));
+    if (CheckRace(thr, cur, old_wx)) return old_wx;
 
-  // first access
-  if (LIKELY(old_wx.raw() == HBEpoch::kEmpty)) {
-    // Printf("- old wx is empty\n");
-    if (!(typ & kAccessCheckOnly)) {
-      StoreHBEpoch(wx_p(), cur.raw());   // update the read epoch
-      // Printf("- store hb epoch - sid: %u, epoch: %u\n", sid, epoch);
+    if (!is_atomic) {
+      HBEpoch old_wxa = HBEpoch(LoadHBEpoch(wxa_p()));
+      if (CheckRace(thr, cur, old_wxa)) return old_wxa;
     }
-    is_w_race = false;
   }
-  if (old_rx.raw() == HBEpoch::kEmpty) {
-    // Printf("- old rx is empty\n");
-    if (!(typ & kAccessCheckOnly)) {
-      StoreHBEpoch(wx_p(), cur.raw());   // update the read epoch
-      // Printf("- store hb epoch - sid: %u, epoch: %u\n", sid, epoch);
+
+  // Then check race with reads
+  {
+    // Lock lock(&wmtx_);
+    // Load with acquire to see the latest VC if transitioned
+    HBEpoch old_rx = HBEpoch(LoadAcquireHBEpoch(rx_p()));
+    if (old_rx.raw() != HBEpoch::ReadSharedMarker()) {
+      if (CheckRace(thr, cur, old_rx)) return old_rx;
     }
-    is_r_race = false;
-  }
-  if (!(is_w_race || is_r_race)) return HBEpoch(HBEpoch::kEmpty);
-
-  // same thread accessing, only update the epoch if the access type is weaker
-  if (LIKELY(old_wx.sid() == sid)) {
-    // Printf("- old wx has same sid\n");
-    if (!(typ & kAccessCheckOnly) && old_wx.IsWeakerOrEqual(typ)) {
-      StoreHBEpoch(wx_p(), cur.raw());   // update the read epoch
-      // Printf("- store hb epoch - sid: %u, epoch: %u\n", sid, epoch);
+    else {
+      // kFreeSid does not mean anything for read epochs
+      for (u32 i = 0; i < kThreadSlotCount-1; ++i) {
+        HBEpoch old_rx = HBEpoch(LoadHBEpoch(&rv_p()[i]));
+        if (CheckRace(thr, cur, old_rx)) return old_rx;
+      }
     }
-    is_w_race = false;
-  }
-  if (LIKELY(old_rx.sid() == sid)) {
-    // Printf("- old rx has same sid\n");
-    // if (!(typ & kAccessCheckOnly) && old_rx.IsWeakerOrEqual(typ)) {
-    //   StoreHBEpoch(wx_p(), cur.raw());   // update the read epoch
-    //   // Printf("- store hb epoch - sid: %u, epoch: %u\n", sid, epoch);
-    // }
-    is_r_race = false;
-  }
-  if (!(is_w_race || is_r_race)) return HBEpoch(HBEpoch::kEmpty);
 
-  // if both are atomic then not a race
-  if (LIKELY(old_wx.IsBothAtomic(typ))) {
-    // Printf("- old wx is atomic\n");
-    StoreHBEpoch(wx_p(), cur.raw());     // update the read epoch
-    // Printf("- store hb epoch - sid: %u, epoch: %u\n", sid, epoch);
-    is_w_race = false;
-  }
-  if (LIKELY(old_rx.IsBothAtomic(typ))) {
-    // Printf("Both are atomic\n");
-    // Printf("- old rx is atomic\n");
-    StoreHBEpoch(wx_p(), cur.raw());     // update the read epoch
-    // Printf("- store hb epoch - sid: %u, epoch: %u\n", sid, epoch);
-    is_r_race = false;
-  }
-  if (!(is_w_race || is_r_race)) return HBEpoch(HBEpoch::kEmpty);
-
-  // if HB-ordered then not a race
-  if (LIKELY(thr->clock.Get(old_wx.sid()) >= old_wx.epoch())) {
-    // Printf("- old wx is hb ordered\n");
-    // Printf("- old sid: %u, old: %u, cur sid: %u, cur: %u\n", old_wx.sid(), old_wx.epoch(), sid, thr->clock.Get(old_wx.sid()));
-    StoreHBEpoch(wx_p(), cur.raw());   // update the read epoch
-    // Printf("- store hb epoch - sid: %u, epoch: %u\n", sid, epoch);
-    // HBEpoch test = HBEpoch(LoadHBEpoch(wx_p()));
-    // Printf("- stored then loaded - sid: %u, epoch: %u\n", test.sid(), test.epoch());
-    is_w_race = false;
-  }
-  else {
-    Printf("Race w with w!\n");
-    return old_wx;
+    if (!is_atomic) {
+      HBEpoch old_rxa = HBEpoch(LoadAcquireHBEpoch(rxa_p()));
+      if (old_rxa.raw() != HBEpoch::ReadSharedMarker()) {
+        if (CheckRace(thr, cur, old_rxa)) return old_rxa;
+      }
+      else {
+        // kFreeSid does not mean anything for read epochs
+        for (u32 i = 0; i < kThreadSlotCount-1; ++i) {
+          HBEpoch old_rxa = HBEpoch(LoadHBEpoch(&rva_p()[i]));
+          if (CheckRace(thr, cur, old_rxa)) return old_rxa;
+        }
+      }
+    }
   }
 
-  if (LIKELY(thr->clock.Get(old_rx.sid()) >= old_rx.epoch())) {
-    // Printf("- old rx is hb ordered\n");
-    // Printf("- old sid: %u, old: %u, cur sid: %u, cur: %u\n", old_rx.sid(), old_rx.epoch(), sid, thr->clock.Get(old_rx.sid()));
-    StoreHBEpoch(wx_p(), cur.raw());     // update the read epoch
-    // Printf("- store hb epoch - sid: %u, epoch: %u\n", sid, epoch);
-    is_r_race = false;
-  }
-  else {
-    // Printf("- there is race with old rx\n");
-    Printf("Race w with r!\n");
-    return old_rx;
-  }
+  // Finished checking race. Now update read epoch if necessary.
+
+  // If we want to check only and don't store
+  if ((typ & kAccessCheckOnly)) return HBEpoch(HBEpoch::kEmpty);
+
+  RawHBEpoch* wp = is_atomic ? wxa_p() : wx_p();
+  StoreHBEpoch(wp, cur.raw());
 
   return HBEpoch(HBEpoch::kEmpty);
 }

@@ -121,10 +121,13 @@ public:
   }
 
   static RawHBEpoch ReadSharedMarker() {
+    // Although sid is kFreeSid, this does not conflict with FreedMarker
+    // because that is only stored to write epochs, while this one is
+    // only stored to read epochs
     FastState fs;
     fs.SetSid(kFreeSid);
     fs.SetEpoch(kEpochLast);
-    HBEpoch s(fs, 0, 0, kAccessRead);
+    HBEpoch s(fs, 0, 8, kAccessRead);
     return s.raw();
   }
 
@@ -164,9 +167,19 @@ ALWAYS_INLINE RawHBEpoch LoadHBEpoch(RawHBEpoch* p) {
       atomic_load((atomic_uint32_t *)p, memory_order_relaxed));
 }
 
+ALWAYS_INLINE RawHBEpoch LoadAcquireHBEpoch(RawHBEpoch* p) {
+  return static_cast<RawHBEpoch>(
+      atomic_load((atomic_uint32_t *)p, memory_order_acquire));
+}
+
 ALWAYS_INLINE void StoreHBEpoch(RawHBEpoch *hp, RawHBEpoch h) {
   atomic_store((atomic_uint32_t *)hp, static_cast<u32>(h),
                memory_order_relaxed);
+}
+
+ALWAYS_INLINE void StoreReleaseHBEpoch(RawHBEpoch *hp, RawHBEpoch h) {
+  atomic_store((atomic_uint32_t *)hp, static_cast<u32>(h),
+               memory_order_release);
 }
 
 class HBShadow {
@@ -178,26 +191,42 @@ public:
   HBEpoch rx() const { return rx_; };
 
   RawHBEpoch* wx_p() { return (RawHBEpoch*) &wx_; }
+  RawHBEpoch* wxa_p() { return (RawHBEpoch*) &wx_; }
   RawHBEpoch* rx_p() { return (RawHBEpoch*) &rx_; }
+  RawHBEpoch* rxa_p() { return (RawHBEpoch*) &rx_; }
+  RawHBEpoch* rv_p() { return (RawHBEpoch*) rv_; }
+  RawHBEpoch* rva_p() { return (RawHBEpoch*) rv_; }
+  RawHBEpoch* free_p() { return (RawHBEpoch*) &free_; }
 
-  void SetWx(HBEpoch wx) { wx_ = wx; }
-  void SetRx(HBEpoch rx) { rx_ = rx; }
+  // This is not supposed to be used, unless we are very sure we don't need atomic!
+  // void SetWx(HBEpoch wx) { wx_ = wx; }
+  // void SetRx(HBEpoch rx) { rx_ = rx; }
 
-  void SetWx(FastState state, u32 addr, u32 size, AccessType typ) { wx_ = HBEpoch(state, addr, size, typ); }
-  void SetRx(FastState state, u32 addr, u32 size, AccessType typ) { rx_ = HBEpoch(state, addr, size, typ); }
+  // void SetWx(FastState state, u32 addr, u32 size, AccessType typ) { wx_ = HBEpoch(state, addr, size, typ); }
+  // void SetRx(FastState state, u32 addr, u32 size, AccessType typ) { rx_ = HBEpoch(state, addr, size, typ); }
   void SetWx(RawHBEpoch x) { wx_ = HBEpoch(x); }
+  void SetWxa(RawHBEpoch x) { /* wxa_ = HBEpoch(x); */ }
   void SetRx(RawHBEpoch x) { rx_ = HBEpoch(x); }
 
+  void Clear();
+
+private:
   void TransitionToReadShared();
   HBEpoch SetRv(HBEpoch cur);
 
-private:
+  // Unlike TSan that tries its best to save memory usage,
+  // we just go with the most conservative implementation
+  // and dont "squeeze" information together
   HBEpoch wx_;
-  HBEpoch wxa_;
+  // HBEpoch wxa_;
   HBEpoch rx_;
-  HBEpoch rxa_;
+  // HBEpoch rxa_;
   HBEpoch rv_[kThreadSlotCount];
-  HBEpoch rva_[kThreadSlotCount];
+  // HBEpoch rva_[kThreadSlotCount];
+  HBEpoch free_;
+
+  Mutex rmtx_;
+  Mutex wmtx_;
 };
 
 class HBShadowCell {
@@ -227,7 +256,6 @@ private:
     HBShadowCell* subshadow_;
     u64 raw_;
   };
-  StaticSpinMutex mtx;
 
  public:
   // .rodata shadow marker, see MapRodata and ContainsSameAccessFast.

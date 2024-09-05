@@ -150,20 +150,22 @@ void TraceTime(ThreadState* thr) {
 NOINLINE void DoReportRace(ThreadState* thr, RawShadow* shadow_mem, HBEpoch cur,
                            HBEpoch old,
                            AccessType typ) SANITIZER_NO_THREAD_SAFETY_ANALYSIS {
-  // Printf("DoReportRace!\n");
-  // Printf("- old sid: %u, epoch: %u!\n", old.sid(), old.epoch());
-  // Printf("- cur sid: %u, epoch: %u!\n", cur.sid(), cur.epoch());
+  Printf("DoReportRace!\n");
+  Printf("- old sid: %u, epoch: %u!\n", old.sid(), old.epoch());
+  Printf("- cur sid: %u, epoch: %u!\n", cur.sid(), cur.epoch());
   HBShadowCell* hb_shadow_cell = LoadHBShadowCell(shadow_mem);
-  uptr addr;
-  cur.GetAccess(&addr, nullptr, nullptr);
+  uptr addr, size;
+  cur.GetAccess(&addr, &size, nullptr);
   // For the free shadow markers wx (that contains kFreeSid)
   // triggers the race, but the second element contains info about the freeing
   // thread, take it.
   if (old.sid() == kFreeSid)
-    old = HBEpoch(LoadHBEpoch(hb_shadow_cell->shadow(addr)->rx_p()));
+    old = HBEpoch(LoadHBEpoch(hb_shadow_cell->shadow(addr)->free_p()));
   // This prevents trapping on this address in future.
-  StoreHBEpoch(hb_shadow_cell->shadow(addr)->wx_p(), HBEpoch::kRodata);
-  StoreHBEpoch(hb_shadow_cell->shadow(addr)->rx_p(), HBEpoch::kRodata);
+  // For now, this is really slow, but think about it, this only happens when there is
+  // a race, so it's really not bad.
+  for (u8 i = 0; i < size; ++i)
+    hb_shadow_cell->shadow(addr+i)->Clear();
   // See the comment in MemoryRangeFreed as to why the slot is locked
   // for free memory accesses. ReportRace must not be called with
   // the slot locked because of the fork. But MemoryRangeFreed is not
@@ -411,7 +413,7 @@ char* DumpShadow(char* buf, RawHBEpoch raw) {
 ALWAYS_INLINE
 HBEpoch HandleRead(ThreadState* thr, RawShadow* shadow_mem, HBEpoch cur) {
   // A wrapper to the actual HandleRead
-  Printf("%u: HandleRead: @ %p\n", thr->fast_state.sid(), ShadowToMem(shadow_mem));
+  // Printf("%u: HandleRead: @ %p\n", thr->fast_state.sid(), ShadowToMem(shadow_mem));
   HBShadowCell* hb_shadow_cell = LoadHBShadowCell(shadow_mem);
   HBEpoch race = hb_shadow_cell->HandleRead(thr, cur);
   return race;
@@ -420,7 +422,7 @@ HBEpoch HandleRead(ThreadState* thr, RawShadow* shadow_mem, HBEpoch cur) {
 ALWAYS_INLINE
 HBEpoch HandleWrite(ThreadState* thr, RawShadow* shadow_mem, HBEpoch cur) {
   // A wrapper to the actual HandleWrite
-  Printf("%u: HandleWrite: @ %p\n", thr->fast_state.sid(), ShadowToMem(shadow_mem));
+  // Printf("%u: HandleWrite: @ %p\n", thr->fast_state.sid(), ShadowToMem(shadow_mem));
   HBShadowCell* hb_shadow_cell = LoadHBShadowCell(shadow_mem);
   HBEpoch race = hb_shadow_cell->HandleWrite(thr, cur);
   return race;
@@ -487,7 +489,7 @@ ALWAYS_INLINE USED void MemoryAccess(ThreadState* thr, uptr pc, uptr addr,
     return TraceRestartMemoryAccess(thr, pc, addr, size, typ);
   // CheckRaces(thr, shadow_mem, cur, shadow, access, typ);
 
-  HandleMemoryAccess(thr, shadow_mem, cur, typ);
+  if (HandleMemoryAccess(thr, shadow_mem, cur, typ)) Printf("Race was at %p\n", addr);
 }
 
 void MemoryAccess16(ThreadState* thr, uptr pc, uptr addr, AccessType typ);
@@ -597,14 +599,16 @@ void ShadowSetWrite(RawShadow* p, RawShadow* end, RawHBEpoch val) {
 //   for (; vp < vend; vp++) _mm_store_si128(vp, vv);
 // #endif
 
-  // TSan doesnt use atomic here. Understandable since there is likely to be some
-  // synchronization in the user code that leads to this.
+  // TSan doesnt use atomic here. There should be no race on
+  // this address?
+  // TODO(dwslim): Confirm this!
   // Printf("Create HB Shadow Cells - %u\n", end - p);
   for (; p < end; p += kShadowCnt) {
     HBShadowCell* hb_shadow_cell = LoadHBShadowCell(p);
     for (u8 i = 0; i < 8; ++i) {
       hb_shadow_cell->shadow(i)->SetRx(HBEpoch::kEmpty);
       hb_shadow_cell->shadow(i)->SetWx(val);
+      hb_shadow_cell->shadow(i)->SetWxa(val);
     }
   }
 }
@@ -693,6 +697,7 @@ void MemoryRangeFreed(ThreadState* thr, uptr pc, uptr addr, uptr size) {
 //     StoreShadow(&shadow_mem[3], Shadow::kEmpty);
 //   }
 // #endif
+  // Printf("%u/%u: Free memory @ %p/%p\n", thr->fast_state.sid(), cur.sid(), addr, size);
   for (; size; size -= kShadowCell, shadow_mem += kShadowCnt) {
     // if (UNLIKELY(CheckRaces(thr, shadow_mem, cur, 0, 0, typ)))
     //   return;
@@ -702,7 +707,8 @@ void MemoryRangeFreed(ThreadState* thr, uptr pc, uptr addr, uptr size) {
     HBShadowCell* hb_shadow_cell = LoadHBShadowCell(shadow_mem);
     for (u8 i = 0; i < kShadowCell; ++i) {
       StoreHBEpoch(hb_shadow_cell->shadow(i)->wx_p(), HBEpoch::FreedMarker());
-      StoreHBEpoch(hb_shadow_cell->shadow(i)->rx_p(), HBEpoch::FreedInfo(cur.sid(), cur.epoch()));
+      StoreHBEpoch(hb_shadow_cell->shadow(i)->wxa_p(), HBEpoch::FreedMarker());
+      StoreHBEpoch(hb_shadow_cell->shadow(i)->free_p(), HBEpoch::FreedInfo(cur.sid(), cur.epoch()));
     }
     // StoreShadow(&shadow_mem[0], Shadow::FreedMarker());
     // StoreShadow(&shadow_mem[1], Shadow::FreedInfo(cur.sid(), cur.epoch()));
