@@ -45,6 +45,7 @@
 #include "psan_platform.h"
 #include "psan_report.h"
 #include "psan_shadow.h"
+#include "psan_shadow_alloc.h"
 #include "psan_stack_trace.h"
 #include "psan_sync.h"
 #include "psan_trace.h"
@@ -123,6 +124,7 @@ struct Processor {
   DenseSlabAllocCache block_cache;
   DenseSlabAllocCache sync_cache;
   DDPhysicalThread *dd_pt;
+  HBShadowCellAlloc *shadow_alloc;
 };
 
 #if !SANITIZER_GO
@@ -378,6 +380,9 @@ struct Context {
   uptr trace_part_total_allocated SANITIZER_GUARDED_BY(slot_mtx);
   uptr trace_part_recycle_finished SANITIZER_GUARDED_BY(slot_mtx);
   uptr trace_part_finished_excess SANITIZER_GUARDED_BY(slot_mtx);
+
+  Mutex shadow_alloc_mtx;
+  IList<HBShadowCellAlloc, &HBShadowCellAlloc::node> shadow_alloc_queue SANITIZER_GUARDED_BY(shadow_alloc_mtx);
 #if SANITIZER_GO
   uptr mapped_shadow_begin;
   uptr mapped_shadow_end;
@@ -812,6 +817,53 @@ void FuncExit(ThreadState *thr) {
 extern void (*on_initialize)(void);
 extern int (*on_finalize)(int);
 #endif
+
+
+ALWAYS_INLINE HBShadowCell* LoadHBShadowCell(RawShadow *p) {
+  RawShadow shadow = static_cast<RawShadow>(
+      atomic_load((atomic_uint64_t *)p, memory_order_relaxed));
+  if (LIKELY(shadow != Shadow::kEmpty)) return Shadow(shadow).subshadow();
+
+  // If there is no HBShadow, make a new one
+  // Slow case, only needs to happen once per variable
+  // Let's only worry about this if we have SO MANY new variables
+  HBShadowCellAlloc* shadow_alloc = cur_thread()->proc()->shadow_alloc;
+  Shadow newsh = Shadow(shadow_alloc->next());
+  atomic_store((atomic_uint64_t *)p, static_cast<u64>(newsh.raw()), memory_order_release);
+
+  RawShadow other_newsh_raw = static_cast<RawShadow>(atomic_load((atomic_uint64_t *)p, memory_order_acquire));
+  if (other_newsh_raw != newsh.raw()) {
+    Printf("Free HBShadowCell because it was allocated concurrently.\n");
+    FreeImpl(newsh.subshadow());
+  }
+  // Printf("Allocated: %p!\n", newsh.raw());
+
+  Shadow other_newsh = Shadow(other_newsh_raw);
+  return other_newsh.subshadow();
+}
+
+ALWAYS_INLINE HBShadowCell* LoadHBShadowCell(ThreadState *thr, RawShadow *p) {
+  RawShadow shadow = static_cast<RawShadow>(
+      atomic_load((atomic_uint64_t *)p, memory_order_relaxed));
+  if (LIKELY(shadow != Shadow::kEmpty)) return Shadow(shadow).subshadow();
+
+  // If there is no HBShadow, make a new one
+  // Slow case, only needs to happen once per variable
+  // Let's only worry about this if we have SO MANY new variables
+  HBShadowCellAlloc* shadow_alloc = thr->proc()->shadow_alloc;
+  Shadow newsh = Shadow(shadow_alloc->next());
+  atomic_store((atomic_uint64_t *)p, static_cast<u64>(newsh.raw()), memory_order_release);
+
+  RawShadow other_newsh_raw = static_cast<RawShadow>(atomic_load((atomic_uint64_t *)p, memory_order_acquire));
+  if (other_newsh_raw != newsh.raw()) {
+    Printf("Free HBShadowCell because it was allocated concurrently.\n");
+    FreeImpl(newsh.subshadow());
+  }
+  // Printf("Allocated: %p!\n", newsh.raw());
+
+  Shadow other_newsh = Shadow(other_newsh_raw);
+  return other_newsh.subshadow();
+}
 }  // namespace __psan
 
 #endif  // PSAN_RTL_H

@@ -16,6 +16,7 @@
 
 #include "../psan_mman.h"
 #include "../psan_platform.h"
+#include "../psan_shadow_alloc.h"
 
 #include "sanitizer_common/sanitizer_mutex.h"
 
@@ -272,26 +273,7 @@ private:
 //                memory_order_relaxed);
 // }
 
-ALWAYS_INLINE HBShadowCell* LoadHBShadowCell(RawShadow *p) {
-  RawShadow shadow = static_cast<RawShadow>(
-      atomic_load((atomic_uint64_t *)p, memory_order_relaxed));
-  if (LIKELY(shadow != Shadow::kEmpty)) return Shadow(shadow).subshadow();
-
-  // If there is no HBShadow, make a new one
-  // slow case, only needs to happen once per variable
-  Shadow newsh = Shadow::MakeHBShadowCell();
-  atomic_store((atomic_uint64_t *)p, static_cast<u64>(newsh.raw()), memory_order_release);
-
-  RawShadow other_newsh_raw = static_cast<RawShadow>(atomic_load((atomic_uint64_t *)p, memory_order_acquire));
-  if (other_newsh_raw != newsh.raw()) {
-    Printf("Free HBShadowCell because it was allocated concurrently.\n");
-    FreeImpl(newsh.subshadow());
-  }
-  // Printf("Allocated: %p!\n", newsh.raw());
-
-  Shadow other_newsh = Shadow(other_newsh_raw);
-  return other_newsh.subshadow();
-}
+typedef ShadowAlloc<HBShadowCell, 256, 4096> HBShadowCellAlloc;
 
 ALWAYS_INLINE RawShadow LoadRawShadowFromUserAddress(uptr p) {
   RawShadow* rawp = MemToShadow(p);

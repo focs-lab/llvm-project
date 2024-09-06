@@ -153,7 +153,7 @@ NOINLINE void DoReportRace(ThreadState* thr, RawShadow* shadow_mem, HBEpoch cur,
   // Printf("DoReportRace!\n");
   // Printf("- old sid: %u, epoch: %u!\n", old.sid(), old.epoch());
   // Printf("- cur sid: %u, epoch: %u!\n", cur.sid(), cur.epoch());
-  HBShadowCell* hb_shadow_cell = LoadHBShadowCell(shadow_mem);
+  HBShadowCell* hb_shadow_cell = LoadHBShadowCell(thr, shadow_mem);
   uptr addr, size;
   cur.GetAccess(&addr, &size, nullptr);
   // For the free shadow markers wx (that contains kFreeSid)
@@ -414,7 +414,7 @@ ALWAYS_INLINE
 HBEpoch HandleRead(ThreadState* thr, RawShadow* shadow_mem, HBEpoch cur) {
   // A wrapper to the actual HandleRead
   // Printf("%u: HandleRead: @ %p\n", thr->fast_state.sid(), ShadowToMem(shadow_mem));
-  HBShadowCell* hb_shadow_cell = LoadHBShadowCell(shadow_mem);
+  HBShadowCell* hb_shadow_cell = LoadHBShadowCell(thr, shadow_mem);
   HBEpoch race = hb_shadow_cell->HandleRead(thr, cur);
   return race;
 }
@@ -423,7 +423,7 @@ ALWAYS_INLINE
 HBEpoch HandleWrite(ThreadState* thr, RawShadow* shadow_mem, HBEpoch cur) {
   // A wrapper to the actual HandleWrite
   // Printf("%u: HandleWrite: @ %p\n", thr->fast_state.sid(), ShadowToMem(shadow_mem));
-  HBShadowCell* hb_shadow_cell = LoadHBShadowCell(shadow_mem);
+  HBShadowCell* hb_shadow_cell = LoadHBShadowCell(thr, shadow_mem);
   HBEpoch race = hb_shadow_cell->HandleWrite(thr, cur);
   return race;
 }
@@ -509,14 +509,12 @@ ALWAYS_INLINE USED void MemoryAccess16(ThreadState* thr, uptr pc, uptr addr,
     return;
   HBEpoch cur(fast_state, 0, 8, typ);
   RawShadow* shadow_mem = MemToShadow(addr);
-  bool traced = false;
   {
     // LOAD_CURRENT_SHADOW(cur, shadow_mem);
     // if (LIKELY(ContainsSameAccess(shadow_mem, cur, shadow, access, typ)))
     //   goto SECOND;
     if (!TryTraceMemoryAccessRange(thr, pc, addr, size, typ))
       return RestartMemoryAccess16(thr, pc, addr, typ);
-    traced = true;
     // They dont care about the remaining bytes if the first part already detects a race.
     // This works because they clear everything in the shadow after a race.
     // In SHB we do it differently.
@@ -550,7 +548,6 @@ ALWAYS_INLINE USED void UnalignedMemoryAccess(ThreadState* thr, uptr pc,
   if (UNLIKELY(fast_state.GetIgnoreBit()))
     return;
   RawShadow* shadow_mem = MemToShadow(addr);
-  bool traced = false;
   uptr size1 = Min<uptr>(size, RoundUp(addr + 1, kShadowCell) - addr);
   {
     HBEpoch cur(fast_state, addr, size1, typ);
@@ -559,7 +556,6 @@ ALWAYS_INLINE USED void UnalignedMemoryAccess(ThreadState* thr, uptr pc,
     //   goto SECOND;
     if (!TryTraceMemoryAccessRange(thr, pc, addr, size, typ))
       return RestartUnalignedMemoryAccess(thr, pc, addr, size, typ);
-    traced = true;
     // if (UNLIKELY(CheckRaces(thr, shadow_mem, cur, shadow, access, typ)))
     //   return;
     HandleMemoryAccess(thr, shadow_mem, cur, typ);
@@ -705,7 +701,7 @@ void MemoryRangeFreed(ThreadState* thr, uptr pc, uptr addr, uptr size) {
     if (UNLIKELY(HandleMemoryAccess(thr, shadow_mem, cur, typ)))
       return;
 
-    HBShadowCell* hb_shadow_cell = LoadHBShadowCell(shadow_mem);
+    HBShadowCell* hb_shadow_cell = LoadHBShadowCell(thr, shadow_mem);
     for (u8 i = 0; i < kShadowCell; ++i) {
       StoreHBEpoch(hb_shadow_cell->shadow(i)->wx_p(), HBEpoch::FreedMarker());
       // StoreHBEpoch(hb_shadow_cell->shadow(i)->wxa_p(), HBEpoch::FreedMarker());
@@ -788,7 +784,7 @@ void MemoryAccessRangeT(ThreadState* thr, uptr pc, uptr addr, uptr size) {
   // (writes shouldn't go to .rodata). But it happens in Chromium tests:
   // https://bugs.chromium.org/p/chromium/issues/detail?id=1275581#c19
   // Details are unknown since it happens only on CI machines.
-  HBShadowCell* hb_shadow_cell = LoadHBShadowCell(shadow_mem);
+  HBShadowCell* hb_shadow_cell = LoadHBShadowCell(thr, shadow_mem);
   if (hb_shadow_cell->shadow(0)->rx().raw() == HBEpoch::kRodata)
     return;
 
