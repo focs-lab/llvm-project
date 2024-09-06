@@ -529,8 +529,8 @@ ALWAYS_INLINE USED void MemoryAccess16(ThreadState* thr, uptr pc, uptr addr,
   // LOAD_CURRENT_SHADOW(cur, shadow_mem);
   // if (LIKELY(ContainsSameAccess(shadow_mem, cur, shadow, access, typ)))
   //   return;
-  if (!traced && !TryTraceMemoryAccessRange(thr, pc, addr, size, typ))
-    return RestartMemoryAccess16(thr, pc, addr, typ);
+  // if (!traced && !TryTraceMemoryAccessRange(thr, pc, addr, size, typ))
+  //   return RestartMemoryAccess16(thr, pc, addr, typ);
   // CheckRaces(thr, shadow_mem, cur, shadow, access, typ);
   HandleMemoryAccess(thr, shadow_mem, cur, typ);
 }
@@ -557,7 +557,8 @@ ALWAYS_INLINE USED void UnalignedMemoryAccess(ThreadState* thr, uptr pc,
     // LOAD_CURRENT_SHADOW(cur, shadow_mem);
     // if (LIKELY(ContainsSameAccess(shadow_mem, cur, shadow, access, typ)))
     //   goto SECOND;
-    HandleMemoryAccess(thr, shadow_mem, cur, typ);
+    if (!TryTraceMemoryAccessRange(thr, pc, addr, size, typ))
+      return RestartUnalignedMemoryAccess(thr, pc, addr, size, typ);
     traced = true;
     // if (UNLIKELY(CheckRaces(thr, shadow_mem, cur, shadow, access, typ)))
     //   return;
@@ -572,8 +573,8 @@ ALWAYS_INLINE USED void UnalignedMemoryAccess(ThreadState* thr, uptr pc,
   // LOAD_CURRENT_SHADOW(cur, shadow_mem);
   // if (LIKELY(ContainsSameAccess(shadow_mem, cur, shadow, access, typ)))
   //   return;
-  if (!traced && !TryTraceMemoryAccessRange(thr, pc, addr, size, typ))
-    return RestartUnalignedMemoryAccess(thr, pc, addr, size, typ);
+  // if (!traced && !TryTraceMemoryAccessRange(thr, pc, addr, size, typ))
+  //   return RestartUnalignedMemoryAccess(thr, pc, addr, size, typ);
   // CheckRaces(thr, shadow_mem, cur, shadow, access, typ);
   HandleMemoryAccess(thr, shadow_mem, cur, typ);
 }
