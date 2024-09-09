@@ -75,7 +75,7 @@ public:
 
   void recordSection(InputSectionBase *isec);
   void commitSection(InputSection *isec);
-  void finalizeInputSections();
+  void finalizeInputSections(LinkerScript *script = nullptr);
 
   // The following members are normally only used in linker scripts.
   MemoryRegion *memRegion = nullptr;
@@ -84,6 +84,11 @@ public:
   Expr alignExpr;
   Expr lmaExpr;
   Expr subalignExpr;
+
+  // Used by non-alloc SHT_CREL to hold the header and content byte stream.
+  uint64_t crelHeader = 0;
+  SmallVector<char, 0> crelBody;
+
   SmallVector<SectionCommand *, 0> commands;
   SmallVector<StringRef, 0> phdrs;
   std::optional<std::array<uint8_t, 4>> filler;
@@ -106,6 +111,7 @@ public:
   // DATA_RELRO_END.
   bool relro = false;
 
+  template <bool is64> void finalizeNonAllocCrel();
   void finalize();
   template <class ELFT>
   void writeTo(uint8_t *buf, llvm::parallel::TaskGroup &tg);

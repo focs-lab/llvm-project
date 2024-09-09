@@ -175,8 +175,8 @@ template <> void llvm::invalidateParentIListOrdering(BasicBlock *BB) {
 
 // Explicit instantiation of SymbolTableListTraits since some of the methods
 // are not in the public header file...
-template class llvm::SymbolTableListTraits<Instruction,
-                                           ilist_iterator_bits<true>>;
+template class llvm::SymbolTableListTraits<
+    Instruction, ilist_iterator_bits<true>, ilist_parent<BasicBlock>>;
 
 BasicBlock::BasicBlock(LLVMContext &C, const Twine &Name, Function *NewParent,
                        BasicBlock *InsertBefore)
@@ -189,6 +189,7 @@ BasicBlock::BasicBlock(LLVMContext &C, const Twine &Name, Function *NewParent,
     assert(!InsertBefore &&
            "Cannot insert block before another block with no function!");
 
+  end().getNodePtr()->setParent(this);
   setName(Name);
   if (NewParent)
     setIsNewDbgInfoFormat(NewParent->IsNewDbgInfoFormat);
@@ -288,6 +289,10 @@ void BasicBlock::moveAfter(BasicBlock *MovePos) {
 
 const Module *BasicBlock::getModule() const {
   return getParent()->getParent();
+}
+
+const DataLayout &BasicBlock::getDataLayout() const {
+  return getModule()->getDataLayout();
 }
 
 const CallInst *BasicBlock::getTerminatingMustTailCall() const {
@@ -956,9 +961,13 @@ void BasicBlock::spliceDebugInfoImpl(BasicBlock::iterator Dest, BasicBlock *Src,
   // Detach the marker at Dest -- this lets us move the "====" DbgRecords
   // around.
   DbgMarker *DestMarker = nullptr;
-  if (Dest != end()) {
-    if ((DestMarker = getMarker(Dest)))
+  if ((DestMarker = getMarker(Dest))) {
+    if (Dest == end()) {
+      assert(DestMarker == getTrailingDbgRecords());
+      deleteTrailingDbgRecords();
+    } else {
       DestMarker->removeFromParent();
+    }
   }
 
   // If we're moving the tail range of DbgRecords (":::"), absorb them into the
@@ -1000,22 +1009,14 @@ void BasicBlock::spliceDebugInfoImpl(BasicBlock::iterator Dest, BasicBlock *Src,
     } else {
       // Insert them right at the start of the range we moved, ahead of First
       // and the "++++" DbgRecords.
+      // This also covers the rare circumstance where we insert at end(), and we
+      // did not generate the iterator with begin() / getFirstInsertionPt(),
+      // meaning any trailing debug-info at the end of the block would
+      // "normally" have been pushed in front of "First". We move it there now.
       DbgMarker *FirstMarker = createMarker(First);
       FirstMarker->absorbDebugValues(*DestMarker, true);
     }
     DestMarker->eraseFromParent();
-  } else if (Dest == end() && !InsertAtHead) {
-    // In the rare circumstance where we insert at end(), and we did not
-    // generate the iterator with begin() / getFirstInsertionPt(), it means
-    // any trailing debug-info at the end of the block would "normally" have
-    // been pushed in front of "First". Move it there now.
-    DbgMarker *TrailingDbgRecords = getTrailingDbgRecords();
-    if (TrailingDbgRecords) {
-      DbgMarker *FirstMarker = createMarker(First);
-      FirstMarker->absorbDebugValues(*TrailingDbgRecords, true);
-      TrailingDbgRecords->eraseFromParent();
-      deleteTrailingDbgRecords();
-    }
   }
 }
 

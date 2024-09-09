@@ -84,6 +84,7 @@ public:
     assert(fileKind == ObjKind || fileKind == BinaryKind);
     return sections;
   }
+  void cacheDecodedCrel(size_t i, InputSectionBase *s) { sections[i] = s; }
 
   // Returns object file symbols. It is a runtime error to call this
   // function on files of other types.
@@ -299,8 +300,7 @@ private:
   void initializeSymbols(const llvm::object::ELFFile<ELFT> &obj);
   void initializeJustSymbols();
 
-  InputSectionBase *getRelocTarget(uint32_t idx, const Elf_Shdr &sec,
-                                   uint32_t info);
+  InputSectionBase *getRelocTarget(uint32_t idx, uint32_t info);
   InputSectionBase *createInputSection(uint32_t idx, const Elf_Shdr &sec,
                                        StringRef name);
 
