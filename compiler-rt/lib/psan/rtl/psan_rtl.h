@@ -829,17 +829,16 @@ ALWAYS_INLINE HBShadowCell* LoadHBShadowCell(RawShadow *p) {
   // Let's only worry about this if we have SO MANY new variables
   HBShadowCellAlloc* shadow_alloc = cur_thread()->proc()->shadow_alloc;
   Shadow newsh = Shadow(shadow_alloc->next());
-  atomic_store((atomic_uint64_t *)p, static_cast<u64>(newsh.raw()), memory_order_release);
 
-  RawShadow other_newsh_raw = static_cast<RawShadow>(atomic_load((atomic_uint64_t *)p, memory_order_acquire));
-  if (other_newsh_raw != newsh.raw()) {
-    Printf("Free HBShadowCell because it was allocated concurrently.\n");
-    FreeImpl(newsh.subshadow());
+  if (LIKELY(atomic_compare_exchange_strong((atomic_uint64_t *)p, (u64*)&shadow,
+                                     static_cast<u64>(newsh.raw()), memory_order_acq_rel))) {
+    // if successfully changed, just return it
+    return newsh.subshadow();
   }
-  // Printf("Allocated: %p!\n", newsh.raw());
 
-  Shadow other_newsh = Shadow(other_newsh_raw);
-  return other_newsh.subshadow();
+  // otherwise, free the one we made, and return the one that was loaded by exchange
+  FreeImpl(newsh.subshadow());
+  return Shadow(shadow).subshadow();
 }
 
 ALWAYS_INLINE HBShadowCell* LoadHBShadowCell(ThreadState *thr, RawShadow *p) {
@@ -852,17 +851,16 @@ ALWAYS_INLINE HBShadowCell* LoadHBShadowCell(ThreadState *thr, RawShadow *p) {
   // Let's only worry about this if we have SO MANY new variables
   HBShadowCellAlloc* shadow_alloc = thr->proc()->shadow_alloc;
   Shadow newsh = Shadow(shadow_alloc->next());
-  atomic_store((atomic_uint64_t *)p, static_cast<u64>(newsh.raw()), memory_order_release);
 
-  RawShadow other_newsh_raw = static_cast<RawShadow>(atomic_load((atomic_uint64_t *)p, memory_order_acquire));
-  if (other_newsh_raw != newsh.raw()) {
-    Printf("Free HBShadowCell because it was allocated concurrently.\n");
-    FreeImpl(newsh.subshadow());
+  if (LIKELY(atomic_compare_exchange_strong((atomic_uint64_t *)p, (u64*)&shadow,
+                                     static_cast<u64>(newsh.raw()), memory_order_acq_rel))) {
+    // if successfully changed, just return it
+    return newsh.subshadow();
   }
-  // Printf("Allocated: %p!\n", newsh.raw());
 
-  Shadow other_newsh = Shadow(other_newsh_raw);
-  return other_newsh.subshadow();
+  // otherwise, free the one we made, and return the one that was loaded by exchange
+  FreeImpl(newsh.subshadow());
+  return Shadow(shadow).subshadow();
 }
 }  // namespace __psan
 
