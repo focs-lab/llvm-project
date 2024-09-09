@@ -1103,7 +1103,18 @@ PSAN_INTERCEPTOR(int, pthread_join, void *th, void **ret) {
   return res;
 }
 
-DEFINE_REAL_PTHREAD_FUNCTIONS
+// DEFINE_INTERNAL_PTHREAD_FUNCTIONS
+namespace __sanitizer {
+int internal_pthread_create(void *th, void *attr, void *(*callback)(void *),
+                            void *param) {
+  ScopedIgnoreInterceptors ignore;
+  return REAL(pthread_create)(th, attr, callback, param);
+}
+int internal_pthread_join(void *th, void **ret) {
+  ScopedIgnoreInterceptors ignore;
+  return REAL(pthread_join(th, ret));
+}
+}  // namespace __sanitizer
 
 PSAN_INTERCEPTOR(int, pthread_detach, void *th) {
   SCOPED_INTERCEPTOR_RAW(pthread_detach, th);
