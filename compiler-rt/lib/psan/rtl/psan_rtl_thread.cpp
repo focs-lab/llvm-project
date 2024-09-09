@@ -162,16 +162,6 @@ void ThreadStart(ThreadState *thr, Tid tid, tid_t os_id,
   }
   Free(thr->tctx->sync);
 
-  {
-    Lock l(&ctx->shadow_alloc_mtx);
-    if (ctx->shadow_alloc_queue.Empty()) thr->proc()->shadow_alloc = New<HBShadowCellAlloc>();
-    else {
-      num_shadow_alloc_recycles++;
-      // Printf("ShadowAlloc Recycle %u\n", num_shadow_alloc_recycles);
-      thr->proc()->shadow_alloc = ctx->shadow_alloc_queue.PopFront();
-    }
-  }
-
 #if !SANITIZER_GO
   thr->is_inited = true;
 #endif
@@ -246,12 +236,6 @@ void ThreadFinish(ThreadState *thr) {
       thr->tctx->sync_epoch = ctx->global_epoch;
       IncrementEpoch(thr);
     }
-  }
-
-  {
-    Lock l(&ctx->shadow_alloc_mtx);
-    ctx->shadow_alloc_queue.PushFront(thr->proc()->shadow_alloc);
-    thr->proc()->shadow_alloc = nullptr;
   }
 
 #if !SANITIZER_GO

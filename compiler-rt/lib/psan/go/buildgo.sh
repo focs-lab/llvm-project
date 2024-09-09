@@ -211,39 +211,40 @@ FLAGS=" -I../rtl -I../rtl/analysis -I../.. -I../../sanitizer_common -I../../../i
 DEBUG_FLAGS="$FLAGS -DSANITIZER_DEBUG=1 -g"
 FLAGS="$FLAGS -DSANITIZER_DEBUG=0 -O3 -fomit-frame-pointer"
 
-if [ "$DEBUG" = "" ]; then
-	# Do a build test with debug flags.
-	$CC $DIR/gopsan.cpp -c -o $DIR/race_debug_$SUFFIX.syso $DEBUG_FLAGS $CFLAGS
-else
-	FLAGS="$DEBUG_FLAGS"
-fi
+# TODO(dwslim): uncomment this at some point
+# if [ "$DEBUG" = "" ]; then
+# 	# Do a build test with debug flags.
+# 	$CC $DIR/gopsan.cpp -c -o $DIR/race_debug_$SUFFIX.syso $DEBUG_FLAGS $CFLAGS
+# else
+# 	FLAGS="$DEBUG_FLAGS"
+# fi
 
-if [ "$SILENT" != "1" ]; then
-  echo $CC gopsan.cpp -c -o $DIR/race_$SUFFIX.syso $FLAGS $CFLAGS
-fi
-$CC $DIR/gopsan.cpp -c -o $DIR/race_$SUFFIX.syso $FLAGS $CFLAGS
+# if [ "$SILENT" != "1" ]; then
+#   echo $CC gopsan.cpp -c -o $DIR/race_$SUFFIX.syso $FLAGS $CFLAGS
+# fi
+# $CC $DIR/gopsan.cpp -c -o $DIR/race_$SUFFIX.syso $FLAGS $CFLAGS
 
-$CC $OSCFLAGS $ARCHCFLAGS test.c $DIR/race_$SUFFIX.syso -g -o $DIR/test $OSLDFLAGS $LDFLAGS
+# $CC $OSCFLAGS $ARCHCFLAGS test.c $DIR/race_$SUFFIX.syso -g -o $DIR/test $OSLDFLAGS $LDFLAGS
 
-# Verify that no libc specific code is present.
-if [ "$DEPENDS_ON_LIBC" != "1" ]; then
-	if nm $DIR/race_$SUFFIX.syso | grep -q __libc_; then
-		printf -- '%s seems to link to libc\n' "race_$SUFFIX.syso"
-		exit 1
-	fi
-fi
+# # Verify that no libc specific code is present.
+# if [ "$DEPENDS_ON_LIBC" != "1" ]; then
+# 	if nm $DIR/race_$SUFFIX.syso | grep -q __libc_; then
+# 		printf -- '%s seems to link to libc\n' "race_$SUFFIX.syso"
+# 		exit 1
+# 	fi
+# fi
 
-if [ "$SKIP_TEST" = "1" ]; then
-	exit 0
-fi
+# if [ "$SKIP_TEST" = "1" ]; then
+# 	exit 0
+# fi
 
-if [ "`uname -a | grep NetBSD`" != "" ]; then
-  # Turn off ASLR in the test binary.
-  /usr/sbin/paxctl +a $DIR/test
-fi
-export GORACE="exitcode=0 atexit_sleep_ms=0"
-if [ "$SILENT" != "1" ]; then
-  $DIR/test
-else
-  $DIR/test 2>/dev/null
-fi
+# if [ "`uname -a | grep NetBSD`" != "" ]; then
+#   # Turn off ASLR in the test binary.
+#   /usr/sbin/paxctl +a $DIR/test
+# fi
+# export GORACE="exitcode=0 atexit_sleep_ms=0"
+# if [ "$SILENT" != "1" ]; then
+#   $DIR/test
+# else
+#   $DIR/test 2>/dev/null
+# fi

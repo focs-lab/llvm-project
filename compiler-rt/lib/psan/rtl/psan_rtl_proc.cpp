@@ -29,6 +29,21 @@ Processor *ProcCreate() {
 #endif
   if (common_flags()->detect_deadlocks)
     proc->dd_pt = ctx->dd->CreatePhysicalThread();
+
+{
+  Lock l(&ctx->shadow_alloc_mtx);
+  if (ctx->shadow_alloc_queue.Empty()) {
+    void *sa_mem = InternalAlloc(sizeof(HBShadowCellAlloc));
+    internal_memset(sa_mem, 0, sizeof(HBShadowCellAlloc));
+    HBShadowCellAlloc *shadow_alloc = new(sa_mem) HBShadowCellAlloc;
+    proc->shadow_alloc = shadow_alloc;
+  }
+  else {
+    num_shadow_alloc_recycles++;
+    // Printf("ShadowAlloc Recycle %u\n", num_shadow_alloc_recycles);
+    proc->shadow_alloc = ctx->shadow_alloc_queue.PopFront();
+  }
+}
   return proc;
 }
 
@@ -40,6 +55,13 @@ void ProcDestroy(Processor *proc) {
   ctx->metamap.OnProcIdle(proc);
   if (common_flags()->detect_deadlocks)
      ctx->dd->DestroyPhysicalThread(proc->dd_pt);
+
+  {
+    Lock l(&ctx->shadow_alloc_mtx);
+    ctx->shadow_alloc_queue.PushFront(proc->shadow_alloc);
+    proc->shadow_alloc = nullptr;
+  }
+
   proc->~Processor();
   InternalFree(proc);
 }

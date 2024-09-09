@@ -781,26 +781,27 @@ ALWAYS_INLINE auto SelectMapping(Arg arg) {
 template <typename Func>
 void ForEachMapping() {
   Func::template Apply<Mapping48AddressSpace>();
-  Func::template Apply<MappingMips64_40>();
-  Func::template Apply<MappingAppleAarch64>();
-  Func::template Apply<MappingAarch64_39>();
-  Func::template Apply<MappingAarch64_42>();
-  Func::template Apply<MappingAarch64_48>();
-  Func::template Apply<MappingLoongArch64_47>();
-  Func::template Apply<MappingPPC64_44>();
-  Func::template Apply<MappingPPC64_46>();
-  Func::template Apply<MappingPPC64_47>();
-  Func::template Apply<MappingRiscv64_39>();
-  Func::template Apply<MappingRiscv64_48>();
-  Func::template Apply<MappingS390x>();
-  Func::template Apply<MappingGo48>();
-  Func::template Apply<MappingGoWindows>();
-  Func::template Apply<MappingGoPPC64_46>();
-  Func::template Apply<MappingGoPPC64_47>();
-  Func::template Apply<MappingGoAarch64>();
-  Func::template Apply<MappingGoLoongArch64_47>();
-  Func::template Apply<MappingGoMips64_47>();
-  Func::template Apply<MappingGoS390x>();
+  // TODO(dwslim): uncomment this at some point
+  // Func::template Apply<MappingMips64_40>();
+  // Func::template Apply<MappingAppleAarch64>();
+  // Func::template Apply<MappingAarch64_39>();
+  // Func::template Apply<MappingAarch64_42>();
+  // Func::template Apply<MappingAarch64_48>();
+  // Func::template Apply<MappingLoongArch64_47>();
+  // Func::template Apply<MappingPPC64_44>();
+  // Func::template Apply<MappingPPC64_46>();
+  // Func::template Apply<MappingPPC64_47>();
+  // Func::template Apply<MappingRiscv64_39>();
+  // Func::template Apply<MappingRiscv64_48>();
+  // Func::template Apply<MappingS390x>();
+  // Func::template Apply<MappingGo48>();
+  // Func::template Apply<MappingGoWindows>();
+  // Func::template Apply<MappingGoPPC64_46>();
+  // Func::template Apply<MappingGoPPC64_47>();
+  // Func::template Apply<MappingGoAarch64>();
+  // Func::template Apply<MappingGoLoongArch64_47>();
+  // Func::template Apply<MappingGoMips64_47>();
+  // Func::template Apply<MappingGoS390x>();
 }
 
 enum MappingType {

@@ -38,6 +38,7 @@ class ShadowAlloc {
   }
 
   ShadowClass* next() {
+    // Printf("this: %p\n", this);
     if (UNLIKELY(shadow_pool_cur == shadow_pool_end))
       Refill<size2>();
     return shadow_pool_cur++;
