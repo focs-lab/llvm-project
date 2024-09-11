@@ -76,7 +76,7 @@ inline bool EpochOverflow(Epoch epoch) { return epoch == kEpochOver; }
 const uptr kShadowStackSize = 64 * 1024;
 
 // Count of shadow values in a shadow cell.
-const uptr kShadowCnt = 1;
+const uptr kShadowCnt = 2;
 
 // That many user bytes are mapped onto a single shadow cell.
 const uptr kShadowCell = 8;

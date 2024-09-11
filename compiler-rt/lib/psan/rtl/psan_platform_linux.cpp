@@ -152,7 +152,7 @@ void WriteMemoryProfile(char *buf, uptr buf_size, u64 uptime_ns) {
 }
 
 #if !SANITIZER_GO
-// Mark shadow for .rodata sections with the special SubShadow::kRodata marker.
+// Mark shadow for .rodata sections with the special HBEpoch::kRodata marker.
 // Accesses to .rodata can't race, so this saves time, memory and trace space.
 static NOINLINE void MapRodata(char* buffer, uptr size) {
   // First create temp file.
@@ -172,14 +172,14 @@ static NOINLINE void MapRodata(char* buffer, uptr size) {
     return;
   internal_unlink(buffer);  // Unlink it now, so that we can reuse the buffer.
   fd_t fd = openrv;
-  // Fill the file with SubShadow::kRodata.
-  const uptr kMarkerSize = 512 * 1024 / sizeof(RawSubShadow);
-  InternalMmapVector<RawSubShadow> marker(kMarkerSize);
+  // Fill the file with HBEpoch::kRodata.
+  const uptr kMarkerSize = 512 * 1024 / sizeof(RawHBEpoch);
+  InternalMmapVector<RawHBEpoch> marker(kMarkerSize);
   // volatile to prevent insertion of memset
-  for (volatile RawSubShadow *p = marker.data(); p < marker.data() + kMarkerSize;
+  for (volatile RawHBEpoch *p = marker.data(); p < marker.data() + kMarkerSize;
        p++)
-    *p = SubShadow::kRodata;
-  internal_write(fd, marker.data(), marker.size() * sizeof(RawSubShadow));
+    *p = HBEpoch::kRodata;
+  internal_write(fd, marker.data(), marker.size() * sizeof(RawHBEpoch));
   // Map the file into memory.
   uptr page = internal_mmap(0, GetPageSizeCached(), PROT_READ | PROT_WRITE,
                             MAP_PRIVATE | MAP_ANONYMOUS, fd, 0);
@@ -199,9 +199,9 @@ static NOINLINE void MapRodata(char* buffer, uptr size) {
       char *shadow_start = (char *)MemToShadow(segment.start);
       char *shadow_end = (char *)MemToShadow(segment.end);
       for (char *p = shadow_start; p < shadow_end;
-           p += marker.size() * sizeof(RawSubShadow)) {
+           p += marker.size() * sizeof(RawHBEpoch)) {
         internal_mmap(
-            p, Min<uptr>(marker.size() * sizeof(RawSubShadow), shadow_end - p),
+            p, Min<uptr>(marker.size() * sizeof(RawHBEpoch), shadow_end - p),
             PROT_READ, MAP_PRIVATE | MAP_FIXED, fd, 0);
       }
     }

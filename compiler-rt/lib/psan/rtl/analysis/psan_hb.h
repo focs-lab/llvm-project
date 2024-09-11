@@ -27,6 +27,7 @@ enum class RawHBEpoch : u32 {};
 class HBEpoch {
 public:
   static constexpr RawHBEpoch kEmpty = static_cast<RawHBEpoch>(0);
+  static constexpr RawHBEpoch kUnused = static_cast<RawHBEpoch>(1);
 
   HBEpoch(FastState state, u32 addr, u32 size, AccessType typ) {
     raw_ = state.raw_;
@@ -56,7 +57,7 @@ public:
   u8 access() const { return part_.access_; }
 
   void GetAccess(uptr *addr, uptr *size, AccessType *typ) const {
-    DCHECK(part_.access_ != 0 || raw_ == static_cast<u32>(SubShadow::kRodata));
+    DCHECK(part_.access_ != 0 || raw_ == static_cast<u32>(HBEpoch::kRodata));
     if (addr)
       *addr = part_.access_ ? __builtin_ffs(part_.access_) - 1 : 0;
     if (size)
@@ -232,13 +233,46 @@ private:
 
 class HBShadowCell {
 public:
+  HBShadowCell() : shadows_() {
+  }
+
   HBShadow* shadow(u8 i) { return &shadows_[i]; }
 
   HBEpoch HandleRead(ThreadState *thr, HBEpoch cur);
   HBEpoch HandleWrite(ThreadState *thr, HBEpoch cur);
+
+  void UpdateWriteEpoch(RawHBEpoch fast_epoch) {
+    if (fast_epoch == HBEpoch::kEmpty) {
+      for (u8 i = 0; i < 8; ++i) {
+        shadows_[i].Clear();   // ShadowSet in TSan clears out all epochs
+        StoreHBEpoch(shadows_[i].wx_p(), fast_epoch);
+        StoreHBEpoch(shadows_[i].rx_p(), fast_epoch);
+      }
+    }
+    else {
+      uptr addr, size;
+      HBEpoch(fast_epoch).GetAccess(&addr, &size, nullptr);
+      for (u8 i = 0; i < size; ++i) {
+        shadows_[addr+i].Clear();   // ShadowSet in TSan clears out all epochs
+        StoreHBEpoch(shadows_[addr+i].wx_p(), fast_epoch);
+      }
+    }
+  }
+  void Reset();
+
+  typedef ShadowAlloc<HBShadowCell, 256, 4096> HBShadowCellAlloc;
+  friend HBShadowCellAlloc;
+
 private:
-  HBShadow shadows_[kShadowCell];
+  union {
+    HBShadow shadows_[kShadowCell];
+    HBShadowCell* next_;
+  };
+
+  Mutex mtx_;
 };
+
+typedef HBShadowCell::HBShadowCellAlloc HBShadowCellAlloc;
 
 class Shadow {
 public:
@@ -247,8 +281,16 @@ public:
   HBShadowCell* subshadow() { return subshadow_; }
   RawShadow raw() const { return static_cast<RawShadow>(raw_); }
 
-  explicit Shadow(HBShadowCell* hbsh) { subshadow_ = hbsh; }
+  explicit Shadow(HBShadowCell* hbsh) : subshadow_(hbsh), fast_epoch_(HBEpoch::kEmpty) {}
   explicit Shadow(RawShadow x = Shadow::kEmpty) { raw_ = static_cast<u64>(x); }
+
+  void StoreFastEpoch(RawHBEpoch epoch) {
+    StoreHBEpoch(reinterpret_cast<RawHBEpoch*>(&fast_epoch_), epoch);
+  }
+
+  RawHBEpoch LoadFastEpoch() {
+    return LoadHBEpoch(reinterpret_cast<RawHBEpoch*>(&fast_epoch_));
+  }
 
   static Shadow MakeHBShadowCell();
 
@@ -258,10 +300,26 @@ private:
     u64 raw_;
   };
 
+  HBEpoch fast_epoch_;
+  u32 size_;
+
  public:
   // .rodata shadow marker, see MapRodata and ContainsSameAccessFast.
   static constexpr RawShadow kRodata = static_cast<RawShadow>(1);
 };
+
+static_assert(sizeof(Shadow) == sizeof(u64) * 2);
+
+ALWAYS_INLINE HBShadowCell* LoadHBShadowCell(RawShadow *p) {
+  RawShadow shadow = static_cast<RawShadow>(
+      atomic_load((atomic_uint64_t *)p, memory_order_relaxed));
+  return Shadow(shadow).subshadow();
+}
+
+ALWAYS_INLINE void StoreHBShadowCell(RawShadow *p, HBShadowCell* x) {
+  atomic_store((atomic_uint64_t *)p,
+               static_cast<u64>(Shadow(x).raw()), memory_order_relaxed);
+}
 
 // ALWAYS_INLINE RawShadow LoadShadow(RawShadow *p) {
 //   return static_cast<RawShadow>(
@@ -272,8 +330,6 @@ private:
 //   atomic_store((atomic_uint64_t *)sp, static_cast<u64>(s),
 //                memory_order_relaxed);
 // }
-
-typedef ShadowAlloc<HBShadowCell, 256, 4096> HBShadowCellAlloc;
 
 ALWAYS_INLINE RawShadow LoadRawShadowFromUserAddress(uptr p) {
   RawShadow* rawp = MemToShadow(p);

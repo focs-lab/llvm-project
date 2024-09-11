@@ -27,6 +27,8 @@ Shadow Shadow::MakeHBShadowCell() {
 
 
 HBEpoch HBShadowCell::HandleRead(ThreadState *thr, HBEpoch cur) {
+  ReadLock rl(&mtx_);
+
   uptr addr, size;
   cur.GetAccess(&addr, &size, nullptr);
 
@@ -44,6 +46,8 @@ HBEpoch HBShadowCell::HandleRead(ThreadState *thr, HBEpoch cur) {
 }
 
 HBEpoch HBShadowCell::HandleWrite(ThreadState *thr, HBEpoch cur) {
+  ReadLock rl(&mtx_);
+
   uptr addr, size;
   cur.GetAccess(&addr, &size, nullptr);
 
@@ -52,7 +56,7 @@ HBEpoch HBShadowCell::HandleWrite(ThreadState *thr, HBEpoch cur) {
     HBShadow* hb_shadow = shadow(addr+i);
     HBEpoch race = hb_shadow->HandleWrite(thr, cur);
     if (race.raw() != HBEpoch::kEmpty) {
-      // Printf("Race!\n");
+      // Printf("Race! %p, %p\n", race.raw(), cur.raw());
       return race;
     }
   }

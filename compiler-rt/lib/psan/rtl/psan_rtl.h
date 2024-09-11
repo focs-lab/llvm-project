@@ -818,33 +818,20 @@ extern void (*on_initialize)(void);
 extern int (*on_finalize)(int);
 #endif
 
-
-ALWAYS_INLINE HBShadowCell* LoadHBShadowCell(RawShadow *p) {
-  RawShadow shadow = static_cast<RawShadow>(
-      atomic_load((atomic_uint64_t *)p, memory_order_relaxed));
-  if (LIKELY(shadow != Shadow::kEmpty)) return Shadow(shadow).subshadow();
-
-  // If there is no HBShadow, make a new one
-  // Slow case, only needs to happen once per variable
-  // Let's only worry about this if we have SO MANY new variables
-  HBShadowCellAlloc* shadow_alloc = cur_thread()->proc()->shadow_alloc;
-  Shadow newsh = Shadow(shadow_alloc->next());
-
-  if (LIKELY(atomic_compare_exchange_strong((atomic_uint64_t *)p, (u64*)&shadow,
-                                     static_cast<u64>(newsh.raw()), memory_order_acq_rel))) {
-    // if successfully changed, just return it
-    return newsh.subshadow();
-  }
-
-  // otherwise, free the one we made, and return the one that was loaded by exchange
-  FreeImpl(newsh.subshadow());
-  return Shadow(shadow).subshadow();
-}
-
 ALWAYS_INLINE HBShadowCell* LoadHBShadowCell(ThreadState *thr, RawShadow *p) {
   RawShadow shadow = static_cast<RawShadow>(
       atomic_load((atomic_uint64_t *)p, memory_order_relaxed));
-  if (LIKELY(shadow != Shadow::kEmpty)) return Shadow(shadow).subshadow();
+  RawHBEpoch fast_epoch = reinterpret_cast<Shadow*>(p)->LoadFastEpoch();
+
+  if (LIKELY(shadow != Shadow::kEmpty)) {
+    HBShadowCell* hb_shadow_cell = Shadow(shadow).subshadow();
+    // Printf("%p: loaded fast epoch: %p\n", ShadowToMem(p), fast_epoch);
+    if (fast_epoch != HBEpoch::kUnused) {
+      hb_shadow_cell->UpdateWriteEpoch(fast_epoch);
+      reinterpret_cast<Shadow*>(p)->StoreFastEpoch(HBEpoch::kUnused);
+    }
+    return hb_shadow_cell;
+  }
 
   // If there is no HBShadow, make a new one
   // Slow case, only needs to happen once per variable
@@ -855,12 +842,24 @@ ALWAYS_INLINE HBShadowCell* LoadHBShadowCell(ThreadState *thr, RawShadow *p) {
   if (LIKELY(atomic_compare_exchange_strong((atomic_uint64_t *)p, (u64*)&shadow,
                                      static_cast<u64>(newsh.raw()), memory_order_acq_rel))) {
     // if successfully changed, just return it
-    return newsh.subshadow();
+    HBShadowCell* hb_shadow_cell = newsh.subshadow();
+    // Printf("%p: loaded fast epoch: %p\n", ShadowToMem(p), fast_epoch);
+    if (fast_epoch != HBEpoch::kUnused) {
+      hb_shadow_cell->UpdateWriteEpoch(fast_epoch);
+      reinterpret_cast<Shadow*>(p)->StoreFastEpoch(HBEpoch::kUnused);
+    }
+    return hb_shadow_cell;
   }
 
   // otherwise, free the one we made, and return the one that was loaded by exchange
-  FreeImpl(newsh.subshadow());
-  return Shadow(shadow).subshadow();
+  shadow_alloc->free(newsh.subshadow());
+  HBShadowCell* hb_shadow_cell = Shadow(shadow).subshadow();
+  // Printf("%p: loaded fast epoch: %p\n", ShadowToMem(p), fast_epoch);
+  if (fast_epoch != HBEpoch::kUnused) {
+    hb_shadow_cell->UpdateWriteEpoch(fast_epoch);
+    reinterpret_cast<Shadow*>(p)->StoreFastEpoch(HBEpoch::kUnused);
+  }
+  return hb_shadow_cell;
 }
 }  // namespace __psan
 

@@ -600,13 +600,15 @@ void ShadowSetWrite(RawShadow* p, RawShadow* end, RawHBEpoch val) {
   // this address?
   // TODO(dwslim): Confirm this!
   // Printf("Create HB Shadow Cells - %u\n", end - p);
+  // Printf("%p-%p: storing fast epoch: %p\n", ShadowToMem(p), ShadowToMem(end), val);
   for (; p < end; p += kShadowCnt) {
-    HBShadowCell* hb_shadow_cell = LoadHBShadowCell(p);
-    for (u8 i = 0; i < 8; ++i) {
-      hb_shadow_cell->shadow(i)->SetRx(HBEpoch::kEmpty);
-      hb_shadow_cell->shadow(i)->SetWx(val);
+    reinterpret_cast<Shadow*>(p)->StoreFastEpoch(val);
+    // HBShadowCell* hb_shadow_cell = LoadHBShadowCell(p);
+    // for (u8 i = 0; i < 8; ++i) {
+      // hb_shadow_cell->shadow(i)->SetRx(HBEpoch::kEmpty);
+      // hb_shadow_cell->shadow(i)->SetWx(val);
       // hb_shadow_cell->shadow(i)->SetWxa(val);
-    }
+    // }
   }
 }
 
@@ -667,7 +669,9 @@ void MemoryRangeFreed(ThreadState* thr, uptr pc, uptr addr, uptr size) {
   // Processing more than 1k (2k of shadow) is expensive,
   // can cause excessive memory consumption (user does not necessary touch
   // the whole range) and most likely unnecessary.
-  size = Min<uptr>(size, 1024);
+  // (dwslim): Above is from TSan. However, we want to reclaim everything,
+  // so process everything
+  // size = Min<uptr>(size, 1024);
   const AccessType typ = kAccessWrite | kAccessFree | kAccessSlotLocked |
                          kAccessCheckOnly | kAccessNoRodata;
   TraceMemoryAccessRange(thr, pc, addr, size, typ);
@@ -701,7 +705,10 @@ void MemoryRangeFreed(ThreadState* thr, uptr pc, uptr addr, uptr size) {
     if (UNLIKELY(HandleMemoryAccess(thr, shadow_mem, cur, typ)))
       return;
 
-    HBShadowCell* hb_shadow_cell = LoadHBShadowCell(thr, shadow_mem);
+    // HBShadowCellAlloc* shadow_alloc = thr->proc()->shadow_alloc;
+    HBShadowCell* hb_shadow_cell = LoadHBShadowCell(shadow_mem);
+    CHECK_NE(hb_shadow_cell, nullptr);
+    // shadow_alloc->free(hb_shadow_cell);
     for (u8 i = 0; i < kShadowCell; ++i) {
       StoreHBEpoch(hb_shadow_cell->shadow(i)->wx_p(), HBEpoch::FreedMarker());
       // StoreHBEpoch(hb_shadow_cell->shadow(i)->wxa_p(), HBEpoch::FreedMarker());
@@ -784,8 +791,8 @@ void MemoryAccessRangeT(ThreadState* thr, uptr pc, uptr addr, uptr size) {
   // (writes shouldn't go to .rodata). But it happens in Chromium tests:
   // https://bugs.chromium.org/p/chromium/issues/detail?id=1275581#c19
   // Details are unknown since it happens only on CI machines.
-  HBShadowCell* hb_shadow_cell = LoadHBShadowCell(thr, shadow_mem);
-  if (hb_shadow_cell->shadow(0)->rx().raw() == HBEpoch::kRodata)
+  RawHBEpoch epoch = LoadHBEpoch(reinterpret_cast<RawHBEpoch*>(shadow_mem));
+  if (epoch == HBEpoch::kRodata)
     return;
 
   FastState fast_state = thr->fast_state;
