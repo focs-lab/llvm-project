@@ -242,18 +242,13 @@ public:
   HBEpoch HandleWrite(ThreadState *thr, HBEpoch cur);
 
   void UpdateWriteEpoch(RawHBEpoch fast_epoch) {
-    if (fast_epoch == HBEpoch::kEmpty) {
-      for (u8 i = 0; i < 8; ++i) {
-        shadows_[i].Clear();   // ShadowSet in TSan clears out all epochs
-        StoreHBEpoch(shadows_[i].wx_p(), fast_epoch);
-        StoreHBEpoch(shadows_[i].rx_p(), fast_epoch);
-      }
+    for (u8 i = 0; i < 8; ++i) {
+      shadows_[i].Clear();   // ShadowSet in TSan clears out all epochs
     }
-    else {
+    if (fast_epoch != HBEpoch::kEmpty) {
       uptr addr, size;
       HBEpoch(fast_epoch).GetAccess(&addr, &size, nullptr);
       for (u8 i = 0; i < size; ++i) {
-        shadows_[addr+i].Clear();   // ShadowSet in TSan clears out all epochs
         StoreHBEpoch(shadows_[addr+i].wx_p(), fast_epoch);
       }
     }

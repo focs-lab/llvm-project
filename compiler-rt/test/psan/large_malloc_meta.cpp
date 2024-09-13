@@ -1,6 +1,6 @@
 // RUN: %clangxx_psan -O1 %s -o %t && %run %t 2>&1 | FileCheck %s
 
-// UNSUPPORTED: *
+// UNSUPPORTED: {{.*}}
 
 #include "test.h"
 #include <sys/mman.h>
