@@ -63,6 +63,7 @@ struct SyncVar {
   DDMutex dd;
   VectorClock *read_clock;  // Used for rw mutexes only.
   VectorClock *clock;
+  VarMetaList vmlist;
 
   void Init(ThreadState *thr, uptr pc, uptr addr, bool save_stack);
   void Reset();

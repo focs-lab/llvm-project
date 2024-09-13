@@ -105,6 +105,7 @@ set(TSAN_HEADERS
   tsan_symbolize.h
   tsan_sync.h
   tsan_trace.h
+  tsan_var.h
   tsan_vector_clock.h
   )
 

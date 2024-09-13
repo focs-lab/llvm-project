@@ -46,6 +46,7 @@
 #include "tsan_stack_trace.h"
 #include "tsan_sync.h"
 #include "tsan_trace.h"
+#include "tsan_var.h"
 #include "tsan_vector_clock.h"
 
 #if SANITIZER_WORDSIZE != 64
@@ -172,6 +173,8 @@ struct alignas(SANITIZER_CACHE_LINE_SIZE) ThreadState {
   // Technically `current` should be a separate THREADLOCAL variable;
   // but it is placed here in order to share cache line with previous fields.
   ThreadState* current;
+
+  VarMetaList vmlist;
 
   atomic_sint32_t pending_signals;
 
