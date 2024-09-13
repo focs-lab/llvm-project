@@ -48,6 +48,7 @@ set(TSAN_SOURCES
   tsan_suppressions.cpp
   tsan_symbolize.cpp
   tsan_sync.cpp
+  tsan_var.cpp
   tsan_vector_clock.cpp
   )
 
