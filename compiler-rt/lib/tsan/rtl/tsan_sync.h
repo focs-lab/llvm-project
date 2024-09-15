@@ -18,6 +18,7 @@
 #include "tsan_defs.h"
 #include "tsan_dense_alloc.h"
 #include "tsan_shadow.h"
+#include "tsan_var.h"
 #include "tsan_vector_clock.h"
 
 namespace __tsan {
@@ -63,7 +64,7 @@ struct SyncVar {
   DDMutex dd;
   VectorClock *read_clock;  // Used for rw mutexes only.
   VectorClock *clock;
-  VarMetaList vmlist;
+  VarMetaSet *vmset;
 
   void Init(ThreadState *thr, uptr pc, uptr addr, bool save_stack);
   void Reset();

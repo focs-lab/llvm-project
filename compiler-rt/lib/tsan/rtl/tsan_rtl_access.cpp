@@ -439,7 +439,11 @@ ALWAYS_INLINE USED void MemoryAccess(ThreadState* thr, uptr pc, uptr addr,
     return;
   if (!TryTraceMemoryAccess(thr, pc, addr, size, typ))
     return TraceRestartMemoryAccess(thr, pc, addr, size, typ);
-  CheckRaces(thr, shadow_mem, cur, shadow, access, typ);
+
+  VarMeta* vm = thr->vmset->FindOrCreate(addr)->vm;
+  if (typ & kAccessRead) vm->rv.Set(fast_state.sid(), fast_state.epoch());
+  else vm->wx = WriteEpoch(fast_state.sid(), fast_state.epoch());
+  // CheckRaces(thr, shadow_mem, cur, shadow, access, typ);
 }
 
 void MemoryAccess16(ThreadState* thr, uptr pc, uptr addr, AccessType typ);
@@ -467,8 +471,12 @@ ALWAYS_INLINE USED void MemoryAccess16(ThreadState* thr, uptr pc, uptr addr,
     if (!TryTraceMemoryAccessRange(thr, pc, addr, size, typ))
       return RestartMemoryAccess16(thr, pc, addr, typ);
     traced = true;
-    if (UNLIKELY(CheckRaces(thr, shadow_mem, cur, shadow, access, typ)))
-      return;
+
+    VarMeta* vm = thr->vmset->FindOrCreate(addr)->vm;
+    if (typ & kAccessRead) vm->rv.Set(fast_state.sid(), fast_state.epoch());
+    else vm->wx = WriteEpoch(fast_state.sid(), fast_state.epoch());
+    // if (UNLIKELY(CheckRaces(thr, shadow_mem, cur, shadow, access, typ)))
+    //   return;
   }
 SECOND:
   shadow_mem += kShadowCnt;
@@ -477,7 +485,11 @@ SECOND:
     return;
   if (!traced && !TryTraceMemoryAccessRange(thr, pc, addr, size, typ))
     return RestartMemoryAccess16(thr, pc, addr, typ);
-  CheckRaces(thr, shadow_mem, cur, shadow, access, typ);
+
+  VarMeta* vm = thr->vmset->FindOrCreate(addr + kShadowCell)->vm;
+  if (typ & kAccessRead) vm->rv.Set(fast_state.sid(), fast_state.epoch());
+  else vm->wx = WriteEpoch(fast_state.sid(), fast_state.epoch());
+  // CheckRaces(thr, shadow_mem, cur, shadow, access, typ);
 }
 
 NOINLINE
@@ -505,8 +517,12 @@ ALWAYS_INLINE USED void UnalignedMemoryAccess(ThreadState* thr, uptr pc,
     if (!TryTraceMemoryAccessRange(thr, pc, addr, size, typ))
       return RestartUnalignedMemoryAccess(thr, pc, addr, size, typ);
     traced = true;
-    if (UNLIKELY(CheckRaces(thr, shadow_mem, cur, shadow, access, typ)))
-      return;
+
+    VarMeta* vm = thr->vmset->FindOrCreate(addr)->vm;
+    if (typ & kAccessRead) vm->rv.Set(fast_state.sid(), fast_state.epoch());
+    else vm->wx = WriteEpoch(fast_state.sid(), fast_state.epoch());
+    // if (UNLIKELY(CheckRaces(thr, shadow_mem, cur, shadow, access, typ)))
+    //   return;
   }
 SECOND:
   uptr size2 = size - size1;
@@ -519,7 +535,23 @@ SECOND:
     return;
   if (!traced && !TryTraceMemoryAccessRange(thr, pc, addr, size, typ))
     return RestartUnalignedMemoryAccess(thr, pc, addr, size, typ);
-  CheckRaces(thr, shadow_mem, cur, shadow, access, typ);
+
+  VarMeta* vm = thr->vmset->FindOrCreate(addr + kShadowCell)->vm;
+  if (typ & kAccessRead) vm->rv.Set(fast_state.sid(), fast_state.epoch());
+  else vm->wx = WriteEpoch(fast_state.sid(), fast_state.epoch());
+  // CheckRaces(thr, shadow_mem, cur, shadow, access, typ);
+}
+
+void ShadowSet(ThreadState *thr, uptr p, uptr end, RawShadow v) {
+  Sid sid = Shadow(v).sid();
+  Epoch epoch = Shadow(v).epoch();
+  for (; p < end; p += kShadowCell) {
+    VarMetaNode* vmn = thr->vmset->Find(p);
+    if (vmn == nullptr) break;
+    VarMeta* vm = vmn->vm;
+    vm->rv.Set(sid, kEpochZero);
+    vm->wx = WriteEpoch(sid, epoch);
+  }
 }
 
 void ShadowSet(RawShadow* p, RawShadow* end, RawShadow v) {
@@ -544,7 +576,7 @@ void ShadowSet(RawShadow* p, RawShadow* end, RawShadow v) {
 #endif
 }
 
-static void MemoryRangeSet(uptr addr, uptr size, RawShadow val) {
+static void MemoryRangeSet(ThreadState* thr, uptr addr, uptr size, RawShadow val) {
   if (size == 0)
     return;
   DCHECK_EQ(addr % kShadowCell, 0);
@@ -560,9 +592,11 @@ static void MemoryRangeSet(uptr addr, uptr size, RawShadow val) {
   // UnmapOrDie/MmapFixedNoReserve does not work on Windows.
   if (SANITIZER_WINDOWS ||
       size <= common_flags()->clear_shadow_mmap_threshold) {
-    ShadowSet(begin, end, val);
+    // ShadowSet(begin, end, val);
+    ShadowSet(thr, addr, addr+size, val);
     return;
   }
+  return;
   // The region is big, reset only beginning and end.
   const uptr kPageSize = GetPageSizeCached();
   // Set at least first kPageSize/2 to page boundary.
@@ -583,7 +617,7 @@ static void MemoryRangeSet(uptr addr, uptr size, RawShadow val) {
 void MemoryResetRange(ThreadState* thr, uptr pc, uptr addr, uptr size) {
   uptr addr1 = RoundDown(addr, kShadowCell);
   uptr size1 = RoundUp(size + addr - addr1, kShadowCell);
-  MemoryRangeSet(addr1, size1, Shadow::kEmpty);
+  MemoryRangeSet(thr, addr1, size1, Shadow::kEmpty);
 }
 
 void MemoryRangeFreed(ThreadState* thr, uptr pc, uptr addr, uptr size) {
@@ -619,13 +653,18 @@ void MemoryRangeFreed(ThreadState* thr, uptr pc, uptr addr, uptr size) {
     _mm_store_si128((m128*)shadow_mem, freed);
   }
 #else
-  for (; size; size -= kShadowCell, shadow_mem += kShadowCnt) {
-    if (UNLIKELY(CheckRaces(thr, shadow_mem, cur, 0, 0, typ)))
-      return;
-    StoreShadow(&shadow_mem[0], Shadow::FreedMarker());
-    StoreShadow(&shadow_mem[1], Shadow::FreedInfo(cur.sid(), cur.epoch()));
-    StoreShadow(&shadow_mem[2], Shadow::kEmpty);
-    StoreShadow(&shadow_mem[3], Shadow::kEmpty);
+  Sid sid = thr->fast_state.sid();
+  Epoch epoch = thr->fast_state.epoch();
+  for (; size; size -= kShadowCell, addr += kShadowCell) {
+    // if (UNLIKELY(CheckRaces(thr, shadow_mem, cur, 0, 0, typ)))
+    //   return;
+    VarMeta* vm = thr->vmset->FindOrCreate(addr)->vm;
+    vm->wx = WriteEpoch(kFreeSid, kEpochLast);
+    vm->rv.Set(sid, epoch);
+    // StoreShadow(&shadow_mem[0], Shadow::FreedMarker());
+    // StoreShadow(&shadow_mem[1], Shadow::FreedInfo(cur.sid(), cur.epoch()));
+    // StoreShadow(&shadow_mem[2], Shadow::kEmpty);
+    // StoreShadow(&shadow_mem[3], Shadow::kEmpty);
   }
 #endif
 }
@@ -635,7 +674,7 @@ void MemoryRangeImitateWrite(ThreadState* thr, uptr pc, uptr addr, uptr size) {
   size = RoundUp(size, kShadowCell);
   TraceMemoryAccessRange(thr, pc, addr, size, kAccessWrite);
   Shadow cur(thr->fast_state, 0, 8, kAccessWrite);
-  MemoryRangeSet(addr, size, cur.raw());
+  MemoryRangeSet(thr, addr, size, cur.raw());
 }
 
 void MemoryRangeImitateWriteOrResetRange(ThreadState* thr, uptr pc, uptr addr,
@@ -719,21 +758,32 @@ void MemoryAccessRangeT(ThreadState* thr, uptr pc, uptr addr, uptr size) {
     uptr size1 = Min(size, RoundUp(addr, kShadowCell) - addr);
     size -= size1;
     Shadow cur(fast_state, addr, size1, typ);
-    if (UNLIKELY(MemoryAccessRangeOne(thr, shadow_mem, cur, typ)))
-      return;
+    // if (UNLIKELY(MemoryAccessRangeOne(thr, shadow_mem, cur, typ)))
+    //   return;
+
+    VarMeta* vm = thr->vmset->FindOrCreate(addr)->vm;
+    if (typ & kAccessRead) vm->rv.Set(fast_state.sid(), fast_state.epoch());
+    else vm->wx = WriteEpoch(fast_state.sid(), fast_state.epoch());
+    addr += kShadowCell;
     shadow_mem += kShadowCnt;
   }
   // Handle middle part, if any.
   Shadow cur(fast_state, 0, kShadowCell, typ);
-  for (; size >= kShadowCell; size -= kShadowCell, shadow_mem += kShadowCnt) {
-    if (UNLIKELY(MemoryAccessRangeOne(thr, shadow_mem, cur, typ)))
-      return;
+  for (; size >= kShadowCell; size -= kShadowCell, addr += kShadowCell) {
+    VarMeta* vm = thr->vmset->FindOrCreate(addr)->vm;
+    if (typ & kAccessRead) vm->rv.Set(fast_state.sid(), fast_state.epoch());
+    else vm->wx = WriteEpoch(fast_state.sid(), fast_state.epoch());
+    // if (UNLIKELY(MemoryAccessRangeOne(thr, shadow_mem, cur, typ)))
+    //   return;
   }
   // Handle ending, if any.
   if (UNLIKELY(size)) {
-    Shadow cur(fast_state, 0, size, typ);
-    if (UNLIKELY(MemoryAccessRangeOne(thr, shadow_mem, cur, typ)))
-      return;
+    VarMeta* vm = thr->vmset->FindOrCreate(addr)->vm;
+    if (typ & kAccessRead) vm->rv.Set(fast_state.sid(), fast_state.epoch());
+    else vm->wx = WriteEpoch(fast_state.sid(), fast_state.epoch());
+    // Shadow cur(fast_state, 0, size, typ);
+    // if (UNLIKELY(MemoryAccessRangeOne(thr, shadow_mem, cur, typ)))
+    //   return;
   }
 }
 

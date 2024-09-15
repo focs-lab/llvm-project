@@ -425,6 +425,8 @@ ThreadState::ThreadState(Tid tid)
 #endif
   shadow_stack_pos = shadow_stack;
   shadow_stack_end = shadow_stack + kInitStackSize;
+
+  vmset = VarMetaSet::Alloc();
 }
 
 #if !SANITIZER_GO

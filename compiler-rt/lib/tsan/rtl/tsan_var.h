@@ -24,6 +24,7 @@ namespace __tsan {
 
 struct WriteEpoch {
   WriteEpoch() : sid(kFreeSid), epoch(kEpochZero) {}
+  WriteEpoch(Sid sid, Epoch epoch) : sid(sid), epoch(epoch) {}
   Sid sid;
   Epoch epoch;
 };
@@ -55,11 +56,23 @@ class VarMetaSet {
 
   static VarMetaSet* Alloc() {
     // mmap will return zero-initialized memory
-    return (VarMetaSet*)MmapOrDie(kVarMetaSetSize, "VarMetaSet");
+    return (VarMetaSet*)MmapOrDie(sizeof(VarMetaSet), "VarMetaSet");
   }
-  static void Free(VarMetaSet* vmset) { UnmapOrDie(vmset, kVarMetaSetSize); }
+  static void Free(VarMetaSet* vmset) { UnmapOrDie(vmset, sizeof(VarMetaSet)); }
 
   u16 size() const { return size_; }
+  VarMetaNode* Find(uptr addr) {
+    if (size_ > 0) {
+      u16 lb = LowerBound(addr);
+      if (nodes_[lb].addr == addr)
+        return &nodes_[lb];
+      else
+        return nullptr;
+    }
+
+    return nullptr;
+  }
+
   VarMetaNode* FindOrCreate(uptr addr) {
     if (size_ > 0) {
       u16 lb = LowerBound(addr);
@@ -107,9 +120,9 @@ class VarMetaSet {
       np.right = new_pos;
 
     nodes_[new_pos].Init(addr, parent);
-    if (np.parent == VarMetaNode::kEmpty)
-      return;
-    FixInsert(new_pos);
+    if (np.parent != VarMetaNode::kEmpty) FixInsert(new_pos);
+
+    return &nodes_[new_pos];
   }
 
   void LeftRotate(u16 x) {
@@ -191,7 +204,7 @@ class VarMetaSet {
         u16 u = nkpp->left;  // uncle
         VarMetaNode* nu = &nodes_[u];
 
-        if (nu->color = VarMetaNode::kRed) {
+        if (nu->color == VarMetaNode::kRed) {
           nkp->color = VarMetaNode::kBlack;
           nu->color = VarMetaNode::kBlack;
           nkpp->color = VarMetaNode::kRed;

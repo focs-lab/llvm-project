@@ -174,7 +174,7 @@ struct alignas(SANITIZER_CACHE_LINE_SIZE) ThreadState {
   // but it is placed here in order to share cache line with previous fields.
   ThreadState* current;
 
-  VarMetaList vmlist;
+  VarMetaSet* vmset;
 
   atomic_sint32_t pending_signals;
 

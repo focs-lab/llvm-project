@@ -39,6 +39,7 @@ void SyncVar::Reset() {
   atomic_store_relaxed(&flags, 0);
   Free(clock);
   Free(read_clock);
+  // VarMetaSet::Free(vmset);
 }
 
 MetaMap::MetaMap()
@@ -182,6 +183,10 @@ void MetaMap::ResetClocks() {
       InternalFree(s->read_clock, &cache);
       s->read_clock = nullptr;
     }
+    // if (s->vmset) {
+    //   VarMetaSet::Free(s->vmset);
+    //   s->vmset = nullptr;
+    // }
     s->last_lock.Reset();
   });
   internal_allocator()->DestroyCache(&cache);
