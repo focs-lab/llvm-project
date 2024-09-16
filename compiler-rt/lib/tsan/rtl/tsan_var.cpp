@@ -21,7 +21,7 @@ void VarMetaNode::Init(uptr a, u16 p) {
   left = kEmpty;
   right = kEmpty;
   color = kBlack;
-  vm = New<VarMeta>();
+  vm.Reset();
 }
 
 }  // namespace __tsan

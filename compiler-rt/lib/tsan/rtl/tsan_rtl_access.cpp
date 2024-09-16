@@ -440,9 +440,9 @@ ALWAYS_INLINE USED void MemoryAccess(ThreadState* thr, uptr pc, uptr addr,
   if (!TryTraceMemoryAccess(thr, pc, addr, size, typ))
     return TraceRestartMemoryAccess(thr, pc, addr, size, typ);
 
-  VarMeta* vm = thr->vmset->FindOrCreate(addr)->vm;
+  VarMeta* vm = &thr->vmset->FindOrCreate(addr)->vm;
   if (typ & kAccessRead) vm->rv.Set(fast_state.sid(), fast_state.epoch());
-  else vm->wx = WriteEpoch(fast_state.sid(), fast_state.epoch());
+  vm->wx = WriteEpoch(fast_state.sid(), fast_state.epoch());
   // CheckRaces(thr, shadow_mem, cur, shadow, access, typ);
 }
 
@@ -472,9 +472,9 @@ ALWAYS_INLINE USED void MemoryAccess16(ThreadState* thr, uptr pc, uptr addr,
       return RestartMemoryAccess16(thr, pc, addr, typ);
     traced = true;
 
-    VarMeta* vm = thr->vmset->FindOrCreate(addr)->vm;
-    if (typ & kAccessRead) vm->rv.Set(fast_state.sid(), fast_state.epoch());
-    else vm->wx = WriteEpoch(fast_state.sid(), fast_state.epoch());
+    // VarMeta* vm = &thr->vmset->FindOrCreate(addr)->vm;
+    // if (typ & kAccessRead) vm->rv.Set(fast_state.sid(), fast_state.epoch());
+    // else vm->wx = WriteEpoch(fast_state.sid(), fast_state.epoch());
     // if (UNLIKELY(CheckRaces(thr, shadow_mem, cur, shadow, access, typ)))
     //   return;
   }
@@ -486,9 +486,9 @@ SECOND:
   if (!traced && !TryTraceMemoryAccessRange(thr, pc, addr, size, typ))
     return RestartMemoryAccess16(thr, pc, addr, typ);
 
-  VarMeta* vm = thr->vmset->FindOrCreate(addr + kShadowCell)->vm;
-  if (typ & kAccessRead) vm->rv.Set(fast_state.sid(), fast_state.epoch());
-  else vm->wx = WriteEpoch(fast_state.sid(), fast_state.epoch());
+  // VarMeta* vm = &thr->vmset->FindOrCreate(addr + kShadowCell)->vm;
+  // if (typ & kAccessRead) vm->rv.Set(fast_state.sid(), fast_state.epoch());
+  // else vm->wx = WriteEpoch(fast_state.sid(), fast_state.epoch());
   // CheckRaces(thr, shadow_mem, cur, shadow, access, typ);
 }
 
@@ -518,9 +518,9 @@ ALWAYS_INLINE USED void UnalignedMemoryAccess(ThreadState* thr, uptr pc,
       return RestartUnalignedMemoryAccess(thr, pc, addr, size, typ);
     traced = true;
 
-    VarMeta* vm = thr->vmset->FindOrCreate(addr)->vm;
-    if (typ & kAccessRead) vm->rv.Set(fast_state.sid(), fast_state.epoch());
-    else vm->wx = WriteEpoch(fast_state.sid(), fast_state.epoch());
+    // VarMeta* vm = &thr->vmset->FindOrCreate(addr)->vm;
+    // if (typ & kAccessRead) vm->rv.Set(fast_state.sid(), fast_state.epoch());
+    // else vm->wx = WriteEpoch(fast_state.sid(), fast_state.epoch());
     // if (UNLIKELY(CheckRaces(thr, shadow_mem, cur, shadow, access, typ)))
     //   return;
   }
@@ -536,9 +536,9 @@ SECOND:
   if (!traced && !TryTraceMemoryAccessRange(thr, pc, addr, size, typ))
     return RestartUnalignedMemoryAccess(thr, pc, addr, size, typ);
 
-  VarMeta* vm = thr->vmset->FindOrCreate(addr + kShadowCell)->vm;
-  if (typ & kAccessRead) vm->rv.Set(fast_state.sid(), fast_state.epoch());
-  else vm->wx = WriteEpoch(fast_state.sid(), fast_state.epoch());
+  // VarMeta* vm = &thr->vmset->FindOrCreate(addr + kShadowCell)->vm;
+  // if (typ & kAccessRead) vm->rv.Set(fast_state.sid(), fast_state.epoch());
+  // else vm->wx = WriteEpoch(fast_state.sid(), fast_state.epoch());
   // CheckRaces(thr, shadow_mem, cur, shadow, access, typ);
 }
 
@@ -548,7 +548,7 @@ void ShadowSet(ThreadState *thr, uptr p, uptr end, RawShadow v) {
   for (; p < end; p += kShadowCell) {
     VarMetaNode* vmn = thr->vmset->Find(p);
     if (vmn == nullptr) break;
-    VarMeta* vm = vmn->vm;
+    VarMeta* vm = &vmn->vm;
     vm->rv.Set(sid, kEpochZero);
     vm->wx = WriteEpoch(sid, epoch);
   }
@@ -658,9 +658,9 @@ void MemoryRangeFreed(ThreadState* thr, uptr pc, uptr addr, uptr size) {
   for (; size; size -= kShadowCell, addr += kShadowCell) {
     // if (UNLIKELY(CheckRaces(thr, shadow_mem, cur, 0, 0, typ)))
     //   return;
-    VarMeta* vm = thr->vmset->FindOrCreate(addr)->vm;
-    vm->wx = WriteEpoch(kFreeSid, kEpochLast);
-    vm->rv.Set(sid, epoch);
+    // VarMeta* vm = &thr->vmset->FindOrCreate(addr)->vm;
+    // vm->wx = WriteEpoch(kFreeSid, kEpochLast);
+    // vm->rv.Set(sid, epoch);
     // StoreShadow(&shadow_mem[0], Shadow::FreedMarker());
     // StoreShadow(&shadow_mem[1], Shadow::FreedInfo(cur.sid(), cur.epoch()));
     // StoreShadow(&shadow_mem[2], Shadow::kEmpty);
@@ -761,26 +761,26 @@ void MemoryAccessRangeT(ThreadState* thr, uptr pc, uptr addr, uptr size) {
     // if (UNLIKELY(MemoryAccessRangeOne(thr, shadow_mem, cur, typ)))
     //   return;
 
-    VarMeta* vm = thr->vmset->FindOrCreate(addr)->vm;
-    if (typ & kAccessRead) vm->rv.Set(fast_state.sid(), fast_state.epoch());
-    else vm->wx = WriteEpoch(fast_state.sid(), fast_state.epoch());
+    // VarMeta* vm = &thr->vmset->FindOrCreate(addr)->vm;
+    // if (typ & kAccessRead) vm->rv.Set(fast_state.sid(), fast_state.epoch());
+    // else vm->wx = WriteEpoch(fast_state.sid(), fast_state.epoch());
     addr += kShadowCell;
     shadow_mem += kShadowCnt;
   }
   // Handle middle part, if any.
   Shadow cur(fast_state, 0, kShadowCell, typ);
   for (; size >= kShadowCell; size -= kShadowCell, addr += kShadowCell) {
-    VarMeta* vm = thr->vmset->FindOrCreate(addr)->vm;
-    if (typ & kAccessRead) vm->rv.Set(fast_state.sid(), fast_state.epoch());
-    else vm->wx = WriteEpoch(fast_state.sid(), fast_state.epoch());
+    // VarMeta* vm = &thr->vmset->FindOrCreate(addr)->vm;
+    // if (typ & kAccessRead) vm->rv.Set(fast_state.sid(), fast_state.epoch());
+    // else vm->wx = WriteEpoch(fast_state.sid(), fast_state.epoch());
     // if (UNLIKELY(MemoryAccessRangeOne(thr, shadow_mem, cur, typ)))
     //   return;
   }
   // Handle ending, if any.
   if (UNLIKELY(size)) {
-    VarMeta* vm = thr->vmset->FindOrCreate(addr)->vm;
-    if (typ & kAccessRead) vm->rv.Set(fast_state.sid(), fast_state.epoch());
-    else vm->wx = WriteEpoch(fast_state.sid(), fast_state.epoch());
+    // VarMeta* vm = &thr->vmset->FindOrCreate(addr)->vm;
+    // if (typ & kAccessRead) vm->rv.Set(fast_state.sid(), fast_state.epoch());
+    // else vm->wx = WriteEpoch(fast_state.sid(), fast_state.epoch());
     // Shadow cur(fast_state, 0, size, typ);
     // if (UNLIKELY(MemoryAccessRangeOne(thr, shadow_mem, cur, typ)))
     //   return;

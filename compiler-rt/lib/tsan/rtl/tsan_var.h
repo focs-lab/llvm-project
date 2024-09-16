@@ -31,6 +31,7 @@ struct WriteEpoch {
 
 struct VarMeta {
   VarMeta() { rv.Reset(); }
+  void Reset() { wx = WriteEpoch(); }
 
   WriteEpoch wx;
   VectorClock rv;
@@ -45,7 +46,7 @@ struct VarMetaNode {
   uptr addr;
   u16 parent, left, right;
   u16 color;  // dont actually need 2 bytes but padding anyway
-  VarMeta* vm;
+  VarMeta vm;
 };
 
 // RB tree https://www.geeksforgeeks.org/introduction-to-red-black-tree/
@@ -74,34 +75,43 @@ class VarMetaSet {
   }
 
   VarMetaNode* FindOrCreate(uptr addr) {
+    accesses_++;
+    addr = addr & 0xfffffffffffffff8;
     if (size_ > 0) {
       u16 lb = LowerBound(addr);
-      if (nodes_[lb].addr == addr)
+      if (nodes_[lb].addr == addr) {
         return &nodes_[lb];
+      }
+      // else if (tid <= 1)
+      //   return &nodes_[lb];
       else
         return Create(lb, addr);
     }
 
+    size_ = 1;
     nodes_[kFirstNode].Init(addr, VarMetaNode::kEmpty);
     root_ = kFirstNode;
     return &nodes_[kFirstNode];
   }
 
+  Tid tid;
+
  private:
   VarMetaNode nodes_[kMaxNodes];
   u16 size_, root_;
+  u64 accesses_ = 0, inserts_ = 0;
 
-  u16 LowerBound(uptr addr) {
+  ALWAYS_INLINE u16 LowerBound(uptr addr) {
     CHECK_GE(size_, 1);
 
     u16 parent = VarMetaNode::kEmpty, curr = root_;
     while (curr != VarMetaNode::kEmpty) {
       parent = curr;
       VarMetaNode& node = nodes_[curr];
-      if (addr < node.addr)
-        curr = node.left;
-      else if (addr == node.addr)
+      if (LIKELY(addr == node.addr))
         return curr;
+      else if (addr < node.addr)
+        curr = node.left;
       else
         curr = node.right;
     }
@@ -111,6 +121,10 @@ class VarMetaSet {
 
   VarMetaNode* Create(u16 parent, uptr addr) {
     CHECK_NE(parent, VarMetaNode::kEmpty);
+    CHECK_NE(size_, kMaxNodes);
+
+    inserts_++;
+    Printf("%u: %llu/%llu\n", tid, inserts_, accesses_);
 
     u16 new_pos = ++size_;
     VarMetaNode& np = nodes_[parent];
