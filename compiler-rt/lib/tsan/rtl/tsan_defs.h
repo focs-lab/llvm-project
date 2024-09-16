@@ -55,8 +55,8 @@ constexpr uptr kByteBits = 8;
 
 // Thread slot ID.
 enum class Sid : u8 {};
-constexpr uptr kThreadSlotCount = 256;
-constexpr Sid kFreeSid = static_cast<Sid>(255);
+constexpr uptr kThreadSlotCount = 7;
+constexpr Sid kFreeSid = static_cast<Sid>(7);
 
 // Abstract time unit, vector clock element.
 enum class Epoch : u16 {};
@@ -72,6 +72,12 @@ inline Epoch EpochInc(Epoch epoch) {
 inline bool EpochOverflow(Epoch epoch) { return epoch == kEpochOver; }
 
 const uptr kShadowStackSize = 64 * 1024;
+
+// For the dhb shadow
+const uptr kDhbShadowCell = 4;
+const uptr kDhbShadowSize = (kThreadSlotCount + 1) * sizeof(Epoch);
+const uptr kDhbShadowMultiplier = kDhbShadowSize / kDhbShadowCell;
+static_assert(kDhbShadowMultiplier * kDhbShadowCell == kDhbShadowSize);
 
 // Count of shadow values in a shadow cell.
 const uptr kShadowCnt = 4;
