@@ -70,12 +70,12 @@ C/C++ on netbsd/amd64 can reuse the same mapping:
  * ASLR must be disabled per-process or globally.
 */
 struct Mapping48AddressSpace {
-  static const uptr kMetaShadowBeg = 0x600000000000ull;
-  static const uptr kMetaShadowEnd = 0x680000000000ull;
+  static const uptr kMetaShadowBeg = 0x300000000000ull;
+  static const uptr kMetaShadowEnd = 0x380000000000ull;
   static const uptr kShadowBeg =    0x100000000000ull;
-  static const uptr kShadowEnd =    0x500000000000ull;
+  static const uptr kShadowEnd =    0x300000000000ull;
   static const uptr kDhbShadowBeg = 0x100000000000ull;
-  static const uptr kDhbShadowEnd = 0x500000000000ull;
+  static const uptr kDhbShadowEnd = 0x300000000000ull;
   static const uptr kHeapMemBeg = 0x720000000000ull;
   static const uptr kHeapMemEnd = 0x730000000000ull;
   static const uptr kLoAppMemBeg   = 0x000000001000ull;
@@ -950,22 +950,20 @@ struct MemToMetaImpl {
   }
 };
 
-struct MemToDHBImpl {
+static uptr MemToDHBImpl(Sid sid, uptr x) {
   using Mapping=Mapping48AddressSpace;
-  static uptr Apply(uptr x) {
-    return (((x) & ~(Mapping::kShadowMsk | (kDhbShadowCell - 1))) ^
-            Mapping::kShadowXor) *
-               kDhbShadowMultiplier +
-           Mapping::kShadowAdd;
-  }
-};
+  return (((x) & ~(Mapping::kShadowMsk | (kDhbShadowCell - 1))) ^
+          Mapping::kShadowXor) *
+              kDhbShadowMultiplier +
+          Mapping::kShadowAdd;
+}
 
 ALWAYS_INLINE
 u32 *MemToMeta(uptr x) { return SelectMapping<MemToMetaImpl>(x); }
 
 ALWAYS_INLINE
-uptr MemToDHBShadow(uptr x) {
-  return MemToDHBImpl().Apply(x);
+uptr MemToDHBShadow(Sid sid, uptr x) {
+  return MemToDHBImpl(sid, x);
 }
 
 struct ShadowToMemImpl {

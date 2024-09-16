@@ -19,7 +19,7 @@
 #include "ubsan/ubsan_platform.h"
 
 #ifndef TSAN_VECTORIZE
-#  define TSAN_VECTORIZE __SSE4_2__
+// #  define TSAN_VECTORIZE __SSE4_2__
 #endif
 
 #if TSAN_VECTORIZE
@@ -75,7 +75,7 @@ const uptr kShadowStackSize = 64 * 1024;
 
 // For the dhb shadow
 const uptr kDhbShadowCell = 4;
-const uptr kDhbShadowSize = (kThreadSlotCount + 1) * sizeof(Epoch);
+const uptr kDhbShadowSize = 4 * sizeof(Epoch) * kThreadSlotCount;
 const uptr kDhbShadowMultiplier = kDhbShadowSize / kDhbShadowCell;
 static_assert(kDhbShadowMultiplier * kDhbShadowCell == kDhbShadowSize);
 
