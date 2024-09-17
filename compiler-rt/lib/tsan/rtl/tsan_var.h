@@ -44,29 +44,38 @@ struct VarMetaNode {
   void Init(uptr a, u16 p);
 
   uptr addr;
-  u16 parent, left, right;
+  u16 left, right, parent;
   u16 color;  // dont actually need 2 bytes but padding anyway
-  VarMeta vm;
+  // VarMeta vm;
+};
+
+struct VarMetaZone {
+  static constexpr uptr kMaxVmsPerZone = 0x100000;
+  u16 vmis[kMaxVmsPerZone];
 };
 
 // RB tree https://www.geeksforgeeks.org/introduction-to-red-black-tree/
 class VarMetaSet {
  public:
   static constexpr u16 kFirstNode = 1;
-  static constexpr u16 kMaxNodes = 65535;
+  static constexpr u16 kMaxNodes = 2048;
+  static constexpr uptr kAddrMask1 = (~(VarMetaZone::kMaxVmsPerZone-1)) << 3;
+  static constexpr uptr kAddrMask2 = ~kAddrMask1;
+  static constexpr uptr kMaxVms = Min((unsigned long) (1<<20), kMaxNodes * VarMetaZone::kMaxVmsPerZone);
 
   static VarMetaSet* Alloc() {
     // mmap will return zero-initialized memory
-    return (VarMetaSet*)MmapOrDie(sizeof(VarMetaSet), "VarMetaSet");
+    return (VarMetaSet*)MmapNoReserveOrDie(sizeof(VarMetaSet), "VarMetaSet");
   }
   static void Free(VarMetaSet* vmset) { UnmapOrDie(vmset, sizeof(VarMetaSet)); }
 
-  u16 size() const { return size_; }
-  VarMetaNode* Find(uptr addr) {
-    if (size_ > 0) {
+  u16 node_count() const { return node_count_; }
+  VarMeta* Find(uptr addr) {
+    addr = addr & kAddrMask1;
+    if (node_count_ > 0) {
       u16 lb = LowerBound(addr);
       if (nodes_[lb].addr == addr)
-        return &nodes_[lb];
+        return &vms_[zones_[lb].vmis[(addr & kAddrMask2) >> 3]];
       else
         return nullptr;
     }
@@ -74,13 +83,18 @@ class VarMetaSet {
     return nullptr;
   }
 
-  VarMetaNode* FindOrCreate(uptr addr) {
+  VarMeta* FindOrCreate(uptr addr) {
+    PREFETCH(&nodes_[root_]);
     accesses_++;
-    addr = addr & 0xfffffffffffffff8;
-    if (size_ > 0) {
+    addr = addr & kAddrMask1;
+    if (node_count_ > 0) {
       u16 lb = LowerBound(addr);
       if (nodes_[lb].addr == addr) {
-        return &nodes_[lb];
+        if (UNLIKELY(zones_[lb].vmis[(addr & kAddrMask2) >> 3] == 0)) {
+          zones_[lb].vmis[(addr & kAddrMask2) >> 3] = ++vm_count_;
+          vms_[vm_count_].Reset();
+        }
+        return &vms_[zones_[lb].vmis[(addr & kAddrMask2) >> 3]];
       }
       // else if (tid <= 1)
       //   return &nodes_[lb];
@@ -88,26 +102,35 @@ class VarMetaSet {
         return Create(lb, addr);
     }
 
-    size_ = 1;
+    // first node in the tree
+    node_count_ = 1;
+    vm_count_ = 1;
     nodes_[kFirstNode].Init(addr, VarMetaNode::kEmpty);
+    zones_[kFirstNode].vmis[addr & 0xff] = vm_count_;
+    vms_[vm_count_].Reset();
     root_ = kFirstNode;
-    return &nodes_[kFirstNode];
+    return &vms_[kFirstNode];
   }
 
   Tid tid;
 
  private:
-  VarMetaNode nodes_[kMaxNodes];
-  u16 size_, root_;
   u64 accesses_ = 0, inserts_ = 0;
+  u16 node_count_ = 0, root_, vm_count_ = 0;
+  VarMetaNode nodes_[kMaxNodes];
+  VarMetaZone zones_[kMaxNodes];
+  VarMeta vms_[kMaxVms];
 
-  ALWAYS_INLINE u16 LowerBound(uptr addr) {
-    CHECK_GE(size_, 1);
+  NOINLINE u16 LowerBound(uptr addr) {
+    CHECK_GE(node_count_, 1);
 
     u16 parent = VarMetaNode::kEmpty, curr = root_;
     while (curr != VarMetaNode::kEmpty) {
       parent = curr;
       VarMetaNode& node = nodes_[curr];
+      PREFETCH(&nodes_[node.left]);
+      PREFETCH(&nodes_[node.right]);
+      // PREFETCH(&zones_[curr].vmis[(addr & kAddrMask2) >> 3]);
       if (LIKELY(addr == node.addr))
         return curr;
       else if (addr < node.addr)
@@ -119,14 +142,15 @@ class VarMetaSet {
     return parent;
   }
 
-  VarMetaNode* Create(u16 parent, uptr addr) {
+  NOINLINE VarMeta* Create(u16 parent, uptr addr) {
     CHECK_NE(parent, VarMetaNode::kEmpty);
-    CHECK_NE(size_, kMaxNodes);
+    CHECK_NE(node_count_, kMaxNodes);
+    CHECK_NE(vm_count_, kMaxVms);
 
     inserts_++;
-    Printf("%u: %llu/%llu\n", tid, inserts_, accesses_);
+    // Printf("%u: %llu/%llu\n", tid, inserts_, accesses_);
 
-    u16 new_pos = ++size_;
+    u16 new_pos = ++node_count_;
     VarMetaNode& np = nodes_[parent];
     if (addr < np.addr)
       np.left = new_pos;
@@ -134,9 +158,11 @@ class VarMetaSet {
       np.right = new_pos;
 
     nodes_[new_pos].Init(addr, parent);
+    zones_[new_pos].vmis[(addr & kAddrMask2) >> 3] = ++vm_count_;
+    vms_[vm_count_].Reset();
     if (np.parent != VarMetaNode::kEmpty) FixInsert(new_pos);
 
-    return &nodes_[new_pos];
+    return &vms_[new_pos];
   }
 
   void LeftRotate(u16 x) {
@@ -183,7 +209,7 @@ class VarMetaSet {
     nx.parent = y;
   }
 
-  void FixInsert(u16 k) {
+  NOINLINE void FixInsert(u16 k) {
     VarMetaNode* nk = &nodes_[k];
     while (k != root_ && nk->color == VarMetaNode::kRed) {
       VarMetaNode* nkp = &nodes_[nk->parent];

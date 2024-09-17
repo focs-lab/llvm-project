@@ -440,7 +440,7 @@ ALWAYS_INLINE USED void MemoryAccess(ThreadState* thr, uptr pc, uptr addr,
   if (!TryTraceMemoryAccess(thr, pc, addr, size, typ))
     return TraceRestartMemoryAccess(thr, pc, addr, size, typ);
 
-  VarMeta* vm = &thr->vmset->FindOrCreate(addr)->vm;
+  VarMeta* vm = thr->vmset->FindOrCreate(addr);
   if (typ & kAccessRead) vm->rv.Set(fast_state.sid(), fast_state.epoch());
   vm->wx = WriteEpoch(fast_state.sid(), fast_state.epoch());
   // CheckRaces(thr, shadow_mem, cur, shadow, access, typ);
@@ -546,9 +546,8 @@ void ShadowSet(ThreadState *thr, uptr p, uptr end, RawShadow v) {
   Sid sid = Shadow(v).sid();
   Epoch epoch = Shadow(v).epoch();
   for (; p < end; p += kShadowCell) {
-    VarMetaNode* vmn = thr->vmset->Find(p);
-    if (vmn == nullptr) break;
-    VarMeta* vm = &vmn->vm;
+    VarMeta* vm = thr->vmset->Find(p);
+    if (vm == nullptr) break;
     vm->rv.Set(sid, kEpochZero);
     vm->wx = WriteEpoch(sid, epoch);
   }
