@@ -31,8 +31,9 @@ struct WriteEpoch {
 
 struct VarMeta {
   VarMeta() { rv.Reset(); }
-  void Reset() { wx = WriteEpoch(); }
+  void Init(uptr a) { addr = a; wx = WriteEpoch(); rv.Reset(); }
 
+  uptr addr;
   WriteEpoch wx;
   VectorClock rv;
 };
@@ -50,7 +51,7 @@ struct VarMetaNode {
 };
 
 struct VarMetaZone {
-  static constexpr uptr kMaxVmsPerZone = 0x100000;
+  static constexpr uptr kMaxVmsPerZone = 0x1000000;
   u32 vmis[kMaxVmsPerZone];
 };
 
@@ -59,10 +60,15 @@ class VarMetaSet {
  public:
   static constexpr u16 kFirstNode = 1;
   static constexpr u16 kMaxNodes = 2048;
-  static constexpr uptr kShift = 3;
+  static constexpr uptr kShift = 0;
   static constexpr uptr kAddrMask1 = (~(VarMetaZone::kMaxVmsPerZone-1)) << kShift;
   static constexpr uptr kAddrMask2 = ~kAddrMask1;
   static constexpr uptr kMaxVms = Min((unsigned long) (1<<21), kMaxNodes * VarMetaZone::kMaxVmsPerZone);
+
+  bool CrossRace(VarMetaSet*, const VectorClock*, const VectorClock*);
+  bool Acquire(VarMetaSet*, const VectorClock*, const VectorClock*);
+  void Release(VarMetaSet**, const VectorClock*, const VectorClock*);
+  void BREAK();
 
   static VarMetaSet* Alloc() {
     // mmap will return zero-initialized memory
@@ -95,14 +101,21 @@ class VarMetaSet {
     uptr addr_hi = addr & kAddrMask1;
     uptr addr_lo = (addr & kAddrMask2) >> kShift;
     // Printf("addr=%p (addr & kAddrMask2)=%p (addr & kAddrMask2) >> kShift = %p\n", addr, (addr & kAddrMask2), addr_lo);
-    if (node_count_ > 0) {
+    if (LIKELY(node_count_ > 0)) {
+      // u16 lb;
+      // if (LIKELY(last_addr_ == addr_hi)) lb = last_node_;
+      // else lb = LowerBound(addr_hi);
+      // last_node_ = lb;
+      // last_addr_ = addr_hi;
+
       u16 lb = LowerBound(addr_hi);
+
       if (nodes_[lb].addr == addr_hi) {
         u16 idx = zones_[lb].vmis[addr_lo];
         if (UNLIKELY(idx == 0)) {
           idx = zones_[lb].vmis[addr_lo] = ++vm_count_;
           // Printf("idx=%p\n", idx);
-          vms_[idx].Reset();
+          vms_[idx].Init(addr);
         }
         CHECK_LE(idx, vm_count_);
         return &vms_[idx];
@@ -111,6 +124,7 @@ class VarMetaSet {
       //   return &nodes_[lb];
       else
         return Create(lb, addr);
+
     }
 
     // first node in the tree
@@ -118,7 +132,7 @@ class VarMetaSet {
     vm_count_ = 1;
     nodes_[kFirstNode].Init(addr_hi, VarMetaNode::kEmpty);
     zones_[kFirstNode].vmis[addr_lo] = vm_count_;
-    vms_[vm_count_].Reset();
+    vms_[vm_count_].Init(addr);
     root_ = kFirstNode;
     return &vms_[kFirstNode];
   }
@@ -132,6 +146,8 @@ class VarMetaSet {
  private:
   u64 accesses_ = 0, inserts_ = 0;
   u16 node_count_ = 0, root_;
+  // u16 last_node_ = 0;
+  // uptr last_addr_ = 0;
   u32 vm_count_ = 0;
   VarMetaNode nodes_[kMaxNodes];
   VarMetaZone zones_[kMaxNodes];
@@ -139,6 +155,7 @@ class VarMetaSet {
 
   NOINLINE u16 LowerBound(uptr addr) {
     CHECK_GE(node_count_, 1);
+    // if (node_count_ < 1) { BREAK(); }
 
     u16 parent = VarMetaNode::kEmpty, curr = root_;
     while (curr != VarMetaNode::kEmpty) {
@@ -178,7 +195,7 @@ class VarMetaSet {
 
     nodes_[new_pos].Init(addr_hi, parent);
     zones_[new_pos].vmis[addr_lo] = ++vm_count_;
-    vms_[vm_count_].Reset();
+    vms_[vm_count_].Init(addr);
     if (np.parent != VarMetaNode::kEmpty) FixInsert(new_pos);
 
     return &vms_[new_pos];

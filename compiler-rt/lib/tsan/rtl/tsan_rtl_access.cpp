@@ -640,18 +640,18 @@ void MemoryRangeFreed(ThreadState* thr, uptr pc, uptr addr, uptr size) {
   TraceMemoryAccessRange(thr, pc, addr, size, typ);
   RawShadow* shadow_mem = MemToShadow(addr);
   Shadow cur(thr->fast_state, 0, kShadowCell, typ);
-#if TSAN_VECTORIZE
-  const m128 access = _mm_set1_epi32(static_cast<u32>(cur.raw()));
-  const m128 freed = _mm_setr_epi32(
-      static_cast<u32>(Shadow::FreedMarker()),
-      static_cast<u32>(Shadow::FreedInfo(cur.sid(), cur.epoch())), 0, 0);
-  for (; size; size -= kShadowCell, shadow_mem += kShadowCnt) {
-    const m128 shadow = _mm_load_si128((m128*)shadow_mem);
-    if (UNLIKELY(CheckRaces(thr, shadow_mem, cur, shadow, access, typ)))
-      return;
-    _mm_store_si128((m128*)shadow_mem, freed);
-  }
-#else
+// #if TSAN_VECTORIZE
+//   const m128 access = _mm_set1_epi32(static_cast<u32>(cur.raw()));
+//   const m128 freed = _mm_setr_epi32(
+//       static_cast<u32>(Shadow::FreedMarker()),
+//       static_cast<u32>(Shadow::FreedInfo(cur.sid(), cur.epoch())), 0, 0);
+//   for (; size; size -= kShadowCell, shadow_mem += kShadowCnt) {
+//     const m128 shadow = _mm_load_si128((m128*)shadow_mem);
+//     if (UNLIKELY(CheckRaces(thr, shadow_mem, cur, shadow, access, typ)))
+//       return;
+//     _mm_store_si128((m128*)shadow_mem, freed);
+//   }
+// #else
   Sid sid = thr->fast_state.sid();
   Epoch epoch = thr->fast_state.epoch();
   for (; size; size -= kShadowCell, addr += kShadowCell) {
@@ -665,7 +665,7 @@ void MemoryRangeFreed(ThreadState* thr, uptr pc, uptr addr, uptr size) {
     // StoreShadow(&shadow_mem[2], Shadow::kEmpty);
     // StoreShadow(&shadow_mem[3], Shadow::kEmpty);
   }
-#endif
+// #endif
 }
 
 void MemoryRangeImitateWrite(ThreadState* thr, uptr pc, uptr addr, uptr size) {

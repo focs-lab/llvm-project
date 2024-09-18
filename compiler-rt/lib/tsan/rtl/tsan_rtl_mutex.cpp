@@ -445,11 +445,22 @@ void Acquire(ThreadState *thr, uptr pc, uptr addr) {
   auto s = ctx->metamap.GetSyncIfExists(addr);
   if (!s)
     return;
-  SlotLocker locker(thr);
-  ReadLock lock(&s->mtx);
-  if (!s->clock)
-    return;
-  thr->clock.Acquire(s->clock);
+  bool has_race;
+  {
+    SlotLocker locker(thr);
+    ReadLock lock(&s->mtx);
+    if (!s->clock)
+      return;
+    has_race = thr->vmset->Acquire(s->vmset, &thr->clock, s->clock);
+    thr->clock.Acquire(s->clock);
+  }
+
+  // cannot bail out when holding the lock otherwise other threads waiting for
+  // this lock will wait forever
+  if (UNLIKELY(has_race)) {
+    Printf("RACE!\n");
+    Die();
+  }
 }
 
 void AcquireGlobal(ThreadState *thr) {
@@ -468,6 +479,7 @@ void Release(ThreadState *thr, uptr pc, uptr addr) {
   {
     auto s = ctx->metamap.GetSyncOrCreate(thr, pc, addr, false);
     Lock lock(&s->mtx);
+    thr->vmset->Release(&s->vmset, &thr->clock, s->clock);
     thr->clock.Release(&s->clock);
   }
   IncrementEpoch(thr);
@@ -481,6 +493,7 @@ void ReleaseStore(ThreadState *thr, uptr pc, uptr addr) {
   {
     auto s = ctx->metamap.GetSyncOrCreate(thr, pc, addr, false);
     Lock lock(&s->mtx);
+    thr->vmset->Release(&s->vmset, &thr->clock, s->clock);
     thr->clock.ReleaseStore(&s->clock);
   }
   IncrementEpoch(thr);
