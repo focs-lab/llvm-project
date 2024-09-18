@@ -237,6 +237,7 @@ struct alignas(SANITIZER_CACHE_LINE_SIZE) ThreadState {
   const ReportDesc *current_report;
 
   explicit ThreadState(Tid tid);
+  ~ThreadState();
 };
 
 #if !SANITIZER_GO

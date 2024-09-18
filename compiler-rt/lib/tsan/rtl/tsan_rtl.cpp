@@ -430,6 +430,11 @@ ThreadState::ThreadState(Tid tid)
   vmset->tid = tid;
 }
 
+ThreadState::~ThreadState() {
+  vmset->~VarMetaSet();
+  VarMetaSet::Free(vmset);
+}
+
 #if !SANITIZER_GO
 void MemoryProfiler(u64 uptime) {
   if (ctx->memprof_fd == kInvalidFd)
