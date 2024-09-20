@@ -139,9 +139,11 @@ class VarMetaSet {
 
   ~VarMetaSet() {
     Printf("vmset vmcount = %u\n", vm_count_);
+    Printf("wx sid %u epoch %u\n", vms_[1].wx.sid, vms_[1].wx.epoch);
   }
 
-  Tid tid;
+  // Tid tid;
+  u32 num_acquires = 0, num_releases = 0;
 
  private:
   u64 accesses_ = 0, inserts_ = 0;
@@ -306,6 +308,15 @@ class VarMetaSet {
 };
 
 static constexpr u64 kVarMetaSetSize = sizeof(VarMetaSet);
+
+struct ThreadVarMeta {
+  ThreadVarMeta(ThreadState* thr);
+
+  VarMetaSet* vmset;
+  VectorClock vc;
+  INode node;
+  Tid tid;
+};
 
 }  // namespace __tsan
 

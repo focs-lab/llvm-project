@@ -237,7 +237,6 @@ struct alignas(SANITIZER_CACHE_LINE_SIZE) ThreadState {
   const ReportDesc *current_report;
 
   explicit ThreadState(Tid tid);
-  ~ThreadState();
 };
 
 #if !SANITIZER_GO
@@ -378,6 +377,8 @@ struct Context {
   uptr trace_part_total_allocated SANITIZER_GUARDED_BY(slot_mtx);
   uptr trace_part_recycle_finished SANITIZER_GUARDED_BY(slot_mtx);
   uptr trace_part_finished_excess SANITIZER_GUARDED_BY(slot_mtx);
+
+  IList<ThreadVarMeta, &ThreadVarMeta::node> varmetas;
 #if SANITIZER_GO
   uptr mapped_shadow_begin;
   uptr mapped_shadow_end;

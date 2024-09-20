@@ -85,6 +85,32 @@ static void ThreadCheckIgnore(ThreadState *thr) {}
 
 void ThreadFinalize(ThreadState *thr) {
   ThreadCheckIgnore(thr);
+
+  ThreadVarMeta* var_meta = New<ThreadVarMeta>(thr);
+  ctx->varmetas.PushBack(var_meta);
+
+  u32 num_acquires = 0, num_releases = 0;
+
+  while (!ctx->varmetas.Empty()) {
+    ThreadVarMeta* front = ctx->varmetas.PopFront();
+    ThreadVarMeta* curr = ctx->varmetas.Front();
+    bool has_race = false;
+    while (curr != nullptr) {
+      bool has_race = front->vmset->CrossRace(curr->vmset, &front->vc, &curr->vc);
+      // Printf("cross race %u v %u? %u\n", front->tid, curr->tid, has_race);
+      if (has_race) break;
+      curr = ctx->varmetas.Next(curr);
+    }
+    if (has_race) break;
+    num_acquires += front->vmset->num_acquires;
+    num_releases += front->vmset->num_releases;
+    front->vmset->~VarMetaSet();
+    VarMetaSet::Free(front->vmset);
+  }
+
+  Printf("num acquires = %u\n", num_acquires);
+  Printf("num releases = %u\n", num_releases);
+
 #if !SANITIZER_GO
   if (!ShouldReport(thr, ReportTypeThreadLeak))
     return;
@@ -151,6 +177,7 @@ struct OnStartedArgs {
 
 void ThreadStart(ThreadState *thr, Tid tid, tid_t os_id,
                  ThreadType thread_type) {
+  thr->vmset = VarMetaSet::Alloc();
   ctx->thread_registry.StartThread(tid, os_id, thread_type, thr);
   if (!thr->ignore_sync) {
     SlotAttachAndLock(thr);
@@ -247,6 +274,10 @@ void ThreadFinish(ThreadState *thr) {
     ctx->dd->DestroyLogicalThread(thr->dd_lt);
   SlotDetach(thr);
   ctx->thread_registry.FinishThread(thr->tid);
+
+  ThreadVarMeta* var_meta = New<ThreadVarMeta>(thr);
+  ctx->varmetas.PushBack(var_meta);
+
   thr->~ThreadState();
 }
 
