@@ -702,18 +702,20 @@ void MemoryRangeFreed(ThreadState* thr, uptr pc, uptr addr, uptr size) {
   for (; size; size -= kShadowCell, shadow_mem += kShadowCnt) {
     // if (UNLIKELY(CheckRaces(thr, shadow_mem, cur, 0, 0, typ)))
     //   return;
-    if (UNLIKELY(HandleMemoryAccess(thr, shadow_mem, cur, typ)))
-      return;
+    // if (UNLIKELY(HandleMemoryAccess(thr, shadow_mem, cur, typ)))
+    //   return;
 
     // HBShadowCellAlloc* shadow_alloc = thr->proc()->shadow_alloc;
     HBShadowCell* hb_shadow_cell = LoadHBShadowCell(shadow_mem);
-    CHECK_NE(hb_shadow_cell, nullptr);
+    if (hb_shadow_cell == nullptr) return;
+    else FreeHBShadowCell(thr, shadow_mem);
+    // CHECK_NE(hb_shadow_cell, nullptr);
     // shadow_alloc->free(hb_shadow_cell);
-    for (u8 i = 0; i < kShadowCell; ++i) {
-      StoreHBEpoch(hb_shadow_cell->shadow(i)->wx_p(), HBEpoch::FreedMarker());
-      // StoreHBEpoch(hb_shadow_cell->shadow(i)->wxa_p(), HBEpoch::FreedMarker());
-      StoreHBEpoch(hb_shadow_cell->shadow(i)->free_p(), HBEpoch::FreedInfo(cur.sid(), cur.epoch()));
-    }
+    // for (u8 i = 0; i < kShadowCell; ++i) {
+    //   StoreHBEpoch(hb_shadow_cell->shadow(i)->wx_p(), HBEpoch::FreedMarker());
+    //   // StoreHBEpoch(hb_shadow_cell->shadow(i)->wxa_p(), HBEpoch::FreedMarker());
+    //   StoreHBEpoch(hb_shadow_cell->shadow(i)->free_p(), HBEpoch::FreedInfo(cur.sid(), cur.epoch()));
+    // }
     // StoreShadow(&shadow_mem[0], Shadow::FreedMarker());
     // StoreShadow(&shadow_mem[1], Shadow::FreedInfo(cur.sid(), cur.epoch()));
     // StoreShadow(&shadow_mem[2], Shadow::kEmpty);

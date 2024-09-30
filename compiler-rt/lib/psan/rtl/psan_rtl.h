@@ -861,6 +861,15 @@ ALWAYS_INLINE HBShadowCell* LoadHBShadowCell(ThreadState *thr, RawShadow *p) {
   }
   return hb_shadow_cell;
 }
+
+ALWAYS_INLINE void FreeHBShadowCell(ThreadState *thr, RawShadow *p) {
+  Shadow shadow = Shadow(static_cast<RawShadow>(
+      atomic_load((atomic_uint64_t *)p, memory_order_relaxed)));
+  // TODO(dwslim): this is wrong, we must enforce a compiler barrier between this store and the free
+  atomic_store((atomic_uint64_t *)p, 0, memory_order_relaxed);
+  thr->proc()->shadow_alloc->free(shadow.subshadow());
+}
+
 }  // namespace __psan
 
 #endif  // PSAN_RTL_H

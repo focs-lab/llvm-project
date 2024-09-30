@@ -243,7 +243,7 @@ public:
 
   void UpdateWriteEpoch(RawHBEpoch fast_epoch) {
     for (u8 i = 0; i < 8; ++i) {
-      shadows_[i].Clear();   // ShadowSet in TSan clears out all epochs
+      // shadows_[i].Clear();   // ShadowSet in TSan clears out all epochs
     }
     if (fast_epoch != HBEpoch::kEmpty) {
       uptr addr, size;
@@ -330,6 +330,27 @@ ALWAYS_INLINE RawShadow LoadRawShadowFromUserAddress(uptr p) {
   RawShadow* rawp = MemToShadow(p);
   RawShadow raw = static_cast<RawShadow>(atomic_load((atomic_uint64_t *)rawp, memory_order_relaxed));
   return raw;
+}
+
+ALWAYS_INLINE USED void HBShadow::Clear() {
+  // lock might not be necessary
+  // deadlock shouldnt happen
+  {
+    // Lock lockr(&rmtx_);
+    StoreHBEpoch((RawHBEpoch*) &rx_, HBEpoch::kEmpty);
+    // StoreHBEpoch((RawHBEpoch*) &rxa_, HBEpoch::kEmpty);
+
+    for (u16 i = 0; i < kThreadSlotCount; ++i) {
+      StoreHBEpoch((RawHBEpoch*) &rv_[i], HBEpoch::kEmpty);
+      // StoreHBEpoch((RawHBEpoch*) &rva_[i], HBEpoch::kEmpty);
+    }
+  }
+  {
+    // Lock lockw(&wmtx_);
+    StoreHBEpoch((RawHBEpoch*) &wx_, HBEpoch::kEmpty);
+    // StoreHBEpoch((RawHBEpoch*) &wxa_, HBEpoch::kEmpty);
+  }
+  StoreHBEpoch((RawHBEpoch*) &free_, HBEpoch::kEmpty);
 }
 
 }  // namespace __psan

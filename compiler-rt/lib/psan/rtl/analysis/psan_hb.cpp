@@ -33,14 +33,15 @@ HBEpoch HBShadowCell::HandleRead(ThreadState *thr, HBEpoch cur) {
   cur.GetAccess(&addr, &size, nullptr);
 
   // Printf("read thr.sid: %u, &this: %p, addr: %u, size: %u\n", thr->fast_state.sid(), this, addr, size);
-  for (u8 i = 0; i < size; ++i) {
-    HBShadow* hb_shadow = shadow(addr+i);
+  // for (u8 i = 0; i < size; ++i) {
+    // HBShadow* hb_shadow = shadow(addr+i);
+    HBShadow* hb_shadow = shadow(addr);
     HBEpoch race = hb_shadow->HandleRead(thr, cur);
     if (race.raw() != HBEpoch::kEmpty) {
       // Printf("Race!\n");
       return race;
     }
-  }
+  // }
 
   return HBEpoch(HBEpoch::kEmpty);
 }
@@ -52,14 +53,15 @@ HBEpoch HBShadowCell::HandleWrite(ThreadState *thr, HBEpoch cur) {
   cur.GetAccess(&addr, &size, nullptr);
 
   // Printf("write thr.sid: %u, &this: %p, addr: %u, size: %u\n", thr->fast_state.sid(), this, addr, size);
-  for (u8 i = 0; i < size; ++i) {
-    HBShadow* hb_shadow = shadow(addr+i);
+  // for (u8 i = 0; i < size; ++i) {
+    // HBShadow* hb_shadow = shadow(addr+i);
+    HBShadow* hb_shadow = shadow(addr);
     HBEpoch race = hb_shadow->HandleWrite(thr, cur);
     if (race.raw() != HBEpoch::kEmpty) {
       // Printf("Race! %p, %p\n", race.raw(), cur.raw());
       return race;
     }
-  }
+  // }
 
   return HBEpoch(HBEpoch::kEmpty);
 }
@@ -82,27 +84,6 @@ ALWAYS_INLINE USED bool CheckRace(ThreadState *thr, HBEpoch cur, HBEpoch old) {
   if (LIKELY(thr->clock.Get(old.sid()) >= old.epoch())) return false;
 
   return true;
-}
-
-ALWAYS_INLINE USED void HBShadow::Clear() {
-  // lock might not be necessary
-  // deadlock shouldnt happen
-  {
-    Lock lockr(&rmtx_);
-    StoreHBEpoch((RawHBEpoch*) &rx_, HBEpoch::kEmpty);
-    // StoreHBEpoch((RawHBEpoch*) &rxa_, HBEpoch::kEmpty);
-
-    for (u16 i = 0; i < kThreadSlotCount; ++i) {
-      StoreHBEpoch((RawHBEpoch*) &rv_[i], HBEpoch::kEmpty);
-      // StoreHBEpoch((RawHBEpoch*) &rva_[i], HBEpoch::kEmpty);
-    }
-  }
-  {
-    Lock lockw(&wmtx_);
-    StoreHBEpoch((RawHBEpoch*) &wx_, HBEpoch::kEmpty);
-    // StoreHBEpoch((RawHBEpoch*) &wxa_, HBEpoch::kEmpty);
-  }
-  StoreHBEpoch((RawHBEpoch*) &free_, HBEpoch::kEmpty);
 }
 
 HBEpoch HBShadow::HandleRead(ThreadState *thr, HBEpoch cur) {
@@ -129,7 +110,7 @@ HBEpoch HBShadow::HandleRead(ThreadState *thr, HBEpoch cur) {
     // Lock because consider 2 threads doing the following concurrently:
     // 1. Update rx because same sid
     // 2. Transition to VC because different sid
-    Lock lock(&rmtx_);
+    // Lock lock(&rmtx_);
     RawHBEpoch* rxp = rx_p();
     HBEpoch old_r = HBEpoch(LoadHBEpoch(rxp));
     if (sid == old_r.sid()) StoreHBEpoch(rxp, cur.raw());
