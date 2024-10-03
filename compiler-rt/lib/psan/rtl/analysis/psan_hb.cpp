@@ -27,7 +27,7 @@ Shadow Shadow::MakeHBShadowCell() {
 
 
 HBEpoch HBShadowCell::HandleRead(ThreadState *thr, HBEpoch cur) {
-  ReadLock rl(&mtx_);
+  // ReadLock rl(&mtx_);
 
   uptr addr, size;
   cur.GetAccess(&addr, &size, nullptr);
@@ -47,7 +47,7 @@ HBEpoch HBShadowCell::HandleRead(ThreadState *thr, HBEpoch cur) {
 }
 
 HBEpoch HBShadowCell::HandleWrite(ThreadState *thr, HBEpoch cur) {
-  ReadLock rl(&mtx_);
+  // ReadLock rl(&mtx_);
 
   uptr addr, size;
   cur.GetAccess(&addr, &size, nullptr);
@@ -86,7 +86,7 @@ ALWAYS_INLINE USED bool CheckRace(ThreadState *thr, HBEpoch cur, HBEpoch old) {
   return true;
 }
 
-HBEpoch HBShadow::HandleRead(ThreadState *thr, HBEpoch cur) {
+ALWAYS_INLINE HBEpoch HBShadow::HandleRead(ThreadState *thr, HBEpoch cur) {
   Sid sid = cur.sid();
   uptr addr, size;
   AccessType typ;
@@ -130,7 +130,7 @@ HBEpoch HBShadow::HandleRead(ThreadState *thr, HBEpoch cur) {
   return HBEpoch(HBEpoch::kEmpty);
 }
 
-HBEpoch HBShadow::HandleWrite(ThreadState *thr, HBEpoch cur) {
+ALWAYS_INLINE HBEpoch HBShadow::HandleWrite(ThreadState *thr, HBEpoch cur) {
   // Printf("Handling write\n");
   uptr addr, size;
   AccessType typ;

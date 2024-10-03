@@ -227,8 +227,8 @@ private:
   // HBEpoch rva_[kThreadSlotCount];
   HBEpoch free_;
 
-  Mutex rmtx_;
-  Mutex wmtx_;
+  // Mutex rmtx_;
+  // Mutex wmtx_;
 };
 
 class HBShadowCell {
@@ -236,31 +236,50 @@ public:
   HBShadowCell() : shadows_() {
   }
 
-  HBShadow* shadow(u8 i) { return &shadows_[i]; }
+  HBShadow* shadow(u8 i) { return &shadows_[i & kHBShadowMask]; }
 
   HBEpoch HandleRead(ThreadState *thr, HBEpoch cur);
   HBEpoch HandleWrite(ThreadState *thr, HBEpoch cur);
 
-  void UpdateWriteEpoch(RawHBEpoch fast_epoch) {
-    for (u8 i = 0; i < 8; ++i) {
-      // shadows_[i].Clear();   // ShadowSet in TSan clears out all epochs
+  // Inline or not, roughly the same performance.
+  // vtune complains that there is front-end bound in this function but
+  // it does not make sense to have any, since there are basically no branches.
+  // Nonetheless it might be good to inline this.
+  ALWAYS_INLINE void UpdateWriteEpoch(RawHBEpoch fast_epoch) {
+    HBShadow* hb_shadow = &shadows_[0];
+    for (u8 i = 0; i < kHBShadowCount; ++i) {
+      hb_shadow->Clear();   // ShadowSet in TSan clears out all epochs
+      hb_shadow++;
     }
-    if (fast_epoch != HBEpoch::kEmpty) {
+    if (UNLIKELY(fast_epoch != HBEpoch::kEmpty)) {
       uptr addr, size;
       HBEpoch(fast_epoch).GetAccess(&addr, &size, nullptr);
-      for (u8 i = 0; i < size; ++i) {
-        StoreHBEpoch(shadows_[addr+i].wx_p(), fast_epoch);
-      }
+      // Doesn't seem to have much performance difference between using atomic or not
+      // Then better to use atomic.
+      // shadows_[addr & 1].SetWx(fast_epoch);
+      // // if we do the indexing inside the loop, the assembly will have imul which is not good
+      HBShadow* hb_shadow = &shadows_[addr & kHBShadowMask];
+      // for (u8 i = 0; i < size; ++i) {
+        StoreHBEpoch(hb_shadow->wx_p(), fast_epoch);
+      //   hb_shadow->SetWx(fast_epoch);
+      //   hb_shadow++;
+      // }
     }
   }
   void Reset();
 
-  typedef ShadowAlloc<HBShadowCell, 256, 4096> HBShadowCellAlloc;
+  // Looks like performance is roughly the same between the 2 below.
+  // The latter is slightly faster, though it might just be noise.
+  // typedef ShadowAlloc<HBShadowCell, 256, 4096 > HBShadowCellAlloc;
+  typedef ShadowAlloc<HBShadowCell, 4096, 1<<16 > HBShadowCellAlloc;
   friend HBShadowCellAlloc;
+
+  static constexpr u8 kHBShadowCount = 2;
+  static constexpr u8 kHBShadowMask = kHBShadowCount - 1;
 
 private:
   union {
-    HBShadow shadows_[kShadowCell];
+    HBShadow shadows_[kHBShadowCount];
     HBShadowCell* next_;
   };
 
@@ -333,24 +352,31 @@ ALWAYS_INLINE RawShadow LoadRawShadowFromUserAddress(uptr p) {
 }
 
 ALWAYS_INLINE USED void HBShadow::Clear() {
+  // Doesn't seem to have much performance difference between using atomic or not
+  // Then better to use atomic.
+
   // lock might not be necessary
   // deadlock shouldnt happen
-  {
+  // {
     // Lock lockr(&rmtx_);
+    // rx_ = HBEpoch(HBEpoch::kEmpty);
     StoreHBEpoch((RawHBEpoch*) &rx_, HBEpoch::kEmpty);
     // StoreHBEpoch((RawHBEpoch*) &rxa_, HBEpoch::kEmpty);
 
     for (u16 i = 0; i < kThreadSlotCount; ++i) {
       StoreHBEpoch((RawHBEpoch*) &rv_[i], HBEpoch::kEmpty);
+      // rv_[i] = HBEpoch(HBEpoch::kEmpty);
       // StoreHBEpoch((RawHBEpoch*) &rva_[i], HBEpoch::kEmpty);
     }
-  }
-  {
+  // }
+  // {
     // Lock lockw(&wmtx_);
+    // wx_ = HBEpoch(HBEpoch::kEmpty);
     StoreHBEpoch((RawHBEpoch*) &wx_, HBEpoch::kEmpty);
     // StoreHBEpoch((RawHBEpoch*) &wxa_, HBEpoch::kEmpty);
-  }
+  // }
   StoreHBEpoch((RawHBEpoch*) &free_, HBEpoch::kEmpty);
+  // free_ = HBEpoch(HBEpoch::kEmpty);
 }
 
 }  // namespace __psan

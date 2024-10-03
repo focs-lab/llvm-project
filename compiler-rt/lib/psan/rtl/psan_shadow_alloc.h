@@ -57,7 +57,7 @@ class ShadowAlloc {
   }
 
   void free(ShadowCell* shadow) {
-    Lock l(&shadow->mtx_);
+    // Lock l(&shadow->mtx_);
     shadow->next_ = free_list_;
     free_list_ = shadow;
   }
