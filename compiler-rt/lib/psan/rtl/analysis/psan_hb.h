@@ -165,8 +165,9 @@ private:
 };
 
 ALWAYS_INLINE RawHBEpoch LoadHBEpoch(RawHBEpoch* p) {
-  return static_cast<RawHBEpoch>(
+  RawHBEpoch h = static_cast<RawHBEpoch>(
       atomic_load((atomic_uint32_t *)p, memory_order_relaxed));
+  return h;
 }
 
 ALWAYS_INLINE RawHBEpoch LoadAcquireHBEpoch(RawHBEpoch* p) {
@@ -175,11 +176,13 @@ ALWAYS_INLINE RawHBEpoch LoadAcquireHBEpoch(RawHBEpoch* p) {
 }
 
 ALWAYS_INLINE void StoreHBEpoch(RawHBEpoch *hp, RawHBEpoch h) {
+  CHECK_LE(HBEpoch(h).sid(), kFreeSid);
   atomic_store((atomic_uint32_t *)hp, static_cast<u32>(h),
                memory_order_relaxed);
 }
 
 ALWAYS_INLINE void StoreReleaseHBEpoch(RawHBEpoch *hp, RawHBEpoch h) {
+  CHECK_LE(HBEpoch(h).sid(), kFreeSid);
   atomic_store((atomic_uint32_t *)hp, static_cast<u32>(h),
                memory_order_release);
 }
@@ -196,7 +199,7 @@ public:
   // RawHBEpoch* wxa_p() { return (RawHBEpoch*) &wx_; }
   RawHBEpoch* rx_p() { return (RawHBEpoch*) &rx_; }
   // RawHBEpoch* rxa_p() { return (RawHBEpoch*) &rx_; }
-  RawHBEpoch* rv_p() { return (RawHBEpoch*) rv_; }
+  // RawHBEpoch* rv_p() { return (RawHBEpoch*) rv_; }
   // RawHBEpoch* rva_p() { return (RawHBEpoch*) rv_; }
   RawHBEpoch* free_p() { return (RawHBEpoch*) &free_; }
 
@@ -229,6 +232,7 @@ private:
 
   // Mutex rmtx_;
   // Mutex wmtx_;
+  StaticSpinMutex mtx_;
 };
 
 class HBShadowCell {
@@ -236,7 +240,7 @@ public:
   HBShadowCell() : shadows_() {
   }
 
-  HBShadow* shadow(u8 i) { return &shadows_[i & kHBShadowMask]; }
+  HBShadow* shadow(u8 i) { return &shadows_[i >> (3 - kHBShadowShift)]; }
 
   HBEpoch HandleRead(ThreadState *thr, HBEpoch cur);
   HBEpoch HandleWrite(ThreadState *thr, HBEpoch cur);
@@ -258,12 +262,14 @@ public:
       // Then better to use atomic.
       // shadows_[addr & 1].SetWx(fast_epoch);
       // // if we do the indexing inside the loop, the assembly will have imul which is not good
-      HBShadow* hb_shadow = &shadows_[addr & kHBShadowMask];
-      // for (u8 i = 0; i < size; ++i) {
+      HBShadow* hb_shadow = &shadows_[addr >> (3 - kHBShadowShift)];
+      // StoreHBEpoch(hb_shadow->wx_p(), fast_epoch);
+      for (u8 i = 0; i < size; i += (1 << (3 - kHBShadowShift))) {
+        // HBShadow* hb_shadow = &shadows_[i >> (3 - kHBShadowShift)];
         StoreHBEpoch(hb_shadow->wx_p(), fast_epoch);
-      //   hb_shadow->SetWx(fast_epoch);
-      //   hb_shadow++;
-      // }
+        // hb_shadow->SetWx(fast_epoch);
+        hb_shadow++;
+      }
     }
   }
   void Reset();
@@ -274,7 +280,8 @@ public:
   typedef ShadowAlloc<HBShadowCell, 4096, 1<<16 > HBShadowCellAlloc;
   friend HBShadowCellAlloc;
 
-  static constexpr u8 kHBShadowCount = 2;
+  static constexpr u8 kHBShadowShift = 3;
+  static constexpr u8 kHBShadowCount = 1 << kHBShadowShift;
   static constexpr u8 kHBShadowMask = kHBShadowCount - 1;
 
 private:
@@ -283,7 +290,8 @@ private:
     HBShadowCell* next_;
   };
 
-  Mutex mtx_;
+  // HBEpoch rv_[kThreadSlotCount * kHBShadowCount];
+  // Mutex mtx_;
 };
 
 typedef HBShadowCell::HBShadowCellAlloc HBShadowCellAlloc;
@@ -364,7 +372,7 @@ ALWAYS_INLINE USED void HBShadow::Clear() {
     // StoreHBEpoch((RawHBEpoch*) &rxa_, HBEpoch::kEmpty);
 
     for (u16 i = 0; i < kThreadSlotCount; ++i) {
-      StoreHBEpoch((RawHBEpoch*) &rv_[i], HBEpoch::kEmpty);
+      // StoreHBEpoch((RawHBEpoch*) &rv_[i], HBEpoch::kEmpty);
       // rv_[i] = HBEpoch(HBEpoch::kEmpty);
       // StoreHBEpoch((RawHBEpoch*) &rva_[i], HBEpoch::kEmpty);
     }

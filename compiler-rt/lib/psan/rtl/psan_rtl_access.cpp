@@ -433,17 +433,17 @@ bool HandleMemoryAccess(ThreadState* thr, RawShadow* shadow_mem, HBEpoch cur, Ac
   HBEpoch race;
   if (typ & kAccessRead) {
     race = HandleRead(thr, shadow_mem, cur);
-    if (race.raw() != HBEpoch::kEmpty) {
-      DoReportRace(thr, shadow_mem, cur, race, typ);
-      return true;
-    }
+    // if (race.raw() != HBEpoch::kEmpty) {
+    //   DoReportRace(thr, shadow_mem, cur, race, typ);
+    //   return true;
+    // }
   }
   else {
     race = HandleWrite(thr, shadow_mem, cur);
-    if (race.raw() != HBEpoch::kEmpty) {
-      DoReportRace(thr, shadow_mem, cur, race, typ);
-      return true;
-    }
+    // if (race.raw() != HBEpoch::kEmpty) {
+    //   DoReportRace(thr, shadow_mem, cur, race, typ);
+    //   return true;
+    // }
   }
   return false;
 }

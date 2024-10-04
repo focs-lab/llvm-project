@@ -92,6 +92,8 @@ ALWAYS_INLINE HBEpoch HBShadow::HandleRead(ThreadState *thr, HBEpoch cur) {
   AccessType typ;
   cur.GetAccess(&addr, &size, &typ);
 
+  SpinMutexLock lock(&mtx_);
+
   // Consider the scenario where the wx is written just right when we reach this check.
   // Neither will we detect that write, nor will that write detect us.
   {
@@ -106,25 +108,27 @@ ALWAYS_INLINE HBEpoch HBShadow::HandleRead(ThreadState *thr, HBEpoch cur) {
   if ((typ & kAccessCheckOnly)) return HBEpoch(HBEpoch::kEmpty);
 
   // Update the read epoch, we may need to transition to vector clock
+  RawHBEpoch* rxp = rx_p();
+  StoreHBEpoch(rxp, cur.raw());
   {
     // Lock because consider 2 threads doing the following concurrently:
     // 1. Update rx because same sid
     // 2. Transition to VC because different sid
     // Lock lock(&rmtx_);
-    RawHBEpoch* rxp = rx_p();
-    HBEpoch old_r = HBEpoch(LoadHBEpoch(rxp));
-    if (sid == old_r.sid()) StoreHBEpoch(rxp, cur.raw());
-    else {
-      RawHBEpoch* rv = rv_p();
-      // We store the epochs into the VC first, then update rx with ReadSharedMarker with release order
-      // So, when a write event loads rx with acquire order, it will also see the VC with its latest updates,
-      // without needing to lock the mutex.
-      StoreHBEpoch(&rv[static_cast<u8>(cur.sid())], cur.raw());
-      if (old_r.raw() != HBEpoch::ReadSharedMarker()) {
-        StoreHBEpoch(&rv[static_cast<u8>(old_r.sid())], old_r.raw());
-        StoreReleaseHBEpoch(rxp, HBEpoch::ReadSharedMarker());
-      }
-    }
+    // RawHBEpoch* rxp = rx_p();
+    // HBEpoch old_r = HBEpoch(LoadHBEpoch(rxp));
+    // if (sid == old_r.sid()) StoreHBEpoch(rxp, cur.raw());
+    // else {
+    //   RawHBEpoch* rv = rv_p();
+    //   // We store the epochs into the VC first, then update rx with ReadSharedMarker with release order
+    //   // So, when a write event loads rx with acquire order, it will also see the VC with its latest updates,
+    //   // without needing to lock the mutex.
+    //   StoreHBEpoch(&rv[static_cast<u8>(cur.sid())], cur.raw());
+    //   if (old_r.raw() != HBEpoch::ReadSharedMarker()) {
+    //     StoreHBEpoch(&rv[static_cast<u8>(old_r.sid())], old_r.raw());
+    //     StoreReleaseHBEpoch(rxp, HBEpoch::ReadSharedMarker());
+    //   }
+    // }
   }
 
   return HBEpoch(HBEpoch::kEmpty);
@@ -135,6 +139,8 @@ ALWAYS_INLINE HBEpoch HBShadow::HandleWrite(ThreadState *thr, HBEpoch cur) {
   uptr addr, size;
   AccessType typ;
   cur.GetAccess(&addr, &size, &typ);
+
+  SpinMutexLock lock(&mtx_);
 
   // Consider the scenario where the wx is written just right when we reach this check.
   // Neither will we detect that write, nor will that write detect us.
@@ -149,16 +155,16 @@ ALWAYS_INLINE HBEpoch HBShadow::HandleWrite(ThreadState *thr, HBEpoch cur) {
     // Lock lock(&wmtx_);
     // Load with acquire to see the latest VC if transitioned
     HBEpoch old_rx = HBEpoch(LoadAcquireHBEpoch(rx_p()));
-    if (old_rx.raw() != HBEpoch::ReadSharedMarker()) {
+    if (LIKELY(old_rx.raw() != HBEpoch::ReadSharedMarker())) {
       if (CheckRace(thr, cur, old_rx)) return old_rx;
     }
-    else {
-      // kFreeSid does not mean anything for read epochs
-      for (u32 i = 0; i < kThreadSlotCount-1; ++i) {
-        HBEpoch old_rx = HBEpoch(LoadHBEpoch(&rv_p()[i]));
-        if (CheckRace(thr, cur, old_rx)) return old_rx;
-      }
-    }
+    // else {
+    //   // kFreeSid does not mean anything for read epochs
+    //   for (u32 i = 0; i < kThreadSlotCount-1; ++i) {
+    //     HBEpoch old_rx = HBEpoch(LoadHBEpoch(&rv_p()[i]));
+    //     if (CheckRace(thr, cur, old_rx)) return old_rx;
+    //   }
+    // }
   }
 
   // Finished checking race. Now update read epoch if necessary.
