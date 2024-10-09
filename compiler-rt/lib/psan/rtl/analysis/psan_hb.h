@@ -199,7 +199,7 @@ public:
   // RawHBEpoch* wxa_p() { return (RawHBEpoch*) &wx_; }
   RawHBEpoch* rx_p() { return (RawHBEpoch*) &rx_; }
   // RawHBEpoch* rxa_p() { return (RawHBEpoch*) &rx_; }
-  // RawHBEpoch* rv_p() { return (RawHBEpoch*) rv_; }
+  RawHBEpoch* rv_p() { return (RawHBEpoch*) rv_; }
   // RawHBEpoch* rva_p() { return (RawHBEpoch*) rv_; }
   RawHBEpoch* free_p() { return (RawHBEpoch*) &free_; }
 
@@ -216,24 +216,35 @@ public:
   void Clear();
 
 private:
+  static constexpr u8 kRvSize = 8;
+
   void TransitionToReadShared();
   HBEpoch SetRv(HBEpoch cur);
 
   // Unlike TSan that tries its best to save memory usage,
   // we just go with the most conservative implementation
   // and dont "squeeze" information together
+
+  u8 rv_curr = 0;
+  HBEpoch rv_[kRvSize];
+
+  // ideally we have everything here fit into 1 cache line
+
   HBEpoch wx_;
   // HBEpoch wxa_;
   HBEpoch rx_;
   // HBEpoch rxa_;
-  HBEpoch rv_[kThreadSlotCount];
   // HBEpoch rva_[kThreadSlotCount];
   HBEpoch free_;
 
   // Mutex rmtx_;
   // Mutex wmtx_;
   StaticSpinMutex mtx_;
-};
+} ALIGNED(SANITIZER_CACHE_LINE_SIZE);
+
+// just to easily know the size by hovering over sizeOfHBShadow below
+// constexpr u64 sizeOfHBShadow = sizeof(HBShadow);
+static_assert(sizeof(HBShadow) == SANITIZER_CACHE_LINE_SIZE);
 
 class HBShadowCell {
 public:
@@ -363,28 +374,31 @@ ALWAYS_INLINE USED void HBShadow::Clear() {
   // Doesn't seem to have much performance difference between using atomic or not
   // Then better to use atomic.
 
+  SpinMutexLock lock(&mtx_);
+
   // lock might not be necessary
   // deadlock shouldnt happen
   // {
     // Lock lockr(&rmtx_);
-    // rx_ = HBEpoch(HBEpoch::kEmpty);
-    StoreHBEpoch((RawHBEpoch*) &rx_, HBEpoch::kEmpty);
+    rx_ = HBEpoch(HBEpoch::kEmpty);
+    // StoreHBEpoch((RawHBEpoch*) &rx_, HBEpoch::kEmpty);
     // StoreHBEpoch((RawHBEpoch*) &rxa_, HBEpoch::kEmpty);
 
-    for (u16 i = 0; i < kThreadSlotCount; ++i) {
+    rv_curr = 0;
+    for (u16 i = 0; i < kRvSize; ++i) {
       // StoreHBEpoch((RawHBEpoch*) &rv_[i], HBEpoch::kEmpty);
-      // rv_[i] = HBEpoch(HBEpoch::kEmpty);
+      rv_[i] = HBEpoch(HBEpoch::kEmpty);
       // StoreHBEpoch((RawHBEpoch*) &rva_[i], HBEpoch::kEmpty);
     }
   // }
   // {
     // Lock lockw(&wmtx_);
-    // wx_ = HBEpoch(HBEpoch::kEmpty);
-    StoreHBEpoch((RawHBEpoch*) &wx_, HBEpoch::kEmpty);
+    wx_ = HBEpoch(HBEpoch::kEmpty);
+    // StoreHBEpoch((RawHBEpoch*) &wx_, HBEpoch::kEmpty);
     // StoreHBEpoch((RawHBEpoch*) &wxa_, HBEpoch::kEmpty);
   // }
-  StoreHBEpoch((RawHBEpoch*) &free_, HBEpoch::kEmpty);
-  // free_ = HBEpoch(HBEpoch::kEmpty);
+  // StoreHBEpoch((RawHBEpoch*) &free_, HBEpoch::kEmpty);
+  free_ = HBEpoch(HBEpoch::kEmpty);
 }
 
 }  // namespace __psan

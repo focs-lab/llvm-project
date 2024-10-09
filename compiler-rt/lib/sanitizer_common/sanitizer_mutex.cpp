@@ -17,6 +17,7 @@
 namespace __sanitizer {
 
 void StaticSpinMutex::LockSlow() {
+  Printf("Lock slow\n");
   for (int i = 0;; i++) {
     if (i < 100)
       proc_yield(1);

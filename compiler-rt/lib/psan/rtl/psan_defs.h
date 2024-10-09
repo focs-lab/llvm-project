@@ -60,8 +60,8 @@ enum class Sid : u8 {};
 
 // If too high, memory usage + time grows
 // If too low, time spent on slot resets (maybe, havent observed such scenario)
-constexpr uptr kThreadSlotCount = 16;
-constexpr Sid kFreeSid = static_cast<Sid>(15);
+constexpr uptr kThreadSlotCount = 256;
+constexpr Sid kFreeSid = static_cast<Sid>(kThreadSlotCount-1);
 
 // Abstract time unit, vector clock element.
 enum class Epoch : u16 {};
