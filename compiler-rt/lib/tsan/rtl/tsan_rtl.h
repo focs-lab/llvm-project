@@ -452,6 +452,14 @@ struct Context {
   uptr trace_part_total_allocated SANITIZER_GUARDED_BY(slot_mtx);
   uptr trace_part_recycle_finished SANITIZER_GUARDED_BY(slot_mtx);
   uptr trace_part_finished_excess SANITIZER_GUARDED_BY(slot_mtx);
+
+  Mutex shared_clock_alloc_mtx;
+  IList<SharedClockAlloc, &SharedClockAlloc::node> shadow_alloc_queue SANITIZER_GUARDED_BY(shared_clock_alloc_mtx);
+
+  // free list when a sync var is freed from some code that doesnt have access to a SharedClockAlloc
+  Mutex shared_clock_free_list_mtx;
+  SharedClock* shared_clock_free_list SANITIZER_GUARDED_BY(shared_clock_free_list_mtx);
+  u32 num_free_shared_clock SANITIZER_GUARDED_BY(shared_clock_free_list_mtx);
 #if SANITIZER_GO
   uptr mapped_shadow_begin;
   uptr mapped_shadow_end;

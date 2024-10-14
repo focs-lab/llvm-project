@@ -178,7 +178,7 @@ void ThreadStart(ThreadState *thr, Tid tid, tid_t os_id,
   }
 #if TSAN_OL
   if (LIKELY(thr->tctx->sync && thr->tctx->sync->clock()))
-    thr->tctx->sync->clock()->DropRef();
+    thr->tctx->sync->clock()->DropRef(thr->clock.Alloc());
 #endif
   Free(thr->tctx->sync);
 
@@ -351,7 +351,7 @@ void ThreadJoin(ThreadState *thr, uptr pc, Tid tid) {
 #endif
   }
 #if TSAN_OL
-  if (LIKELY(arg.sync && arg.sync->clock())) arg.sync->clock()->DropRef();
+  if (LIKELY(arg.sync && arg.sync->clock())) arg.sync->clock()->DropRef(thr->clock.Alloc());
 #endif
   Free(arg.sync);
 }
@@ -374,7 +374,7 @@ void ThreadDetach(ThreadState *thr, uptr pc, Tid tid) {
 void ThreadContext::OnDetached(void *arg) {
 #if TSAN_OL
   if (LIKELY(sync && sync->clock()))
-    sync->clock()->DropRef();
+    sync->clock()->DropRef(thr->clock.Alloc());
 #endif
   Free(sync);
 }
