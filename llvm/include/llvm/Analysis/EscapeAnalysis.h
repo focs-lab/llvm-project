@@ -45,14 +45,9 @@ namespace llvm {
       // Note that a Value may be the alias of multiple Allocas
       DenseMap<const Value *, SmallVector<const AllocaInst *>> AliasesToAlloca;
 
-      // map from Alloca to its aliases
-      // DenseMap<const AllocaInst *, DenseSet<const Value *>> AllocaToAliases;
-
       bool operator!=(const EscapeState &Other) const {
-        if ((EscapedAllocas != Other.EscapedAllocas) ||
-            (AliasesToAlloca != Other.AliasesToAlloca))
-          return true;
-        return false;
+        return ((EscapedAllocas != Other.EscapedAllocas) ||
+                (AliasesToAlloca != Other.AliasesToAlloca));
       }
     };
 
@@ -84,15 +79,23 @@ namespace llvm {
     bool isDereferenceableOrNull(Value *O, const DataLayout &DL);
 
     /// Recursively searches for the base pointer that might be associated with an AllocaInst
-    const AllocaInst *getBaseAllocaForAliasing(const Value *Ptr);
+    /// TODO getUnderlyingObj??
+    const AllocaInst *getUnderlyingAllocaForAliasing(const Value *Ptr);
 
     /// Check whether type contains pointers
     bool containsPointerType(Type *Ty);
 
   public:
 
-    const EscapedAllocasTy &getFuncEscState() {
-      return BBEscapeStates[&F.back()].EscapedAllocas;
+    const EscapedAllocasTy &getFuncEscState() const {
+      auto  It  =  BBEscapeStates.find(&F.back());
+      assert(It != BBEscapeStates.end() &&
+             "Escape state for exit  block  not  found");
+      return  It->second.EscapedAllocas;
+    }
+
+    bool isEscapedInFunc(const Value *V) const {
+      return getFuncEscState().contains(V);
     }
   };
 

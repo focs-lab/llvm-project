@@ -75,23 +75,25 @@ void EscapeAnalysisInfo::getAffectedAllocas(const EscapeState &InES,
   // If that's load instruction, it may be the load of an alias to alloca
   if (const auto *LI = dyn_cast<const LoadInst>(Opnd)) {
     LLVM_DEBUG(dbgs() << "\t\tLoadInst " << *LI << "\n");
-    return getAffectedAllocas(InES, LI->getPointerOperand(), AffectedAllocas);
+    getAffectedAllocas(InES, LI->getPointerOperand(), AffectedAllocas);
+    return;
   }
 
   // 1. Operand may be the alloca object
   if (const auto *Alloca = dyn_cast<const AllocaInst>(
-      getUnderlyingObject(Opnd)))
+      getUnderlyingObject(Opnd))) {
     AffectedAllocas.insert(Alloca);
 
-  // 2. Or it maybe an alias to some alloca
-  if (const auto AliasesIt = InES.AliasesToAlloca.find(Opnd);
-    AliasesIt != InES.AliasesToAlloca.end())
-    for (auto *Alloca : AliasesIt->second) {
-      LLVM_DEBUG(
-          dbgs() << "\t\tFOUND ALIAS: " << *Opnd << " --> " << *Alloca << "\n");
-      if (!AffectedAllocas.contains(Alloca))
-        getAffectedAllocas(InES, Alloca, AffectedAllocas);
-    }
+    // 2. Or it maybe an alias to some alloca
+    if (const auto AliasesIt = InES.AliasesToAlloca.find(Alloca);
+      AliasesIt != InES.AliasesToAlloca.end())
+      for (auto *Alloca : AliasesIt->second) {
+        LLVM_DEBUG(
+            dbgs() << "\t\tFOUND ALIAS: " << *Opnd << " --> " << *Alloca << "\n");
+        if (!AffectedAllocas.contains(Alloca))
+          getAffectedAllocas(InES, Alloca, AffectedAllocas);
+      }
+  }
 }
 
 void EscapeAnalysisInfo::addAlias(EscapeState &InOutES,
@@ -124,25 +126,28 @@ void EscapeAnalysisInfo::compOutEscapeState(
         break;
       case EscapeKind::MAY_ESCAPE:
         LLVM_DEBUG(dbgs() << "\t-- MAY_ESCAPE --\n");
-        // This operand escape. So update all affected allocas
+        // Update all affected allocas
         InOutES.EscapedAllocas.insert(AffectedAllocas.begin(),
                                       AffectedAllocas.end());
         break;
       case EscapeKind::ALIASING:
         LLVM_DEBUG(dbgs() << "\t-- ALIASING --\n");
-        // Add a new alias
         assert(Alias != std::nullopt);
         for (const auto *Alloca : AffectedAllocas) {
-          addAlias(InOutES, Alloca, Alias.value());
-
           // If Alias is GEP, find base pointer and add it as alias too
           if (auto *GEP = dyn_cast<GetElementPtrInst>(Alias.value())) {
             // Underlying alloca used in this GEP
-            const AllocaInst *BaseAlloca = getBaseAllocaForAliasing(GEP);
-            LLVM_DEBUG(dbgs() << "\t\tBaseAlloca:\t" << *BaseAlloca << "\n");
+            const AllocaInst *BaseAlloca = getUnderlyingAllocaForAliasing(GEP);
+
+            // const AllocaInst *BaseAlloca = dyn_cast<AllocaInst>(
+            //     getUnderlyingObject(GEP->getPointerOperand()));
             assert(BaseAlloca && "BaseAlloca in aliasing must be non-null\n");
+            LLVM_DEBUG(dbgs() << "\t\tBaseAlloca:\t" << *BaseAlloca << "\n");
 
             addAlias(InOutES, Alloca, BaseAlloca);
+          } else {
+            // GEP itself is not an alias
+            addAlias(InOutES, Alloca, Alias.value());
           }
         }
         break;
@@ -198,11 +203,7 @@ bool EscapeAnalysisInfo::containsPointerType(Type *Ty) {
 /// U is the use of the local pointer
 std::pair<EscapeKind, std::optional<const Value*>>
   EscapeAnalysisInfo::getEscapeKindForPtrOpnd(const Use &U, const Instruction *I) {
-  LLVM_DEBUG(
-    dbgs() << "\tgetCaptureKindForPtrOpnd:\n";
-    dbgs() << "\t\tI \t" << *I << "\n";
-    dbgs() << "\t\tOPND \t" << *U.get() << "\n";
-  );
+  LLVM_DEBUG(dbgs() << "\tgetEscapeKindForPtrOpnd:\n");
 
   switch (I->getOpcode()) {
   case Instruction::Call:
@@ -285,6 +286,7 @@ std::pair<EscapeKind, std::optional<const Value*>>
       return {EscapeKind::ALIASING,
               std::optional<const Value *>(
                   std::in_place, cast<StoreInst>(I)->getPointerOperand())};
+
     return {EscapeKind::NO_ESCAPE, std::nullopt};
   }
   case Instruction::AtomicRMW: {
@@ -314,9 +316,10 @@ std::pair<EscapeKind, std::optional<const Value*>>
     // be considered as captures.
     if (I->getType()->isVectorTy())
       return {EscapeKind::MAY_ESCAPE, std::nullopt};
-    return {EscapeKind::ALIASING, I};
-    // return {CaptureKind::ALIASING,
-            // cast<GetElementPtrInst>(I)->getPointerOperand()};
+
+    // GEP itself is not escape or alias
+    return {EscapeKind::NO_ESCAPE, std::nullopt};
+    // return {EscapeKind::ALIASING, I};
   case Instruction::BitCast:
   case Instruction::PHI:
   case Instruction::Select:
@@ -403,7 +406,6 @@ std::pair<EscapeKind, std::optional<const Value*>>
     return {EscapeKind::NO_ESCAPE, std::nullopt};
   }
   default:
-    dbgs() << "ELSE\n";
     // Something else - be conservative and say it is escaped.
     return {EscapeKind::MAY_ESCAPE, std::nullopt};
   }
@@ -424,19 +426,20 @@ bool EscapeAnalysisInfo::isDereferenceableOrNull(Value *O, const DataLayout &DL)
   return O->getPointerDereferenceableBytes(DL, CanBeNull, CanBeFreed);
 }
 
-/// Recursively searches for the base pointer that might be associated with an AllocaInst
-const AllocaInst *EscapeAnalysisInfo::getBaseAllocaForAliasing(
+/// Recursively searches for the base pointer that might be associated with an
+/// AllocaInst
+const AllocaInst *EscapeAnalysisInfo::getUnderlyingAllocaForAliasing(
     const Value *Ptr) {
   if (auto *Load = dyn_cast<LoadInst>(Ptr))
     // If it's a load, recursively analyze the pointer operand
-    return getBaseAllocaForAliasing(Load->getPointerOperand());
+    return getUnderlyingAllocaForAliasing(Load->getPointerOperand());
 
   if (auto *GEP = dyn_cast<GetElementPtrInst>(Ptr))
-    // If it's a GEP, recursively analyze its base pointer
-    return getBaseAllocaForAliasing(GEP->getPointerOperand());
+    return getUnderlyingAllocaForAliasing(getUnderlyingObject(GEP));
 
   // In other cases, return the pointer as is
-  assert(isa<const AllocaInst>(Ptr));
+  assert(isa<const AllocaInst>(Ptr) &&
+         "getUnderlyingAllocaForAliasing must return underlying AllocaInst");
   return cast<const AllocaInst>(Ptr);
 }
 
