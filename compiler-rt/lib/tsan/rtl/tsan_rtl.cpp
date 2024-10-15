@@ -287,27 +287,27 @@ static TidSlot* FindSlotAndLock(ThreadState* thr)
       DoReset(thr, epoch);
       continue;
     }
+    // If another thread calls DoReset, it needs to wait for this thread to unlock the slot.
     slot->mtx.Lock();
     CHECK(!thr->slot_locked);
     thr->slot_locked = true;
-#if TSAN_UCLOCKS || TSAN_DISABLE_SLOTS || TSAN_OL
-    // No preempting allowed. It should never be the case that a slot that is held by another thread is in the queue.
-    // if (slot->thr) Printf("#%d: slot->thr: %p\n", thr->tid, slot->thr);
-    DCHECK(!slot->thr);
-    // This is necessary because a thread might have called IncrementEpoch when DoReset is called.
-    // In this case, the thread would later detach and attach to a new slot.
-    // This new slot would need to know about that increment.
-    // Otherwise, HB edge might be missed resulting in FP.
-    // EDIT: Dont care about it for now. If it is in the queue it should already be 0.
-    // slot->SetEpoch(kEpochZero);
-    return slot;    // We can return already because it would never be kEpochLast if it is in the queue.
-#endif  // wont enter branch below if slots is disabled
     if (slot->thr) {
+#if TSAN_UCLOCKS || TSAN_DISABLE_SLOTS || TSAN_OL
+      // If this slot was already attached to another thread, it might be because the slot got pushed to the queue
+      // just before the slot was being attached. Don't use this slot, get the next one in the queue. Don't preempt.
+      // We don't need to unlock slot->mtx, it will be done by the next loop iteration.
+      continue;
+#endif  // wont enter branch below if slots is disabled
       DPrintf("#%d: preempting sid=%d tid=%d\n", thr->tid, (u32)slot->sid,
               slot->thr->tid);
       slot->SetEpoch(slot->thr->fast_state.epoch());
       slot->thr = nullptr;
     }
+#if TSAN_UCLOCKS || TSAN_DISABLE_SLOTS || TSAN_OL
+    // Like the above, this slot may be attached just after DoReset from another thread pushes this slot onto the queue.
+    // slot->thr can be set to nullptr by SlotDetachImpl. But we don't want to use this slot.
+    if (UNLIKELY(slot->epoch() != kEpochZero)) continue;
+#endif
     if (slot->epoch() != kEpochLast)
       return slot;
   }
@@ -347,13 +347,22 @@ void SlotAttachAndLock(ThreadState* thr) {
   DCHECK_EQ(epoch, 1);
 #endif
 #if TSAN_OL
-  // Unshare uses the old sid so it must come before updating sid
-  if (thr->clock.IsShared()) thr->clock.Unshare();
-  if (thr->clock.GetSid() != kFreeSid) thr->clock.Set(thr->clock.GetSid(), thr->clock.local());
-  thr->clock.SetLocal(epoch);
+  // The code below is for when a thread exhausts its previous slot,
+  // and attaches a new slot. So, it needs to update the clock entry
+  // at the old sid with the old local value.
+  // Unshare uses the old sid so it must come before updating sid.
+  if (UNLIKELY(thr->clock.IsShared())) thr->clock.Unshare();
+  if (UNLIKELY(thr->clock.GetSid() != kFreeSid)) thr->clock.Set(thr->clock.GetSid(), thr->clock.local());
 
+  // After updating the clock with the old values, we can now use the new slot, with a fresh epoch.
+  thr->clock.SetLocal(epoch);
   thr->clock.SetSid(slot->sid);
-  thr->clock.SetU(slot->sid, static_cast<Epoch>(static_cast<u8>(slot->sid) + 1));
+
+  // When a thread T1 attaches a new slot, it is not a new thread, it already has some information in its existing ordered list.
+  // When a thread T2 acquires from this thread, its knowledge of U[T1] is 0. Here, if T1's U value is 0, T2 will not learn
+  // anything from T1. Since we do not know how many values T2 should learn, just set it to the max, i.e. number of slots.
+  // It can probably just be sid+1 but I am now not 100% sure whether the slots will be attached in order.
+  thr->clock.SetU(slot->sid, static_cast<Epoch>(static_cast<u16>(kThreadSlotCount)));
 #elif TSAN_UCLOCKS
   thr->clock.SetSid(slot->sid);
   thr->clock.SetU(slot->sid, epoch);   // epoch would be either 1 or 2. It doesnt make a difference because it is a fresh slot.
@@ -1195,14 +1204,14 @@ void TraceSwitchPartImpl(ThreadState* thr) {
     // or (2) if we've acquired a new slot in SlotLock in the beginning
     // of the function and the slot was at kEpochLast - 1, so after increment
     // in SlotAttachAndLock it become kEpochLast.
-    // No slots should be still in the queue after attached.
     if (ctx->slot_queue.Queued(thr->slot)) {
-#if TSAN_UCLOCKS || TSAN_DISABLE_SLOTS || TSAN_OL
-      // If epoch is in the queue, it must be 0.
-      DCHECK_EQ(thr->slot->epoch(), kEpochZero);
-#endif
       ctx->slot_queue.Remove(thr->slot);
+#if !(TSAN_UCLOCKS || TSAN_DISABLE_SLOTS || TSAN_OL)
+      // If the slot is in the queue, it might have been added because DoReset was called
+      // just after FindSlotAndLock popped the slot, but just before SlotAttachAndLock.
+      // Don't put it back into the queue.
       ctx->slot_queue.PushBack(thr->slot);
+#endif
     }
     if (recycle)
       ctx->trace_part_recycle.PushBack(recycle);

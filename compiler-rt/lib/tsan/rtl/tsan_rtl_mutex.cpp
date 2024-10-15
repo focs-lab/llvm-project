@@ -260,6 +260,8 @@ int MutexUnlock(ThreadState *thr, uptr pc, uptr addr, u32 flagz) {
 #endif
 #if (TSAN_UCLOCKS || TSAN_OL) && TSAN_SAMPLING
   if (UNLIKELY(thr->sampled))
+#elif (TSAN_UCLOCKS || TSAN_OL)
+  if (LIKELY(thr->sampled))
 #endif
     if (released) {
       IncrementEpoch(thr);
@@ -368,6 +370,8 @@ void MutexReadUnlock(ThreadState *thr, uptr pc, uptr addr) {
 #endif
 #if (TSAN_UCLOCKS || TSAN_OL) && TSAN_SAMPLING
   if (UNLIKELY(thr->sampled))
+#elif (TSAN_UCLOCKS || TSAN_OL)
+  if (LIKELY(thr->sampled))
 #endif
     if (released) {
       IncrementEpoch(thr);
@@ -431,6 +435,8 @@ void MutexReadOrWriteUnlock(ThreadState *thr, uptr pc, uptr addr) {
 #endif
 #if (TSAN_UCLOCKS || TSAN_OL) && TSAN_SAMPLING
   if (UNLIKELY(thr->sampled))
+#elif (TSAN_UCLOCKS || TSAN_OL)
+  if (LIKELY(thr->sampled))
 #endif
     if (released) {
       IncrementEpoch(thr);
@@ -505,6 +511,8 @@ void Release(ThreadState *thr, uptr pc, uptr addr) {
 #endif
 #if (TSAN_UCLOCKS || TSAN_OL) && TSAN_SAMPLING
   if (UNLIKELY(thr->sampled))
+#elif (TSAN_UCLOCKS || TSAN_OL)
+  if (LIKELY(thr->sampled))
 #endif
   IncrementEpoch(thr);
 }
@@ -525,6 +533,8 @@ void ReleaseStore(ThreadState *thr, uptr pc, uptr addr) {
 #endif
 #if (TSAN_UCLOCKS || TSAN_OL) && TSAN_SAMPLING
   if (UNLIKELY(thr->sampled))
+#elif (TSAN_UCLOCKS || TSAN_OL)
+  if (LIKELY(thr->sampled))
 #endif
   IncrementEpoch(thr);
 }
@@ -545,6 +555,8 @@ void ReleaseStoreAcquire(ThreadState *thr, uptr pc, uptr addr) {
 #endif
 #if (TSAN_UCLOCKS || TSAN_OL) && TSAN_SAMPLING
   if (UNLIKELY(thr->sampled))
+#elif (TSAN_UCLOCKS || TSAN_OL)
+  if (LIKELY(thr->sampled))
 #endif
   IncrementEpoch(thr);
 }

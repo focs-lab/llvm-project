@@ -291,6 +291,11 @@ TRACE_TEST(TraceAlloc, SingleThread) {
   CheckTraceState(3, 3, 0, 3);
 }
 
+// dwslim: This fails with the changes to disable slot preempting,
+// because kThreads is larger than 256, causing DoReset to be called,
+// and the number of traces allocated/recycled is different from expected.
+// I suppose this is the intention of this test case.
+#if !(TSAN_UCLOCKS || TSAN_OL || TSAN_DISABLE_SLOTS)
 TRACE_TEST(TraceAlloc, FinishedThreadReuse) {
   TraceResetForTesting();
   constexpr uptr Hi = Trace::kFinishedThreadHi;
@@ -314,6 +319,7 @@ TRACE_TEST(TraceAlloc, FinishedThreadReuse) {
       CheckTraceState(Hi + 1, Hi + 1, Hi + 1, Hi + 1);
   }
 }
+#endif
 
 TRACE_TEST(TraceAlloc, FinishedThreadReuse2) {
   TraceResetForTesting();

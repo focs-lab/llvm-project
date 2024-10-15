@@ -137,6 +137,8 @@ Tid ThreadCreate(ThreadState *thr, uptr pc, uptr uid, bool detached) {
 #endif
 #if (TSAN_UCLOCKS || TSAN_OL) && TSAN_SAMPLING
   if (UNLIKELY(thr->sampled))
+#elif (TSAN_UCLOCKS || TSAN_OL)
+  if (LIKELY(thr->sampled))
 #endif
       IncrementEpoch(thr);
     }
@@ -262,6 +264,8 @@ void ThreadFinish(ThreadState *thr) {
 #endif
 #if (TSAN_UCLOCKS || TSAN_OL) && TSAN_SAMPLING
   if (UNLIKELY(thr->sampled))
+#elif (TSAN_UCLOCKS || TSAN_OL)
+  if (LIKELY(thr->sampled))
 #endif
       IncrementEpoch(thr);
     }
@@ -374,7 +378,7 @@ void ThreadDetach(ThreadState *thr, uptr pc, Tid tid) {
 void ThreadContext::OnDetached(void *arg) {
 #if TSAN_OL
   if (LIKELY(sync && sync->clock()))
-    sync->clock()->DropRef(thr->clock.Alloc());
+    sync->clock()->DropRef();
 #endif
   Free(sync);
 }

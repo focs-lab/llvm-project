@@ -14,7 +14,7 @@
 #include "sanitizer_common/sanitizer_placement_new.h"
 #include "tsan_mman.h"
 #include "tsan_rtl.h"
-#include <time.h>
+// #include <time.h>
 
 
 namespace __tsan {
@@ -24,6 +24,11 @@ const uptr kVectorClockSize = kThreadSlotCount * sizeof(Epoch) / sizeof(m128);
 #endif
 
 VectorClock::VectorClock() {
+#if TSAN_OL
+  // We cannot assume that the contents are zeroed at the start.
+  // We don't want Reset to see an uninitialized clock_ pointer.
+  clock_ = nullptr;
+#endif
   Reset();
 }
 
@@ -33,13 +38,17 @@ void VectorClock::Reset() {
   clock_ = alloc_.Make();
   is_shared_ = false;
 
+  for (uptr i = 0; i < kThreadSlotCount; i++) {
+    uclk_[i] = kEpochZero;
+  }
+
   // non threads must not have sid
   sid_ = kFreeSid;
   sampled_ = false;
 
   local_ = kEpochZero;
-  acquired_sid_ = kFreeSid;
-  acquired_ = kEpochZero;
+  // acquired_sid_ = kFreeSid;
+  // acquired_ = kEpochZero;
 #elif TSAN_UCLOCKS
   for (uptr i = 0; i < kThreadSlotCount; i++) {
     clk_[i] = kEpochZero;
@@ -962,7 +971,7 @@ void SharedClock::DropRef(SharedClockAlloc& alloc) {
 }
 #endif
 
-SharedClock::SharedClock() {
+ALWAYS_INLINE SharedClock::SharedClock() {
 #if TSAN_OL_MEASUREMENTS
   atomic_fetch_add(&ctx->num_deep_copies, 1, memory_order_relaxed);
 #endif
@@ -975,7 +984,7 @@ SharedClock::SharedClock() {
   head_ = static_cast<Sid>(0);
 }
 
-SharedClock::SharedClock(const SharedClock* clock) {
+ALWAYS_INLINE SharedClock::SharedClock(const SharedClock* clock) {
 #if TSAN_OL_MEASUREMENTS
   atomic_fetch_add(&ctx->num_deep_copies, 1, memory_order_relaxed);
 #endif
@@ -983,7 +992,7 @@ SharedClock::SharedClock(const SharedClock* clock) {
   *this = *clock;
 }
 
-SharedClock::SharedClock(const SharedClock* clock_t, const SharedClock* clock_l) {
+ALWAYS_INLINE SharedClock::SharedClock(const SharedClock* clock_t, const SharedClock* clock_l) {
 #if TSAN_OL_MEASUREMENTS
   atomic_fetch_add(&ctx->num_deep_copies, 1, memory_order_relaxed);
 #endif
@@ -993,7 +1002,7 @@ SharedClock::SharedClock(const SharedClock* clock_t, const SharedClock* clock_l)
   Join(clock_t);
 }
 
-void SharedClock::Join(const SharedClock* other) {
+ALWAYS_INLINE void SharedClock::Join(const SharedClock* other) {
   for (uptr i = 0; i < kThreadSlotCount; i++) {
     Epoch cti = other->clk_[i];
     if (clk_[i] < cti) {
@@ -1061,6 +1070,11 @@ ALWAYS_INLINE void SharedClockAlloc::Refill() {
   // if we didnt get any existing pools from above, make a new pool
   pool_cur_ = (SharedClock*) MmapOrDie(kSize * sizeof(SharedClock), "SharedClockAlloc");
   pool_end_ = pool_cur_ + kSize;
+}
+
+template <typename... Args>
+ALWAYS_INLINE SharedClock* SharedClockAlloc::Make(Args &&...args) {
+  return new (next()) SharedClock(static_cast<Args &&>(args)...);
 }
 #endif
 

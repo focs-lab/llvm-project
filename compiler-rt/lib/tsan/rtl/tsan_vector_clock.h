@@ -13,8 +13,9 @@
 #define TSAN_VECTOR_CLOCK_H
 
 #include "tsan_defs.h"
+#if TSAN_OL
 #include "tsan_ilist.h"
-#include "sanitizer_common/sanitizer_placement_new.h"
+#endif
 
 namespace __tsan {
 
@@ -102,9 +103,7 @@ class SharedClockAlloc {
   }
 
   template <typename... Args>
-  ALWAYS_INLINE SharedClock *Make(Args &&...args) {
-    return new (next()) SharedClock(static_cast<Args &&>(args)...);
-  }
+  ALWAYS_INLINE SharedClock *Make(Args &&...args);
 
   INode node;
 

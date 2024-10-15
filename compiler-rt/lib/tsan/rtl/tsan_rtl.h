@@ -453,6 +453,7 @@ struct Context {
   uptr trace_part_recycle_finished SANITIZER_GUARDED_BY(slot_mtx);
   uptr trace_part_finished_excess SANITIZER_GUARDED_BY(slot_mtx);
 
+#if TSAN_OL
   Mutex shared_clock_alloc_mtx;
   IList<SharedClockAlloc, &SharedClockAlloc::node> shadow_alloc_queue SANITIZER_GUARDED_BY(shared_clock_alloc_mtx);
 
@@ -460,6 +461,7 @@ struct Context {
   Mutex shared_clock_free_list_mtx;
   SharedClock* shared_clock_free_list SANITIZER_GUARDED_BY(shared_clock_free_list_mtx);
   u32 num_free_shared_clock SANITIZER_GUARDED_BY(shared_clock_free_list_mtx);
+#endif
 #if SANITIZER_GO
   uptr mapped_shadow_begin;
   uptr mapped_shadow_end;
@@ -621,7 +623,8 @@ ALWAYS_INLINE bool ShouldSample(ThreadState *thr) {
   thr->sampling_rng_state = rng_state;
 
   // 0.03 * 65536 = 1966.08
-  bool should_sample = (rng_state & 0xffff) < 2000;
+  // bool should_sample = (rng_state & 0xffff) < 2000;
+  bool should_sample = (rng_state & 0xffff) < 200;  // 0.3%
 #if TSAN_UCLOCKS || TSAN_OL
   if (UNLIKELY(should_sample)) thr->SetSampled(true);
 #endif
