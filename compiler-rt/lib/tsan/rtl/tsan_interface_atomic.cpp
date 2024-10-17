@@ -293,6 +293,12 @@ static void AtomicStore(ThreadState *thr, uptr pc, volatile T *a, T v,
 #if TSAN_UCLOCK_MEASUREMENTS || TSAN_OL_MEASUREMENTS
   atomic_fetch_add(&ctx->num_original_incs, 1, memory_order_relaxed);
 #endif
+
+#if TSAN_UCLOCKS || TSAN_OL
+  // IncrementEpoch might not be called, but U might have reached the soft limit.
+  thr->UnionUclkOverflowed(thr->clock.GetU(thr->fast_state.sid()));
+#endif
+
 #if (TSAN_UCLOCKS || TSAN_OL) && TSAN_SAMPLING
   if (UNLIKELY(thr->sampled))
 #elif (TSAN_UCLOCKS || TSAN_OL)
@@ -322,6 +328,12 @@ static T AtomicRMW(ThreadState *thr, uptr pc, volatile T *a, T v, morder mo) {
   if (IsReleaseOrder(mo))
     atomic_fetch_add(&ctx->num_original_incs, 1, memory_order_relaxed);
 #endif
+
+#if TSAN_UCLOCKS || TSAN_OL
+  // IncrementEpoch might not be called, but U might have reached the soft limit.
+  thr->UnionUclkOverflowed(thr->clock.GetU(thr->fast_state.sid()));
+#endif
+
 #if (TSAN_UCLOCKS || TSAN_OL) && TSAN_SAMPLING
   if (UNLIKELY(thr->sampled))
 #elif (TSAN_UCLOCKS || TSAN_OL)
@@ -474,6 +486,12 @@ static bool AtomicCAS(ThreadState *thr, uptr pc, volatile T *a, T *c, T v,
   if (success && release)
     atomic_fetch_add(&ctx->num_original_incs, 1, memory_order_relaxed);
 #endif
+
+#if TSAN_UCLOCKS || TSAN_OL
+  // IncrementEpoch might not be called, but U might have reached the soft limit.
+  thr->UnionUclkOverflowed(thr->clock.GetU(thr->fast_state.sid()));
+#endif
+
 #if (TSAN_UCLOCKS || TSAN_OL) && TSAN_SAMPLING
   if (UNLIKELY(thr->sampled))
 #elif (TSAN_UCLOCKS || TSAN_OL)

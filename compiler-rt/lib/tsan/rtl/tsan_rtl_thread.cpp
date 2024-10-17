@@ -135,6 +135,12 @@ Tid ThreadCreate(ThreadState *thr, uptr pc, uptr uid, bool detached) {
 #if TSAN_UCLOCK_MEASUREMENTS || TSAN_OL_MEASUREMENTS
   atomic_fetch_add(&ctx->num_original_incs, 1, memory_order_relaxed);
 #endif
+
+#if TSAN_UCLOCKS || TSAN_OL
+  // IncrementEpoch might not be called, but U might have reached the soft limit.
+  thr->UnionUclkOverflowed(thr->clock.GetU(thr->fast_state.sid()));
+#endif
+
 #if (TSAN_UCLOCKS || TSAN_OL) && TSAN_SAMPLING
   if (UNLIKELY(thr->sampled))
 #elif (TSAN_UCLOCKS || TSAN_OL)
@@ -262,12 +268,18 @@ void ThreadFinish(ThreadState *thr) {
 #if TSAN_UCLOCK_MEASUREMENTS || TSAN_OL_MEASUREMENTS
   atomic_fetch_add(&ctx->num_original_incs, 1, memory_order_relaxed);
 #endif
-#if (TSAN_UCLOCKS || TSAN_OL) && TSAN_SAMPLING
-  if (UNLIKELY(thr->sampled))
-#elif (TSAN_UCLOCKS || TSAN_OL)
-  if (LIKELY(thr->sampled))
+
+#if TSAN_UCLOCKS || TSAN_OL
+      // IncrementEpoch might not be called, but U might have reached the soft limit.
+      thr->UnionUclkOverflowed(thr->clock.GetU(thr->fast_state.sid()));
 #endif
-      IncrementEpoch(thr);
+
+#if (TSAN_UCLOCKS || TSAN_OL) && TSAN_SAMPLING
+      if (UNLIKELY(thr->sampled))
+#elif (TSAN_UCLOCKS || TSAN_OL)
+      if (LIKELY(thr->sampled))
+#endif
+        IncrementEpoch(thr);
     }
   }
 #if !SANITIZER_GO

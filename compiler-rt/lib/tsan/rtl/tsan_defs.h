@@ -18,18 +18,46 @@
 #include "sanitizer_common/sanitizer_mutex.h"
 #include "ubsan/ubsan_platform.h"
 
-#define TSAN_EMPTY 0
+
+#define TSAN_CONFIG_T 0
+#define TSAN_CONFIG_ST 1
+#define TSAN_CONFIG_SU 2
+#define TSAN_CONFIG_SO 3
+
+#define TSAN_FRESHNESS_CONFIG TSAN_CONFIG_SO
+
+#if TSAN_FRESHNESS_CONFIG == TSAN_CONFIG_ST
+#define TSAN_SAMPLING 1
+#define TSAN_UCLOCKS 0
+#define TSAN_OL 0
+#define TSAN_SETTING_NAME "TSAN-ST"
+
+#elif TSAN_FRESHNESS_CONFIG == TSAN_CONFIG_SU
+#define TSAN_SAMPLING 1
+#define TSAN_UCLOCKS 1
+#define TSAN_OL 0
+#define TSAN_SETTING_NAME "TSAN-SU"
+
+#elif TSAN_FRESHNESS_CONFIG == TSAN_CONFIG_SO
 #define TSAN_SAMPLING 1
 #define TSAN_UCLOCKS 0
 #define TSAN_OL 1
+#define TSAN_SETTING_NAME "TSAN-SO"
+
+#else
+#define TSAN_SAMPLING 0
+#define TSAN_UCLOCKS 0
+#define TSAN_OL 0
+#define TSAN_SETTING_NAME "TSAN-T"
+#endif
 
 #define TSAN_DISABLE_SLOTS 1
 
 #define TSAN_MEASUREMENTS 0
 #define TSAN_UCLOCK_MEASUREMENTS 0
 #define TSAN_OL_MEASUREMENTS 0
-#define TSAN_SETTING_NAME "TSAN-SO"
 
+#define TSAN_EMPTY 0
 #define TSAN_NEW_SAMPLING 0
 #define TSAN_SKIP_MEMORY_EVENTS 0
 #ifndef TSAN_VECTORIZE
@@ -78,6 +106,7 @@ constexpr uptr kEpochBits = 14;
 constexpr Epoch kEpochZero = static_cast<Epoch>(0);
 constexpr Epoch kEpochOver = static_cast<Epoch>(1 << kEpochBits);
 constexpr Epoch kEpochLast = static_cast<Epoch>((1 << kEpochBits) - 1);
+constexpr Epoch kUEpochMax = static_cast<Epoch>((1 << 16) - kThreadSlotCount*12);
 
 inline Epoch EpochInc(Epoch epoch) {
 #if TSAN_EMPTY

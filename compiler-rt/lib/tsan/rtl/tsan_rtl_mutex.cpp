@@ -215,6 +215,11 @@ void MutexPostLock(ThreadState *thr, uptr pc, uptr addr, u32 flagz, int rec) {
     Callback cb(thr, pc);
     ReportDeadlock(thr, pc, ctx->dd->GetReport(&cb));
   }
+
+#if TSAN_UCLOCKS || TSAN_OL
+  // IncrementEpoch might not be called, but U might have reached the soft limit.
+  thr->UnionUclkOverflowed(thr->clock.GetU(thr->fast_state.sid()));
+#endif
 }
 
 int MutexUnlock(ThreadState *thr, uptr pc, uptr addr, u32 flagz) {
@@ -258,6 +263,12 @@ int MutexUnlock(ThreadState *thr, uptr pc, uptr addr, u32 flagz) {
   if (released)
     atomic_fetch_add(&ctx->num_original_incs, 1, memory_order_relaxed);
 #endif
+
+#if TSAN_UCLOCKS || TSAN_OL
+  // IncrementEpoch might not be called, but U might have reached the soft limit.
+  thr->UnionUclkOverflowed(thr->clock.GetU(thr->fast_state.sid()));
+#endif
+
 #if (TSAN_UCLOCKS || TSAN_OL) && TSAN_SAMPLING
   if (UNLIKELY(thr->sampled))
 #elif (TSAN_UCLOCKS || TSAN_OL)
@@ -333,6 +344,11 @@ void MutexPostReadLock(ThreadState *thr, uptr pc, uptr addr, u32 flagz) {
     Callback cb(thr, pc);
     ReportDeadlock(thr, pc, ctx->dd->GetReport(&cb));
   }
+
+#if TSAN_UCLOCKS || TSAN_OL
+  // IncrementEpoch might not be called, but U might have reached the soft limit.
+  thr->UnionUclkOverflowed(thr->clock.GetU(thr->fast_state.sid()));
+#endif
 }
 
 void MutexReadUnlock(ThreadState *thr, uptr pc, uptr addr) {
@@ -368,6 +384,12 @@ void MutexReadUnlock(ThreadState *thr, uptr pc, uptr addr) {
   if (released)
     atomic_fetch_add(&ctx->num_original_incs, 1, memory_order_relaxed);
 #endif
+
+#if TSAN_UCLOCKS || TSAN_OL
+  // IncrementEpoch might not be called, but U might have reached the soft limit.
+  thr->UnionUclkOverflowed(thr->clock.GetU(thr->fast_state.sid()));
+#endif
+
 #if (TSAN_UCLOCKS || TSAN_OL) && TSAN_SAMPLING
   if (UNLIKELY(thr->sampled))
 #elif (TSAN_UCLOCKS || TSAN_OL)
@@ -433,6 +455,12 @@ void MutexReadOrWriteUnlock(ThreadState *thr, uptr pc, uptr addr) {
   if (released)
     atomic_fetch_add(&ctx->num_original_incs, 1, memory_order_relaxed);
 #endif
+
+#if TSAN_UCLOCKS || TSAN_OL
+  // IncrementEpoch might not be called, but U might have reached the soft limit.
+  thr->UnionUclkOverflowed(thr->clock.GetU(thr->fast_state.sid()));
+#endif
+
 #if (TSAN_UCLOCKS || TSAN_OL) && TSAN_SAMPLING
   if (UNLIKELY(thr->sampled))
 #elif (TSAN_UCLOCKS || TSAN_OL)
@@ -485,6 +513,11 @@ void Acquire(ThreadState *thr, uptr pc, uptr addr) {
     return;
   ReadLock lock(&s->mtx);
   thr->clock.Acquire(s->clock);
+
+#if TSAN_UCLOCKS || TSAN_OL
+  // IncrementEpoch might not be called, but U might have reached the soft limit.
+  thr->UnionUclkOverflowed(thr->clock.GetU(thr->fast_state.sid()));
+#endif
 }
 
 void AcquireGlobal(ThreadState *thr) {
@@ -509,6 +542,12 @@ void Release(ThreadState *thr, uptr pc, uptr addr) {
   // thr->num_original_incs++;
   atomic_fetch_add(&ctx->num_original_incs, 1, memory_order_relaxed);
 #endif
+
+#if TSAN_UCLOCKS || TSAN_OL
+  // IncrementEpoch might not be called, but U might have reached the soft limit.
+  thr->UnionUclkOverflowed(thr->clock.GetU(thr->fast_state.sid()));
+#endif
+
 #if (TSAN_UCLOCKS || TSAN_OL) && TSAN_SAMPLING
   if (UNLIKELY(thr->sampled))
 #elif (TSAN_UCLOCKS || TSAN_OL)
@@ -531,6 +570,12 @@ void ReleaseStore(ThreadState *thr, uptr pc, uptr addr) {
   // thr->num_original_incs++;
   atomic_fetch_add(&ctx->num_original_incs, 1, memory_order_relaxed);
 #endif
+
+#if TSAN_UCLOCKS || TSAN_OL
+  // IncrementEpoch might not be called, but U might have reached the soft limit.
+  thr->UnionUclkOverflowed(thr->clock.GetU(thr->fast_state.sid()));
+#endif
+
 #if (TSAN_UCLOCKS || TSAN_OL) && TSAN_SAMPLING
   if (UNLIKELY(thr->sampled))
 #elif (TSAN_UCLOCKS || TSAN_OL)
@@ -553,6 +598,12 @@ void ReleaseStoreAcquire(ThreadState *thr, uptr pc, uptr addr) {
   // thr->num_original_incs++;
   atomic_fetch_add(&ctx->num_original_incs, 1, memory_order_relaxed);
 #endif
+
+#if TSAN_UCLOCKS || TSAN_OL
+  // IncrementEpoch might not be called, but U might have reached the soft limit.
+  thr->UnionUclkOverflowed(thr->clock.GetU(thr->fast_state.sid()));
+#endif
+
 #if (TSAN_UCLOCKS || TSAN_OL) && TSAN_SAMPLING
   if (UNLIKELY(thr->sampled))
 #elif (TSAN_UCLOCKS || TSAN_OL)
@@ -597,13 +648,13 @@ void IncrementEpoch(ThreadState *thr) {
 #elif TSAN_UCLOCKS
     DCHECK(thr->sampled);
     DCHECK(thr->slot->thr == thr);
-    thr->fast_state.UnionUclkOverflowed(thr->clock.IncU());
+    thr->UnionUclkOverflowed(thr->clock.IncU());
     thr->SetSampled(false);
 #endif
 
     Sid sid = thr->fast_state.sid();
 #if TSAN_OL
-    thr->fast_state.UnionUclkOverflowed(thr->clock.GetU(sid));
+    thr->UnionUclkOverflowed(thr->clock.GetU(sid));  // dont IncU since we update the dirty epoch
     thr->clock.SetLocal(epoch);
     // thr->clock.Set(sid, epoch);
 #else

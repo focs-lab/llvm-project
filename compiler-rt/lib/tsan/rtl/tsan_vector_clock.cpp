@@ -434,7 +434,16 @@ void VectorClock::ReleaseAcquire(SyncClock** dstp) {
   ReleaseStoreAtomic(dstp);
 }
 #else
+__attribute_noinline__ void VectorClock::BBREAK() const {
+  Printf("BREAK!\n");
+}
+
+// Please forgive me for writing code like this.
+#if TSAN_UCLOCKS
+void VectorClock::Acquire(VectorClock* src) {
+#else
 void VectorClock::Acquire(const VectorClock* src) {
+#endif
   if (!src)
     return;
 
@@ -455,6 +464,8 @@ void VectorClock::Acquire(const VectorClock* src) {
 // 		C_t := C_t join C_l
 // 		U_t[t]++
 
+  src->last_acquired_thread_ = sid_;
+
   // Skip if the thread already knows what the lock knows
   // u_l ⊑ U_t
   // CHECK_EQ(src->sid_, kFreeSid);
@@ -463,27 +474,6 @@ void VectorClock::Acquire(const VectorClock* src) {
 
   // we will do the acquire if last release wasnt store (barriers), or the sync knows more than this thread
   if (UNLIKELY(!src->last_release_was_store_ || (src->GetU(src_last_released_thread) > GetU(src_last_released_thread)))) {
-
-    // bool can_skip = false;
-  //   if (LIKELY(src->last_release_was_store_))
-  //   if (LIKELY(src->GetUclk(last_released_thread_) <= GetUclk(last_released_thread_)))
-  //   {
-  //     // can_skip = true;
-  //     return;
-  // #if TSAN_UCLOCK_MEASUREMENTS
-  //     // if skip, means the thread should know more than the sync
-  //     for (uptr i = 0; i < kThreadSlotCount; ++i)
-  //     {
-  //       // if the sync still knows more than the thread, there is something wrong
-  //       if (clk_[i] < src->clk_[i] || uclk_[i] < src->uclk_[i]) {
-  //         BBREAK();
-  //         can_skip = false;
-  //       }
-  //     }
-  // #endif
-  //   }
-    // if (can_skip) return;
-
 #if TSAN_UCLOCK_MEASUREMENTS
     atomic_fetch_add(&ctx->num_uclock_acquires, 1, memory_order_relaxed);
 #endif
@@ -494,10 +484,11 @@ void VectorClock::Acquire(const VectorClock* src) {
     for (uptr i = 0; i < kThreadSlotCount; i++) {
       uclk_[i] = max(uclk_[i], src->uclk_[i]);
       Epoch sc = src->clk_[i];
-      clk_[i] = max(clk_[i], sc);
-
-      // im trying to avoid if statements
-      did_acquire |= clk_[i] == sc;
+      Epoch dc = clk_[i];
+      if (sc > dc) {
+        clk_[i] = sc;
+        did_acquire = true;
+      }
     }
 #else
     m128* __restrict vdst = reinterpret_cast<m128*>(clk_);
@@ -573,10 +564,15 @@ void VectorClock::Release(VectorClock** dstp) {
 
   // Skip if no new information would be given to the lock
   // u_t ⊑ U_l
+  // This is the negative case. There is new information to give to the sync.
   if (LIKELY(GetU(sid_) != dst->GetU(sid_))) {
 #if TSAN_UCLOCK_MEASUREMENTS
     atomic_fetch_add(&ctx->num_uclock_releases, 1, memory_order_relaxed);
 #endif
+
+    // Just make sure things are correct. The sync cannot know more than
+    // the thread about itself.
+    DCHECK_GE(clk_[static_cast<u8>(sid_)], dst->clk_[static_cast<u8>(sid_)]);
 
     // Join as per normal
 #if !TSAN_VECTORIZE
@@ -603,9 +599,10 @@ void VectorClock::Release(VectorClock** dstp) {
 #endif
 
     // Don't need to do max, it wouldnt make sense for the lock to know more about the thread than itself
-    dst->Set(sid_, local_for_release());
+    dst->SetLocal(sid_, local_for_release(), sampled_);
+
     // It is not sufficient to keep the u the same. The lock may not have learnt about this thread's updates,
-    // but another thread might have learnt about them through another lock, and thus be willing to skip the next acquire,
+    // but another thread might have learnt about its u through another lock, and thus be willing to skip the next acquire,
     // despite the local epoch of this thread being updated as it has just sampled.
     if (UNLIKELY(sampled_)) dst->SetU(sid_, IncU());
 
@@ -615,6 +612,7 @@ void VectorClock::Release(VectorClock** dstp) {
     dst->last_release_was_store_ = false;
   }
   else if (sampled_) {
+    // If the sync knows everything about the thread, but thread just sampled.
     dst->Set(sid_, local_for_release());
     dst->SetU(sid_, IncU());
     dst->last_released_thread_ = sid_;
@@ -648,12 +646,17 @@ void VectorClock::ReleaseStore(VectorClock** dstp) {
   DCHECK_NE(sid_, kFreeSid);
   DCHECK_EQ(dst->sid_, kFreeSid);
 
-  // Skip if no new information would be given to the clock
+  // Skip if no new information would be given to the sync.
   // u_t ⊑ U_l
+  // This is the negative case. There is new information to give to the sync.
   if (LIKELY(GetU(sid_) != dst->GetU(sid_))) {
 #if TSAN_UCLOCK_MEASUREMENTS
   atomic_fetch_add(&ctx->num_uclock_releases, 1, memory_order_relaxed);
 #endif
+
+    // Just make sure things are correct. The sync cannot know more than
+    // the thread about itself.
+    DCHECK_GE(clk_[static_cast<u8>(sid_)], dst->clk_[static_cast<u8>(sid_)]);
 
     // Join instead of store
 #if !TSAN_VECTORIZE
@@ -680,7 +683,7 @@ void VectorClock::ReleaseStore(VectorClock** dstp) {
 #endif
 
     // dont need to do max, it wouldnt make sense for the lock to know more about the thread than itself
-    dst->Set(sid_, local_for_release());
+    dst->SetLocal(sid_, local_for_release(), sampled_);
     // It is not sufficient to keep the u the same. The lock may not have learnt about this thread's updates,
     // but another thread might have learnt about them through another lock, and thus be willing to skip the next acquire,
     // despite the local epoch of this thread being updated as it has just sampled.
@@ -691,6 +694,7 @@ void VectorClock::ReleaseStore(VectorClock** dstp) {
     dst->last_release_was_store_ = true;
   }
   else if (sampled_) {
+    // If the sync knows everything about the thread, but thread just sampled.
     dst->Set(sid_, local_for_release());
     dst->SetU(sid_, IncU());
     dst->last_released_thread_ = sid_;
@@ -710,15 +714,72 @@ void VectorClock::ReleaseStoreAtomic(VectorClock** dstp) {
   atomic_fetch_add(&ctx->num_original_releases, 1, memory_order_relaxed);
 #endif
 
-  // Atomic store with release order is used to synchronize between 2 threads
+  // If this was the thread that last acquired, it means that this atomic variable
+  // behaves like a mutex and grows monotonically, so our optimization can be applied
+  // as per ReleaseStore.
+  // Code is cleaner if we just call ReleaseStore, but I don't really want to have
+  // additional function calls. Clean this up later.
+  if (LIKELY(dst->last_acquired_thread_ == sid_)) {
+    // Skip if no new information would be given to the sync.
+    // u_t ⊑ U_l
+    // This is the negative case. There is new information to give to the sync.
+    if (LIKELY(GetU(sid_) != dst->GetU(sid_))) {
+      #if TSAN_UCLOCK_MEASUREMENTS
+      atomic_fetch_add(&ctx->num_uclock_releases, 1, memory_order_relaxed);
+      #endif
+
+      // Just make sure things are correct. The sync cannot know more than
+      // the thread about itself.
+      DCHECK_GE(clk_[static_cast<u8>(sid_)], dst->clk_[static_cast<u8>(sid_)]);
+
+      // Join instead of store
+      #if !TSAN_VECTORIZE
+      for (uptr i = 0; i < kThreadSlotCount; i++) {
+        dst->clk_[i] = max(clk_[i], dst->clk_[i]);
+        dst->uclk_[i] = max(uclk_[i], dst->uclk_[i]);
+      }
+      #else
+      m128* __restrict vdst = reinterpret_cast<m128*>(dst->clk_);
+      m128 const* __restrict vsrc = reinterpret_cast<m128 const*>(clk_);
+      m128* __restrict vudst = reinterpret_cast<m128*>(dst->uclk_);
+      m128 const* __restrict vusrc = reinterpret_cast<m128 const*>(uclk_);
+      for (uptr i = 0; i < kVectorClockSize; i++) {
+        m128 s = _mm_load_si128(&vsrc[i]);
+        m128 d = _mm_load_si128(&vdst[i]);
+        m128 m = _mm_max_epu16(s, d);
+        _mm_store_si128(&vdst[i], m);
+
+        m128 su = _mm_load_si128(&vusrc[i]);
+        m128 du = _mm_load_si128(&vudst[i]);
+        m128 mu = _mm_max_epu16(su, du);
+        _mm_store_si128(&vudst[i], mu);
+      }
+      #endif
+
+      // dont need to do max, it wouldnt make sense for the lock to know more about the thread than itself
+      dst->SetLocal(sid_, local_for_release(), sampled_);
+      // It is not sufficient to keep the u the same. The lock may not have learnt about this thread's updates,
+      // but another thread might have learnt about them through another lock, and thus be willing to skip the next acquire,
+      // despite the local epoch of this thread being updated as it has just sampled.
+      if (UNLIKELY(sampled_)) dst->SetU(sid_, IncU());
+
+      // The lock stores info about last released thread
+      dst->last_released_thread_ = sid_;
+      dst->last_release_was_store_ = true;
+    }
+  }
+
+  // Atomic release-store is used to synchronize between 2 threads
   // Must copy even if the releasing thread has not performed any updates
   // i.e. acquired any clocks or sampled any events
   // so that the acquiring thread can acquire this thread's clock
   // However we can apply the same skipping logic
   // if the last released thread is the same as the current one
   // u_t ⊑ U_l
-  // Check first if the atomic variable was last released to by this thread
-  if (dst->last_released_thread_ != sid_ || GetU(sid_) > dst->GetU(sid_)) {
+  // Check first if the atomic variable was last released to by this thread,
+  // or otherwise if the lock doesn't know about this thread.
+  // This is the negative case. There is new information to give to the sync.
+  else if (dst->last_released_thread_ != sid_ || GetU(sid_) > dst->GetU(sid_)) {
 #if TSAN_UCLOCK_MEASUREMENTS
     atomic_fetch_add(&ctx->num_uclock_releases, 1, memory_order_relaxed);
 #endif
@@ -726,7 +787,7 @@ void VectorClock::ReleaseStoreAtomic(VectorClock** dstp) {
 
     // Vector clock copy on both clocks
     *dst = *this;
-    dst->Set(sid_, local_for_release());
+    dst->SetLocal(sid_, local_for_release(), sampled_);
     // It is not sufficient to keep the u the same. The sync may not have learnt about this thread's updates,
     // but another thread might have learnt about them through another sync, and thus be willing to skip the next acquire,
     // despite the local epoch of this thread being updated as it has just sampled.
@@ -737,6 +798,7 @@ void VectorClock::ReleaseStoreAtomic(VectorClock** dstp) {
     dst->last_release_was_store_ = true;
   }
   else if (sampled_) {
+    // If the sync knows everything about the thread, but thread just sampled.
     dst->Set(sid_, local_for_release());
     dst->SetU(sid_, IncU());
     dst->last_released_thread_ = sid_;
@@ -747,7 +809,7 @@ void VectorClock::ReleaseStoreAtomic(VectorClock** dstp) {
 void VectorClock::ReleaseFork(VectorClock** dstp) {
   VectorClock* dst = AllocClock(dstp);
   *dst = *this;
-  dst->Set(sid_, local_for_release());
+  dst->SetLocal(sid_, local_for_release(), sampled_);
   if (UNLIKELY(sampled_)) dst->SetU(sid_, IncU());
   dst->last_release_was_store_ = true;
   dst->last_released_thread_ = sid_;
@@ -804,7 +866,9 @@ void VectorClock::AcquireJoin(const VectorClock* child) {
 
   // Skip if the thread already knows what the lock knows
   // u_l ⊑ U_t
-  Sid tc = child->sid_;
+  // This is the negative case. There is new information to give to the sync.
+  Sid tc = child->last_released_thread_;
+  DCHECK_NE(tc, kFreeSid);
   if (LIKELY(child->GetU(tc) > GetU(tc))) {
 
 #if TSAN_UCLOCK_MEASUREMENTS
@@ -817,8 +881,11 @@ void VectorClock::AcquireJoin(const VectorClock* child) {
     for (uptr i = 0; i < kThreadSlotCount; i++) {
       uclk_[i] = max(uclk_[i], child->uclk_[i]);
       Epoch cc = child->clk_[i];
-      clk_[i] = max(clk_[i], cc);
-      did_acquire |= clk_[i] == cc;
+      Epoch pc = clk_[i];
+      if (cc > pc) {
+        clk_[i] = cc;
+        did_acquire = true;
+      }
     }
 #else
     m128* __restrict vdst = reinterpret_cast<m128*>(clk_);
@@ -842,6 +909,9 @@ void VectorClock::AcquireJoin(const VectorClock* child) {
       did_acquire |= !_mm_test_all_zeros(diff, diff);
     }
 #endif
+
+    // Unlike the Release variants above, we don't care about local_for_release, because the thread called ReleaseStore to release
+    // to `child`, which already accounts for local_for_release.
 
     // If learnt something new about the lock, increment augmented epoch to signal that future releases will give new information
     if (LIKELY(did_acquire)) IncU();

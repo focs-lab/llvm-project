@@ -21,11 +21,7 @@ class FastState {
     part_.unused0_ = 0;
     part_.sid_ = static_cast<u8>(kFreeSid);
     part_.epoch_ = static_cast<u16>(kEpochLast);
-#if TSAN_UCLOCKS || TSAN_OL
-    part_.uclk_overflowed_ = 0;
-#else
     part_.unused1_ = 0;
-#endif
     part_.ignore_accesses_ = false;
   }
 
@@ -41,23 +37,13 @@ class FastState {
   void ClearIgnoreBit() { part_.ignore_accesses_ = 0; }
   bool GetIgnoreBit() const { return part_.ignore_accesses_; }
 
-#if TSAN_UCLOCKS || TSAN_OL
-  ALWAYS_INLINE void UnionUclkOverflowed(Epoch epoch) { part_.uclk_overflowed_ |= (epoch > static_cast<Epoch>(16383*3)); }
-  ALWAYS_INLINE void ClearUclkOverflowed() { part_.uclk_overflowed_ = 0; }
-  ALWAYS_INLINE bool IsUclkOverflowed() const { return part_.uclk_overflowed_; }
-#endif
-
  private:
   friend class Shadow;
   struct Parts {
     u32 unused0_ : 8;
     u32 sid_ : 8;
     u32 epoch_ : kEpochBits;
-#if TSAN_UCLOCKS || TSAN_OL
-    u32 uclk_overflowed_ : 1;
-#else
     u32 unused1_ : 1;
-#endif
     u32 ignore_accesses_ : 1;
   };
   union {

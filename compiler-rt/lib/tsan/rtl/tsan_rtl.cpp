@@ -330,7 +330,7 @@ void SlotAttachAndLock(ThreadState* thr) {
   thr->fast_state.SetSid(slot->sid);
   thr->fast_state.SetEpoch(epoch);
 #if TSAN_UCLOCKS || TSAN_OL
-  thr->fast_state.ClearUclkOverflowed();    // new slot, no more overflowed uclk
+  thr->ClearUclkOverflowed();    // new slot, no more overflowed uclk
 #endif
   if (thr->slot_epoch != ctx->global_epoch) {
     thr->slot_epoch = ctx->global_epoch;
@@ -343,7 +343,7 @@ void SlotAttachAndLock(ThreadState* thr) {
 #if TSAN_UCLOCKS || TSAN_DISABLE_SLOTS || TSAN_OL
   // TSAN_UCLOCKS || TSAN_DISABLE_SLOTS || TSAN_OL ==> no thread preempting, so each slot is held exclusively by 1 thread
   // so epoch == 1
-  DPrintf("#%d: SlotAttach sid: %u, epoch: %u overflowed: %u\n", thr->tid, slot->sid, epoch, thr->fast_state.IsUclkOverflowed());
+  DPrintf("#%d: SlotAttach sid: %u, epoch: %u overflowed: %u\n", thr->tid, slot->sid, epoch, thr->IsUclkOverflowed());
   DCHECK_EQ(epoch, 1);
 #endif
 #if TSAN_OL
@@ -400,7 +400,7 @@ static void SlotDetachImpl(ThreadState* thr, bool exiting) {
     return;
   }
 #if TSAN_UCLOCKS || TSAN_OL
-  CHECK(exiting || thr->fast_state.epoch() == kEpochLast || thr->fast_state.IsUclkOverflowed());
+  CHECK(exiting || thr->fast_state.epoch() == kEpochLast || thr->IsUclkOverflowed());
 #else
   CHECK(exiting || thr->fast_state.epoch() == kEpochLast);
 #endif
@@ -426,7 +426,7 @@ void SlotLock(ThreadState* thr) SANITIZER_NO_THREAD_SAFETY_ANALYSIS {
   slot->mtx.Lock();
   thr->slot_locked = true;
 #if TSAN_UCLOCKS || TSAN_OL
-  if (LIKELY(!thr->fast_state.IsUclkOverflowed()))
+  if (LIKELY(!thr->IsUclkOverflowed()))
 #endif
   if (LIKELY(thr == slot->thr && thr->fast_state.epoch() != kEpochLast))
     return;

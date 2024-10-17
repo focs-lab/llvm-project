@@ -362,6 +362,7 @@ class VectorClock {
 
   Epoch Get(Sid sid) const;
   void Set(Sid sid, Epoch v);
+  void SetLocal(Sid sid, Epoch v, bool sampled);
 
 #if TSAN_UCLOCKS || TSAN_OL
   Epoch GetU(Sid sid) const;
@@ -403,11 +404,12 @@ class VectorClock {
   bool IsShared() const;
 
   SharedClockAlloc& Alloc();
-#else
-  void Acquire(const VectorClock* src);
+#elif TSAN_UCLOCKS
+  void Acquire(VectorClock* src);
   void Release(VectorClock** dstp);
   void ReleaseStore(VectorClock** dstp);
-#if TSAN_UCLOCKS
+  void ReleaseStoreAcquire(VectorClock** dstp);
+  void ReleaseAcquire(VectorClock** dstp);
   void ReleaseStoreAtomic(VectorClock** dstp);
   // void IncClk();
   void ReleaseFork(VectorClock** dstp);
@@ -415,7 +417,10 @@ class VectorClock {
   void AcquireJoin(const VectorClock* src);
 
   Epoch local_for_release() const;
-#endif
+#else
+  void Acquire(const VectorClock* src);
+  void Release(VectorClock** dstp);
+  void ReleaseStore(VectorClock** dstp);
   void ReleaseStoreAcquire(VectorClock** dstp);
   void ReleaseAcquire(VectorClock** dstp);
 #endif
@@ -439,23 +444,22 @@ class VectorClock {
   SharedClockAlloc alloc_;
 
   void AcquireToDirty(Sid sid, Epoch epoch);
+#elif TSAN_UCLOCKS
+  Epoch clk_[kThreadSlotCount] VECTOR_ALIGNED;
+  Epoch uclk_[kThreadSlotCount] VECTOR_ALIGNED;
+
+  // only used by syncs
+  Sid last_released_thread_;
+  Sid last_acquired_thread_;
+  bool last_release_was_store_;
 #else
   Epoch clk_[kThreadSlotCount] VECTOR_ALIGNED;
-#if TSAN_UCLOCKS
-  Epoch uclk_[kThreadSlotCount] VECTOR_ALIGNED;
-#endif
 #endif
 
 #if TSAN_UCLOCKS || TSAN_OL
   // only used by threads
   Sid sid_;
   bool sampled_;
-#endif
-
-#if TSAN_UCLOCKS
-  // only used by syncs
-  Sid last_released_thread_;
-  bool last_release_was_store_;
 #endif
 };
 
@@ -477,6 +481,18 @@ ALWAYS_INLINE Epoch VectorClock::Get(Sid sid) const {
 
 ALWAYS_INLINE void VectorClock::Set(Sid sid, Epoch v) {
   DCHECK_GE(v, clk_[static_cast<u8>(sid)]);
+  clk_[static_cast<u8>(sid)] = v;
+}
+
+// This is no different from Set.
+// However the main purpose of this is to make clear the semantics through
+// the function name and the DCHECK.
+// This will only be called after an array join/copy which ignores whether
+// the thread has sampled. We need to replace that entry with the result
+// of local_for_release, which may not be monotonic.
+// sampled is only used in debug mode
+ALWAYS_INLINE void VectorClock::SetLocal(Sid sid, Epoch v, bool sampled) {
+  DCHECK_EQ(v, static_cast<u16>(clk_[static_cast<u8>(sid)]) - !sampled);
   clk_[static_cast<u8>(sid)] = v;
 }
 #endif
@@ -552,7 +568,7 @@ ALWAYS_INLINE SharedClockAlloc& VectorClock::Alloc() {
 #elif TSAN_UCLOCKS
 ALWAYS_INLINE Epoch VectorClock::local_for_release() const {
   Epoch local = Get(sid_);
-  CHECK_GT(local, kEpochZero);
+  DCHECK_GT(local, kEpochZero);
   // if (UNLIKELY(sampled_)) return local;
   // not sure if this optimization is actually useful, but i want to avoid if statements
   // if sampled then send e, else send e-1
@@ -570,7 +586,7 @@ ALWAYS_INLINE void VectorClock::SetU(Sid sid, Epoch v) {
   // This should give plenty of room for slot to detach.
   // If slot is not detached even after so many "grace-period" increments, there
   // is clearly something wrong.
-  DCHECK_LT(v, static_cast<u16>(kEpochOver) << 1);
+  DCHECK_LT(v, static_cast<u16>(kUEpochMax) + kThreadSlotCount);
   uclk_[static_cast<u8>(sid)] = v;
 }
 

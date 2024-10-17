@@ -184,6 +184,10 @@ struct ThreadState {
     sampled = smp;
     clock.SetSampled(smp);
   }
+  bool uclk_overflowed;
+  ALWAYS_INLINE void UnionUclkOverflowed(Epoch u) { uclk_overflowed |= (u > kUEpochMax); }
+  ALWAYS_INLINE void ClearUclkOverflowed() { uclk_overflowed = false; }
+  ALWAYS_INLINE bool IsUclkOverflowed() const { return uclk_overflowed; }
 #endif
 
 #if TSAN_MEASUREMENTS
@@ -614,7 +618,12 @@ void OnUserFree(ThreadState *thr, uptr pc, uptr p, bool write);
 
 #if TSAN_SAMPLING
 ALWAYS_INLINE bool ShouldSample(ThreadState *thr) {
+  // For testing, when we want to sample all events.
+  // #if TSAN_UCLOCKS || TSAN_OL
+  // thr->SetSampled(true);
+  // #endif
   // return true;
+
   // Refer to compiler-rt/lib/gwp_asan/guarded_pool_allocator.cpp
   u32 rng_state = thr->sampling_rng_state;
   rng_state ^= rng_state << 13;
