@@ -148,17 +148,17 @@ void VectorClock::Acquire(const SyncClock* src) {
 
     Epoch u_l = src->u();
     Epoch u_t_lr = GetU(last_released_thread);
-    s16 diff = static_cast<u16>(u_l) - static_cast<u16>(u_t_lr);
+    s32 diff = static_cast<s32>(u_l) - static_cast<s32>(u_t_lr);
     if (diff <= 0) return;
-    if (UNLIKELY(diff > static_cast<s16>(kFreeSid))) {
-      diff = static_cast<s16>(kFreeSid);
+    if (UNLIKELY(diff > static_cast<s32>(kFreeSid))) {
+      diff = static_cast<s32>(kFreeSid);
     }
 
     SetU(last_released_thread, u_l);
 
     Sid curr = src->clock()->head();
     Epoch curr_epoch;
-    for (s16 i = 0; i < diff; ++i) {
+    for (s32 i = 0; i < diff; ++i) {
 #if TSAN_OL_MEASUREMENTS
       atomic_fetch_add(&ctx->num_acquire_ll_traverses, 1, memory_order_relaxed);
 #endif
