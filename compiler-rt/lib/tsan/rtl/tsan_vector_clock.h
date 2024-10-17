@@ -518,8 +518,10 @@ ALWAYS_INLINE void VectorClock::SetSid(Sid sid) {
 ALWAYS_INLINE Epoch VectorClock::IncU() {
   DCHECK_NE(sid_, kFreeSid);
   Epoch epoch = GetU(sid_);
+
   DCHECK_GT(EpochInc(epoch), epoch);
-  epoch = EpochInc(GetU(sid_));
+  epoch = EpochInc(epoch);
+
   SetU(sid_, epoch);
   return epoch;
 }
@@ -602,7 +604,11 @@ ALWAYS_INLINE void VectorClock::SetSid(Sid sid) {
 
 ALWAYS_INLINE Epoch VectorClock::IncU() {
   DCHECK_NE(sid_, kFreeSid);
-  Epoch epoch = EpochInc(GetU(sid_));
+  Epoch epoch = GetU(sid_);
+
+  DCHECK_GT(EpochInc(epoch), epoch);
+  epoch = EpochInc(epoch);
+
   SetU(sid_, epoch);
   return epoch;
 }

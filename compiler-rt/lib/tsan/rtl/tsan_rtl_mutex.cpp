@@ -648,7 +648,7 @@ void IncrementEpoch(ThreadState *thr) {
 #elif TSAN_UCLOCKS
     DCHECK(thr->sampled);
     DCHECK(thr->slot->thr == thr);
-    thr->UnionUclkOverflowed(thr->clock.IncU());
+    // thr->UnionUclkOverflowed(thr->clock.IncU()); // this increment should have been done in release handlers
     thr->SetSampled(false);
 #endif
 
