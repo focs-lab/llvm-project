@@ -47,6 +47,9 @@ if config.compiler_id == "GNU":
 else:
     extra_cflags = []
 
+# Enable new Escape Analysis instead of default Capture Tracking
+escape_analysis_flag = ["-mllvm -tsan-use-escape-analysis"]
+
 tsan_incdir = config.test_source_root + "/../"
 # Setup default compiler flags used with -fsanitize=thread option.
 clang_tsan_cflags = (
@@ -55,9 +58,11 @@ clang_tsan_cflags = (
     + config.debug_info_flags
     + extra_cflags
     + ["-I%s" % tsan_incdir]
+    + escape_analysis_flag
 )
 clang_tsan_cxxflags = (
     config.cxx_mode_flags + clang_tsan_cflags + ["-std=c++11"] + ["-I%s" % tsan_incdir]
+    + escape_analysis_flag
 )
 # Add additional flags if we're using instrumented libc++.
 # Instrumented libcxx currently not supported on Darwin.
