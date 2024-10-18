@@ -261,25 +261,8 @@ void VectorClock::AcquireFromFork(const SyncClock* src) {
 #if TSAN_OL_MEASUREMENTS
   atomic_fetch_add(&ctx->num_acquires, 1, memory_order_relaxed);
 #endif
-  DCHECK_EQ(Get(sid_), 1);
-  // CHECK_EQ(GetU(sid_), 1);
-  DCHECK_EQ(clock_->head(), sid_);
-
-  for (uptr i = 0; i < kThreadSlotCount; ++i) {
-#if TSAN_OL_MEASUREMENTS
-    atomic_fetch_add(&ctx->num_acquire_arr_traverses, 1, memory_order_relaxed);
-    atomic_fetch_add(&ctx->num_acquire_arr_updates, 1, memory_order_relaxed);
-#endif
-    if (UNLIKELY(static_cast<Sid>(i) == src->LastReleasedThread()))
-      clock_->SetOnly(i, src->local());
-    else if (LIKELY(static_cast<Sid>(i) != sid_))
-      clock_->SetOnly(i, src->clock()->Get(i));
-
-    // IncU();
-  }
-
-  // Get the parent thread's u epoch.
-  // SetU(src->LastReleasedThread(), src->u());
+  Acquire(src);
+  return;
 }
 
 void VectorClock::AcquireJoin(const SyncClock* src) {
