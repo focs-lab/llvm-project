@@ -220,17 +220,6 @@ ALWAYS_INLINE bool SharedClock::IsShared() const {
   return atomic_load_relaxed(&ref_cnt) != 1;
 }
 
-ALWAYS_INLINE SharedClock& SharedClock::operator=(const SharedClock& other) {
-  for (uptr i = 0; i < kThreadSlotCount; i++) {
-    clk_[i] = other.clk_[i];
-    next_[i] = other.next_[i];
-    prev_[i] = other.prev_[i];
-  }
-  head_ = other.head_;
-
-  return *this;
-}
-
 class SyncClock {
  public:
   SyncClock();

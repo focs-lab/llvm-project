@@ -21,6 +21,9 @@ namespace __tsan {
 
 #if TSAN_VECTORIZE
 const uptr kVectorClockSize = kThreadSlotCount * sizeof(Epoch) / sizeof(m128);
+#if TSAN_OL
+const uptr kOrderedListNodeSize = kThreadSlotCount * sizeof(Sid) / sizeof(m128);
+#endif
 #endif
 
 VectorClock::VectorClock() {
@@ -38,9 +41,17 @@ void VectorClock::Reset() {
   clock_ = alloc_.Make();
   is_shared_ = false;
 
+#if !TSAN_VECTORIZE
   for (uptr i = 0; i < kThreadSlotCount; i++) {
     uclk_[i] = kEpochZero;
   }
+#else
+  m128 z = _mm_setzero_si128();
+  m128* vuclk = reinterpret_cast<m128*>(uclk_);
+  for (uptr i = 0; i < kVectorClockSize; i++) {
+    _mm_store_si128(&vuclk[i], z);
+  }
+#endif
 
   // non threads must not have sid
   sid_ = kFreeSid;
@@ -50,10 +61,20 @@ void VectorClock::Reset() {
   // acquired_sid_ = kFreeSid;
   // acquired_ = kEpochZero;
 #elif TSAN_UCLOCKS
+#if !TSAN_VECTORIZE
   for (uptr i = 0; i < kThreadSlotCount; i++) {
     clk_[i] = kEpochZero;
     uclk_[i] = kEpochZero;
   }
+#else
+  m128 z = _mm_setzero_si128();
+  m128* vclk = reinterpret_cast<m128*>(clk_);
+  m128* vuclk = reinterpret_cast<m128*>(uclk_);
+  for (uptr i = 0; i < kVectorClockSize; i++) {
+    _mm_store_si128(&vclk[i], z);
+    _mm_store_si128(&vuclk[i], z);
+  }
+#endif
 
   // non threads must not have sid
   sid_ = kFreeSid;
@@ -118,9 +139,9 @@ void VectorClock::Acquire(const SyncClock* src) {
   if (!src || !src->clock()) return;
   // Printf("Acquire\n");
 
-#if TSAN_OL_MEASUREMENTS
+  #if TSAN_OL_MEASUREMENTS
   atomic_fetch_add(&ctx->num_acquires, 1, memory_order_relaxed);
-#endif
+  #endif
 
   if (LIKELY(src->LastReleaseWasStore())) {
     Sid last_released_thread = src->LastReleasedThread();
@@ -130,20 +151,20 @@ void VectorClock::Acquire(const SyncClock* src) {
     // Do it at the start to prevent accidentally early returning due to things like diff == 0
     if (src->local() > Get(last_released_thread)) {
       if (UNLIKELY(IsShared())) {
-#if TSAN_OL_MEASUREMENTS
+        #if TSAN_OL_MEASUREMENTS
         atomic_fetch_add(&ctx->num_acquire_deep_copies, 1, memory_order_relaxed);
-#endif
+        #endif
         Unshare();
       }
-#if TSAN_OL_MEASUREMENTS
+      #if TSAN_OL_MEASUREMENTS
       atomic_fetch_add(&ctx->num_acquire_ll_updates, 1, memory_order_relaxed);
-#endif
+      #endif
       Set(last_released_thread, src->local());
       IncU();
-#if TSAN_OL_MEASUREMENTS
-  u64 max_u = atomic_load_relaxed(&ctx->max_u);
-  while (!atomic_compare_exchange_strong(&ctx->max_u, &max_u, max(max_u, static_cast<u64>(GetU(sid_))), memory_order_relaxed));
-#endif
+      #if TSAN_OL_MEASUREMENTS
+      u64 max_u = atomic_load_relaxed(&ctx->max_u);
+      while (!atomic_compare_exchange_strong(&ctx->max_u, &max_u, max(max_u, static_cast<u64>(GetU(sid_))), memory_order_relaxed));
+      #endif
     }
 
     Epoch u_l = src->u();
@@ -159,9 +180,9 @@ void VectorClock::Acquire(const SyncClock* src) {
     Sid curr = src->clock()->head();
     Epoch curr_epoch;
     for (s32 i = 0; i < diff; ++i) {
-#if TSAN_OL_MEASUREMENTS
+      #if TSAN_OL_MEASUREMENTS
       atomic_fetch_add(&ctx->num_acquire_ll_traverses, 1, memory_order_relaxed);
-#endif
+      #endif
       if (UNLIKELY(curr == last_released_thread)) {
         curr = src->clock()->Next(curr);
         continue;
@@ -170,14 +191,14 @@ void VectorClock::Acquire(const SyncClock* src) {
 
       if (curr_epoch > clock_->Get(curr)) {
         if (UNLIKELY(IsShared())) {
-#if TSAN_OL_MEASUREMENTS
+          #if TSAN_OL_MEASUREMENTS
           atomic_fetch_add(&ctx->num_acquire_deep_copies, 1, memory_order_relaxed);
-#endif
+          #endif
           Unshare();
         }
-#if TSAN_OL_MEASUREMENTS
+        #if TSAN_OL_MEASUREMENTS
         atomic_fetch_add(&ctx->num_acquire_ll_updates, 1, memory_order_relaxed);
-#endif
+        #endif
         Set(curr, curr_epoch);
         IncU();
       }
@@ -189,20 +210,20 @@ void VectorClock::Acquire(const SyncClock* src) {
     Epoch curr_epoch;
     // kThreadSlotCount-1 because we ignore the kFreeSid slot
     for (uptr i = 0; i < kThreadSlotCount-1; ++i) {
-#if TSAN_OL_MEASUREMENTS
+      #if TSAN_OL_MEASUREMENTS
       atomic_fetch_add(&ctx->num_acquire_arr_traverses, 1, memory_order_relaxed);
-#endif
+      #endif
       curr_epoch = src->clock()->Get(i);
       if (curr_epoch > clock_->Get(i)) {
         if (UNLIKELY(IsShared())) {
-#if TSAN_OL_MEASUREMENTS
+          #if TSAN_OL_MEASUREMENTS
           atomic_fetch_add(&ctx->num_acquire_deep_copies, 1, memory_order_relaxed);
-#endif
+          #endif
           Unshare();
         }
-#if TSAN_OL_MEASUREMENTS
+        #if TSAN_OL_MEASUREMENTS
         atomic_fetch_add(&ctx->num_acquire_ll_updates, 1, memory_order_relaxed);
-#endif
+        #endif
         Set(static_cast<Sid>(i), curr_epoch);
         IncU();
       }
@@ -251,9 +272,9 @@ void VectorClock::AcquireFromFork(const SyncClock* src) {
 #endif
     if (UNLIKELY(static_cast<Sid>(i) == src->LastReleasedThread()))
       clock_->SetOnly(i, src->local());
-    else if (LIKELY(static_cast<Sid>(i) != sid_)) {
+    else if (LIKELY(static_cast<Sid>(i) != sid_))
       clock_->SetOnly(i, src->clock()->Get(i));
-    }
+
     // IncU();
   }
 
@@ -500,6 +521,7 @@ void VectorClock::Acquire(const VectorClock* src) {
       m128 mu = _mm_max_epu16(su, du);
       _mm_store_si128(&vudst[i], mu);
 
+      // test whether any entry has changed
       // if all are the same, then diff will be all zeros, and that means we didnt acquire anything
       // in other words, if not all zeros, means we acquired something
       m128 diff = _mm_xor_si128(d, m);
@@ -1062,11 +1084,25 @@ ALWAYS_INLINE SharedClock::SharedClock() {
   atomic_fetch_add(&ctx->num_deep_copies, 1, memory_order_relaxed);
 #endif
   atomic_store_relaxed(&ref_cnt, 1);
+#if !TSAN_VECTORIZE
   for (uptr i = 0; i < kThreadSlotCount; i++) {
     clk_[i] = kEpochZero;
     next_[i] = static_cast<Sid>(i+1);
     prev_[i] = static_cast<Sid>(i-1);
   }
+#else
+  m128 z = _mm_setzero_si128();
+  m128* vclk = reinterpret_cast<m128*>(clk_);
+  for (uptr i = 0; i < kVectorClockSize; i++) {
+    _mm_store_si128(&vclk[i], z);
+  }
+  // TOOD(dwslim): This can be vectorized but this function is probably rarely called anyway.
+  for (uptr i = 0; i < kThreadSlotCount; i++) {
+    next_[i] = static_cast<Sid>(i+1);
+    prev_[i] = static_cast<Sid>(i-1);
+  }
+#endif
+
   head_ = static_cast<Sid>(0);
 }
 
@@ -1095,6 +1131,37 @@ ALWAYS_INLINE void SharedClock::Join(const SharedClock* other) {
       Set(i, cti);
     }
   }
+}
+
+ALWAYS_INLINE SharedClock& SharedClock::operator=(const SharedClock& other) {
+#if !TSAN_VECTORIZE
+  for (uptr i = 0; i < kThreadSlotCount; i++) {
+    clk_[i] = other.clk_[i];
+    next_[i] = other.next_[i];
+    prev_[i] = other.prev_[i];
+  }
+#else
+  m128* __restrict vdst = reinterpret_cast<m128*>(clk_);
+  m128 const* __restrict vsrc = reinterpret_cast<m128 const*>(other.clk_);
+  for (uptr i = 0; i < kVectorClockSize; i++) {
+    m128 s = _mm_load_si128(&vsrc[i]);
+    _mm_store_si128(&vdst[i], s);
+  }
+
+  m128* __restrict vndst = reinterpret_cast<m128*>(next_);
+  m128 const* __restrict vnsrc = reinterpret_cast<m128 const*>(other.next_);
+  m128* __restrict vpdst = reinterpret_cast<m128*>(prev_);
+  m128 const* __restrict vpsrc = reinterpret_cast<m128 const*>(other.prev_);
+  for (uptr i = 0; i < kOrderedListNodeSize; i++) {
+    m128 ns = _mm_load_si128(&vnsrc[i]);
+    _mm_store_si128(&vndst[i], ns);
+    m128 ps = _mm_load_si128(&vpsrc[i]);
+    _mm_store_si128(&vpdst[i], ps);
+  }
+#endif
+  head_ = other.head_;
+
+  return *this;
 }
 
 void SharedClock::DropRef() {
