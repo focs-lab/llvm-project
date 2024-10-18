@@ -38,3 +38,16 @@ entry:
   store ptr %0, ptr @GPtr, align 8
   ret void
 }
+
+define dso_local void @global_variable_as_alias_in_GEP() {
+; CHECK: Printing analysis 'Escape Analysis' for function 'global_variable_as_alias_in_GEP':
+; CHECK-NOT: Escaping variables:
+entry:
+  %.atomictmp = alloca i32, align 4
+  %0 = load ptr, ptr @GPtr, align 8
+  %arrayidx = getelementptr inbounds i32, ptr %0, i64 0
+  store i32 333, ptr %.atomictmp, align 4
+  %1 = load i32, ptr %.atomictmp, align 4
+  store atomic i32 %1, ptr %arrayidx release, align 4
+  ret void
+}

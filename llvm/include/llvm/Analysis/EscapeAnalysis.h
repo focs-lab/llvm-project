@@ -79,7 +79,6 @@ namespace llvm {
     bool isDereferenceableOrNull(Value *O, const DataLayout &DL);
 
     /// Recursively searches for the base pointer that might be associated with an AllocaInst
-    /// TODO getUnderlyingObj??
     const AllocaInst *getUnderlyingAllocaForAliasing(const Value *Ptr);
 
     /// Check whether type contains pointers
