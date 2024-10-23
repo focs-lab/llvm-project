@@ -31,6 +31,60 @@ cl::opt<std::string> PrintEscapeAnalysis(
     cl::desc("The option to specify the name of the function "
              "whose escape analysis result is printed."));
 
+//===----------------------------------------------------------------------===//
+// Alias relation
+//===----------------------------------------------------------------------===//
+
+/// Merge two relations into one (Other), save results into current (this)
+void EscapeAnalysisInfo::AliasRelationTy::merge(const AliasRelationTy &Other) {
+  for (const auto &[OtherKey, OtherValueSet] : Other.AliasMap)
+    AliasMap.insert({OtherKey, OtherValueSet});
+}
+
+/// Add the order of aliases (a, b)
+void EscapeAnalysisInfo::AliasRelationTy::addAlias(const Value *Alias,
+                                                   const Value *PointeeValue) {
+  if (Alias == PointeeValue)
+    return;
+  AliasMap[Alias].insert(PointeeValue);
+
+  // If Alloca A --> Alloca B we assume that B --> A
+  if (isa<AllocaInst>(Alias))
+    AliasMap[PointeeValue].insert(Alias);
+}
+
+/// Get list of aliases for the object a
+std::optional<EscapeAnalysisInfo::AliasRelationTy::AliasListTy>
+EscapeAnalysisInfo::AliasRelationTy::getAliases(const Value *V) const {
+  const auto It = AliasMap.find(V);
+  if (It == AliasMap.end())
+    return std::nullopt;
+  return It->second;
+}
+
+/// We need it to check if something changed in the data-flow analysis
+bool EscapeAnalysisInfo::AliasRelationTy::operator==(
+    const AliasRelationTy &Other) const {
+  if (this == &Other)
+    return true;
+  return AliasMap == Other.AliasMap;
+}
+
+/// Print alias relation
+void EscapeAnalysisInfo::AliasRelationTy::print(raw_ostream &OS) const {
+  OS << "Alias relations:\n";
+  for (const auto &[Key, ValueSet] : AliasMap) {
+    OS << "\tAlias: " << *Key << "\n";
+    for (const Value *Alias : ValueSet)
+      OS << "\t\t --> " << *Alias << "\n";
+  }
+  OS << "\n";
+}
+
+//===----------------------------------------------------------------------===//
+// Main analysis
+//===----------------------------------------------------------------------===//
+
 EscapeAnalysisInfo::EscapeAnalysisInfo(const Function &Fn): F(Fn) {
   std::deque<const BasicBlock *> WorkList;
 
@@ -41,11 +95,6 @@ EscapeAnalysisInfo::EscapeAnalysisInfo(const Function &Fn): F(Fn) {
     BBEscapeStates[BB] = EscapeState();
   }
 
-  LLVM_DEBUG(dbgs() << "--------------- FSEscapeAnalysis for " << F.getName()
-                    << " --------------- \n");
-  // dbgs() << "--------------- FSEscapeAnalysis for " << F.getName()
-                    // << " --------------- \n";
-
   while (!WorkList.empty()) {
     const BasicBlock *BB = WorkList.front();
     WorkList.pop_front();
@@ -55,111 +104,104 @@ EscapeAnalysisInfo::EscapeAnalysisInfo(const Function &Fn): F(Fn) {
 
     EscapeState NewES = mergePredEscapeStates(BB);
     compOutEscapeState(BB, NewES);
+    // BBEscapeStates[BB] = NewES;
 
     // If something changed, proceed with this BB
+    LLVM_DEBUG(dbgs() << ">> Check changes for " << BB->getName() << "\n");
     if (NewES != BBEscapeStates[BB]) {
+      LLVM_DEBUG(dbgs() << "Changed!\n");
       // Add BB's successors to WorkList and update BB state
-      for (const auto *SuccBB : successors(BB))
+      for (const auto *SuccBB : successors(BB)) {
+        LLVM_DEBUG(dbgs() << "Add succ " << SuccBB->getName() << "\n");
         WorkList.push_back(SuccBB);
+      }
       BBEscapeStates[BB] = NewES;
     }
 
     LLVM_DEBUG(
       printEscaped(BB);
-      printAliasToAlloca(BB);
+      BBEscapeStates[BB].AliasRel.print(dbgs());
       errs() << "**** END of BB " <<  BB->getName() << " **** \n\n";
     );
   }
 }
 
-void EscapeAnalysisInfo::getAffectedAllocas(const EscapeState &InES,
-                                            const Value *Opnd,
-                                            DenseSet<const AllocaInst *>
-                                            &AffectedAllocas) {
-  // If that's load instruction, it may be the load of an alias to alloca
-  if (const auto *LI = dyn_cast<const LoadInst>(Opnd)) {
-    LLVM_DEBUG(dbgs() << "\t\tLoadInst " << *LI << "\n");
-    getAffectedAllocas(InES, LI->getPointerOperand(), AffectedAllocas);
-    return;
-  }
+void EscapeAnalysisInfo::addAliasesToAffectedAllocas(
+    const AliasRelationTy &AliasRel, const AllocaInst *EscapedAlloca,
+    SmallPtrSet<const AllocaInst *, 8> &AffectedAllocas) {
 
-  // 1. Operand may be the alloca object
-  if (const auto *Alloca = dyn_cast<const AllocaInst>(
-      getUnderlyingObject(Opnd))) {
-    AffectedAllocas.insert(Alloca);
-
-    // 2. Or it maybe an alias to some alloca
-    if (const auto AliasesIt = InES.AliasesToAlloca.find(Alloca);
-      AliasesIt != InES.AliasesToAlloca.end())
-      for (auto *Alloca : AliasesIt->second) {
-        LLVM_DEBUG(
-            dbgs() << "\t\tFOUND ALIAS: " << *Opnd << " --> " << *Alloca << "\n");
-        if (!AffectedAllocas.contains(Alloca))
-          getAffectedAllocas(InES, Alloca, AffectedAllocas);
-      }
+  if (const auto Aliases = AliasRel.getAliases(EscapedAlloca);
+      (Aliases != std::nullopt)) {
+    for (const Value *PointeeAlloca : Aliases.value()) {
+      LLVM_DEBUG(dbgs() << "\t\tFOUND ALIAS: " << *EscapedAlloca << " --> "
+                        << *PointeeAlloca << "\n");
+      assert(isa<AllocaInst>(PointeeAlloca) && "Pointee must be AllocaInst\n");
+      AffectedAllocas.insert(cast<AllocaInst>(PointeeAlloca));
+    }
   }
 }
 
-void EscapeAnalysisInfo::addAlias(EscapeState &InOutES,
-                                  const AllocaInst *Alloca,
-                                  const Value *Alias) {
-  LLVM_DEBUG(dbgs() << "\t\tADD ALIAS: " << *Alias << " --> " << *Alloca << "\n");
-  //  Check, if there is already alias in the list
-  auto &Aliases = InOutES.AliasesToAlloca[Alias];
+/// Find escaping alloca in the instruction and add all aliases to the resulting
+/// set of affected allocas
+std::optional<SmallPtrSet<const AllocaInst *, 8>>
+EscapeAnalysisInfo::getAffectedAllocasNew(
+    const Use &Opnd, const AliasRelationTy &AliasRel) {
+  const AllocaInst *EscapedAlloca = getUnderlyingAlloca(Opnd.get());
+  if (!EscapedAlloca)
+    return std::nullopt;
 
-  // Check if there is already this Alloca in the list of pointee aliases
-  if (std::find(Aliases.begin(), Aliases.end(), Alloca) == Aliases.end())
-    Aliases.push_back(Alloca);
-  // InOutES.AliasesToAlloca[Alias].push_back(Alloca);
+  LLVM_DEBUG(dbgs() << "\tFound escaped Alloca: " << *EscapedAlloca << "\n");
+
+  SmallPtrSet<const AllocaInst *, 8> AffectedAllocas;
+
+  AffectedAllocas.insert(EscapedAlloca);
+  addAliasesToAffectedAllocas(AliasRel, EscapedAlloca, AffectedAllocas);
+  return AffectedAllocas;
 }
 
 void EscapeAnalysisInfo::compOutEscapeState(
-    const BasicBlock *BB, EscapeState &InOutES) {
+    const BasicBlock *BB, EscapeState &ES) {
   for (const Instruction &I: *BB) {
-    LLVM_DEBUG(dbgs() << "\nI \t" << I << "\n");
+    LLVM_DEBUG(dbgs() << "\nI " << I << "\n");
     for (const Use &Opnd: I.operands()) {
       LLVM_DEBUG(dbgs() << "\n\tOPND \t" << *Opnd.get() << "\n";);
 
-      // Find all affected allocas in the instruction
-      DenseSet<const AllocaInst *> AffectedAllocas;
-      getAffectedAllocas(InOutES, Opnd.get(), AffectedAllocas);
-      if (AffectedAllocas.empty())
-        continue;
-
-      LLVM_DEBUG(for (const auto *Alloca : AffectedAllocas)
-                    dbgs() << "\tAFFTD ALLOCA: \t" << *Alloca << "\n";);
-
       auto [CaptureKnd, Alias] = getEscapeKindForPtrOpnd(Opnd, &I);
       switch (CaptureKnd) {
-      case EscapeKind::NO_ESCAPE:
+      case EscapeKind::NO_ESCAPE: { // Nothing to do
         LLVM_DEBUG(dbgs() << "\t-- NO_ESCAPE --\n");
-        // Nothing to do
         break;
-      case EscapeKind::MAY_ESCAPE:
+      }
+      case EscapeKind::MAY_ESCAPE: { // Update all affected allocas
         LLVM_DEBUG(dbgs() << "\t-- MAY_ESCAPE --\n");
-        // Update all affected allocas
-        InOutES.EscapedAllocas.insert(AffectedAllocas.begin(),
-                                      AffectedAllocas.end());
+
+        auto AffectedAllocas = getAffectedAllocasNew(Opnd, ES.AliasRel);
+        if (AffectedAllocas == std::nullopt) break;
+
+        ES.EscapedAllocas.insert(AffectedAllocas.value().begin(),
+                                 AffectedAllocas.value().end());
         break;
-      case EscapeKind::ALIASING:
+      }
+      case EscapeKind::ALIASING: {
         LLVM_DEBUG(dbgs() << "\t-- ALIASING --\n");
-        assert(Alias != std::nullopt);
-        for (const auto *Alloca : AffectedAllocas) {
+        assert(Alias != std::nullopt && "If found alias, alias must be set\n");
+        auto AffectedAllocas =
+            getAffectedAllocasNew(Opnd, ES.AliasRel);
+        if (AffectedAllocas == std::nullopt) break;
+
+        for (const auto *Alloca : AffectedAllocas.value())
           // If Alias is GEP, find base pointer and add it as alias too
-          ////
-          // FIXME: move this logic to getEscapeKindForPtrOpnd?
-          ////
           if (auto *GEP = dyn_cast<GetElementPtrInst>(Alias.value())) {
             // Underlying alloca used in this GEP
             // GEP itself is not an alias
-            if (const AllocaInst *BaseAlloca = getUnderlyingAllocaForAliasing(GEP))
-              addAlias(InOutES, Alloca, BaseAlloca);
+            if (const AllocaInst *GEPUnderlyingAlloca = getUnderlyingAlloca(GEP))
+              ES.AliasRel.addAlias(GEPUnderlyingAlloca, Alloca);
           } else {
             // If alias is not GEP, add Alias itself
-            addAlias(InOutES, Alloca, Alias.value());
+            ES.AliasRel.addAlias(Alias.value(), Alloca);
           }
-        }
         break;
+      }
       }
     }
   }
@@ -176,10 +218,9 @@ EscapeAnalysisInfo::EscapeState EscapeAnalysisInfo::mergePredEscapeStates(
     EscapeState &PredES = BBEscapeStates[PredBB];
 
     MergedES.EscapedAllocas.insert(PredES.EscapedAllocas.begin(),
-                                   PredES.EscapedAllocas.end());
+    PredES.EscapedAllocas.end());
 
-    MergedES.AliasesToAlloca.insert(PredES.AliasesToAlloca.begin(),
-                                  PredES.AliasesToAlloca.end());
+    MergedES.AliasRel.merge(PredES.AliasRel);
   }
 
   // DEBUG
@@ -196,12 +237,9 @@ EscapeAnalysisInfo::EscapeState EscapeAnalysisInfo::mergePredEscapeStates(
 }
 
 /// Check whether type contains pointers
-bool EscapeAnalysisInfo::containsPointerType(Type *Ty) {
-  if (Ty->isPointerTy())
-    return true;
-
-  if (!Ty->isStructTy())
-    return false;
+bool EscapeAnalysisInfo::containsPointerType(const Type *Ty) {
+  if (Ty->isPointerTy()) return true;
+  if (!Ty->isStructTy()) return false;
 
   for (Type *EltTy : Ty->subtypes())
     if (containsPointerType(EltTy))
@@ -210,8 +248,38 @@ bool EscapeAnalysisInfo::containsPointerType(Type *Ty) {
 }
 
 /// U is the use of the local pointer
-std::pair<EscapeKind, std::optional<const Value*>>
-  EscapeAnalysisInfo::getEscapeKindForPtrOpnd(const Use &U, const Instruction *I) {
+/// TODO
+///  Aliasing with GEP may occure not only for load, but for ret and for store
+///  also and maybe some others ...
+// define dso_local ptr @gep_func() {
+// entry:
+//     %p = alloca ptr, align 8
+//     %pGEP = getelementptr inbounds i8, ptr %p, i64 24
+//     %pAlias = load i64, ptr %pGEP, align 8
+//     %call = call ptr @func()
+//     %data = getelementptr inbounds i8, ptr %call, i64 48
+//     store i64 %pAlias, ptr %data, align 8
+//     ret ptr %pGEP
+// }
+
+/// TODO 2
+/// Alloca is not only value which can escape. Call e.g. may create
+/// a value without Alloca
+/// define dso_local ptr @gep_func() {
+// entry : % p = alloca ptr, align 8 % pGEP = getelementptr inbounds i8, ptr % p,
+//           i64 24 % LoadedGEP = load i64, ptr % pGEP,
+//           align 8 % call = call ptr @func() % data = getelementptr inbounds i8,
+//           ptr % call, i64 48 store i64 % LoadedGEP, ptr % data,
+//           align 8 ret ptr % call
+// }
+
+/// TODO 3
+/// After mem2reg, there will be no alloca corresponding to the function
+/// arguments. Must consider it.
+///
+std::pair<EscapeKind, std::optional<const Value *>>
+EscapeAnalysisInfo::getEscapeKindForPtrOpnd(const Use &U,
+                                            const Instruction *I) {
   LLVM_DEBUG(dbgs() << "\tgetEscapeKindForPtrOpnd:\n");
 
   switch (I->getOpcode()) {
@@ -224,9 +292,7 @@ std::pair<EscapeKind, std::optional<const Value*>>
         (Call->getCalledFunction()->getIntrinsicID() == Intrinsic::memcpy) &&
         (Call->getArgOperand(1) == U.get())) {
       // Check whether the source argument is a struct containing pointers
-      AllocaInst *Alloca = dyn_cast<AllocaInst>(U.get());
-
-      if (Alloca) {
+      if (AllocaInst *Alloca = dyn_cast<AllocaInst>(U.get())) {
         auto *StructTy = Alloca->getAllocatedType();
         if (StructTy && containsPointerType(StructTy))
           // First argument (destination) is a new alias
@@ -281,11 +347,9 @@ std::pair<EscapeKind, std::optional<const Value*>>
     // "va-arg" from a pointer does not cause it to be captured.
     return {EscapeKind::NO_ESCAPE, std::nullopt};
   case Instruction::Store: {
-    // This is the main different of the new algorithm.
-    // Now we don't consider each store of the pointer to memrory as an escape.
-    //
-    // Volatile stores make the address observable.
     auto *CE = dyn_cast<ConstantExpr>(I->getOperand(1));
+    // Volatile stores make the address observable.
+    // Store to global variable is an escape as well
     if ((cast<StoreInst>(I)->isVolatile()) ||
         (isa<GlobalVariable>(I->getOperand(1))) ||
         (CE && isa<GlobalVariable>(CE->getOperand(0))))
@@ -418,7 +482,8 @@ std::pair<EscapeKind, std::optional<const Value*>>
   }
 }
 
-bool EscapeAnalysisInfo::isDereferenceableOrNull(Value *O, const DataLayout &DL) {
+bool EscapeAnalysisInfo::isDereferenceableOrNull(const Value *O,
+                                                 const DataLayout &DL) {
   // We want comparisons to null pointers to not be considered capturing,
   // but need to guard against cases like gep(p, -ptrtoint(p2)) == null,
   // which are equivalent to p == p2 and would capture the pointer.
@@ -433,39 +498,27 @@ bool EscapeAnalysisInfo::isDereferenceableOrNull(Value *O, const DataLayout &DL)
   return O->getPointerDereferenceableBytes(DL, CanBeNull, CanBeFreed);
 }
 
-/// Recursively searches for the base pointer that might be associated with an
-/// AllocaInst
-const AllocaInst *EscapeAnalysisInfo::getUnderlyingAllocaForAliasing(
-    const Value *Ptr) {
-  if (auto *Load = dyn_cast<LoadInst>(Ptr))
+/// Recuresively search for the underlying local object (alloca)
+/// in the instruction
+const AllocaInst *EscapeAnalysisInfo::getUnderlyingAlloca(const Value *V) {
+  // LLVM_DEBUG(dbgs() << "getUnderlyingAlloca() V " << *V << "\n");
+  if (auto *Load = dyn_cast<LoadInst>(V))
     // If it's a load, recursively analyze the pointer operand
-    return getUnderlyingAllocaForAliasing(Load->getPointerOperand());
+    return getUnderlyingAlloca(Load->getPointerOperand());
 
-  if (const auto *GEP = dyn_cast<GetElementPtrInst>(Ptr))
-    return getUnderlyingAllocaForAliasing(getUnderlyingObject(GEP));
+  if (const auto *GEP = dyn_cast<GetElementPtrInst>(V))
+    return getUnderlyingAlloca(getUnderlyingObject(GEP));
 
   // In other cases, return the pointer as is
-  if (const auto *Alloca = dyn_cast<const AllocaInst>(Ptr))
+  if (const auto *Alloca = dyn_cast<const AllocaInst>(V))
     return Alloca;
 
-  dbgs() << "Ptr " << *Ptr << "\n";
-
-  assert(isa<GlobalVariable>(Ptr) &&
-         "GEP underlying object is neither AllocaInst nor GlobalVariable");
+  // GEP may be computed from global variable, or from a phi-node
+  // and both cases seems to be no-escape cases.
+  // assert((isa<GlobalVariable>(Ptr) || isa<PHINode>(Ptr) || isa<CallInst>(Ptr)) &&
+         // "GEP underlying object is neither AllocaInst nor GlobalVariable");
 
   return nullptr;
-}
-
-void EscapeAnalysisInfo::printAliasToAlloca(const BasicBlock *BB) {
-  dbgs() << "AliasToAlloca for BB " << BB->getName() << ":\n";
-  if (BBEscapeStates.find(BB) == BBEscapeStates.end())
-    return;
-  for (const auto &Pair : BBEscapeStates[BB].AliasesToAlloca) {
-    dbgs() << "\tAlias: " << *Pair.first << "\n";
-    for (const AllocaInst *Alloca: Pair.second)
-      dbgs() << "\t\t --> Alloca: " << *Alloca << "\n";
-  }
-  dbgs() << "\n";
 }
 
 void EscapeAnalysisInfo::printEscaped(const BasicBlock *BB) {
@@ -490,14 +543,14 @@ void EscapeAnalysisInfo::print(raw_ostream &OS) {
 
 AnalysisKey EscapeAnalysis::Key;
 
-EscapeAnalysis::Result EscapeAnalysis::run(Function &F,
+EscapeAnalysis::Result EscapeAnalysis::run(const Function &F,
                                            FunctionAnalysisManager &AM) {
   EscapeAnalysisInfo EAI(F);
   return EAI;
 }
 
 PreservedAnalyses
-EscapeAnalysisPrinterPass::run(Function &F, FunctionAnalysisManager &AM) {
+EscapeAnalysisPrinterPass::run(Function &F, FunctionAnalysisManager &AM) const {
   OS << "Printing analysis 'Escape Analysis' for function '"
       << F.getName() << "':\n";
   AM.getResult<EscapeAnalysis>(F).print(OS);

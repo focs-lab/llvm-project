@@ -13,6 +13,8 @@
 #ifndef LLVM_ANALYSIS_ESCAPEANALYSIS_H
 #define LLVM_ANALYSIS_ESCAPEANALYSIS_H
 
+#include "../../../../clang/include/clang/InstallAPI/MachO.h"
+
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/PassManager.h"
 
@@ -23,66 +25,93 @@ enum class EscapeKind {
   ALIASING,
 };
 
+
 namespace llvm {
   /// This is the implementation of simple escape analysis
 
   class EscapeAnalysisInfo {
   public:
     explicit EscapeAnalysisInfo(const Function &Fn);
-
     void print(raw_ostream &OS);
-    using EscapedAllocasTy = DenseSet<const Value *>;
 
   private:
     // Reference to the function being analyzed.
     const Function &F;
+    using EscapedAllocasTy = DenseSet<const Value *>;
+
+    class AliasRelationTy {
+      using AliasListTy = SmallPtrSet<const Value *, 8>;
+      DenseMap<const Value*, AliasListTy> AliasMap;
+
+    public:
+      /// Merge two relations into one (Other), save results into current (this)
+      void merge(const AliasRelationTy &Other);
+
+      /// Add the order of aliases (a, b)
+      void addAlias(const Value *Alias, const Value *PointeeValue);
+
+      /// Get list of aliases for the object a
+      std::optional<AliasListTy> getAliases(const Value *V) const;
+
+      /// We need it to check if something changed in the data-flow analysis
+      bool operator==(const AliasRelationTy& Other) const;
+
+      /// Print alias relation
+      void print(raw_ostream &OS) const;
+    };
 
     struct EscapeState {
       // Set of allocations that escape in this block.
       EscapedAllocasTy EscapedAllocas;
 
-      // map from Alloca alias (e.g. GEP) to the original Allocas
+      // map from Alloca aliases to the original Allocas
       // Note that a Value may be the alias of multiple Allocas
-      DenseMap<const Value *, SmallVector<const AllocaInst *>> AliasesToAlloca;
+      AliasRelationTy AliasRel;
 
-      bool operator!=(const EscapeState &Other) const {
-        return ((EscapedAllocas != Other.EscapedAllocas) ||
-                (AliasesToAlloca != Other.AliasesToAlloca));
+      bool operator==(const EscapeState &ES) const {
+        if (this == &ES) return true;
+        return ((EscapedAllocas == ES.EscapedAllocas) &&
+                (AliasRel == ES.AliasRel));
       }
+
+      bool operator!=(const EscapeState &ES) const { return !(*this == ES); }
     };
 
     /// Map of basic blocks to their escape analysis states.
     DenseMap<const BasicBlock *, EscapeState> BBEscapeStates;
 
-    void getAffectedAllocas(const EscapeState &InES,
-                             const Value *Opnd,
-                             DenseSet<const AllocaInst *> &AffectedAllocas);
+    /// Find escaping alloca in the instruction and add all aliases to the
+    /// resulting set of affected allocas
+    static std::optional<SmallPtrSet<const AllocaInst *, 8>>
+    getAffectedAllocasNew(const Use &Opnd, const AliasRelationTy &AliasRel);
 
-    /// Add alias to the set of aliases
-    void addAlias(EscapeState &InOutES, const AllocaInst *Alloca, const Value *Alias);
+    static void addAliasesToAffectedAllocas(
+        const AliasRelationTy &AliasRel, const AllocaInst *EscapedAlloca,
+        SmallPtrSet<const AllocaInst *, 8> &AffectedAllocas);
 
     /// Compute Out set for BB
-    void compOutEscapeState(const BasicBlock *BB,
-                            EscapeState &InOutES);
+    static void compOutEscapeState(const BasicBlock *BB,
+                            EscapeState &ES);
 
     /// Merges the escape analysis states from multiple incoming blocks.
     EscapeState mergePredEscapeStates(const BasicBlock *BB);
 
     /// Determine what kind of capture behaviour V may exhibit.
-    std::pair<EscapeKind, std::optional<const Value*>>
+    static std::pair<EscapeKind, std::optional<const Value*>>
         getEscapeKindForPtrOpnd(const Use &U, const Instruction *I);
 
-    void printAliasToAlloca(const BasicBlock *BB);
+    // void printAliasToAlloca(const BasicBlock *BB);
     void printEscaped(const BasicBlock *BB);
 
     /// Taken from CaptureTracker
-    bool isDereferenceableOrNull(Value *O, const DataLayout &DL);
+    static bool isDereferenceableOrNull(const Value *O, const DataLayout &DL);
 
-    /// Recursively searches for the base pointer that might be associated with an AllocaInst
-    const AllocaInst *getUnderlyingAllocaForAliasing(const Value *Ptr);
+    /// Recuresively search for the underlying local object (alloca)
+    /// in the instruction
+    static const AllocaInst *getUnderlyingAlloca(const Value *V);
 
     /// Check whether type contains pointers
-    bool containsPointerType(Type *Ty);
+    static bool containsPointerType(const Type *Ty);
 
   public:
 
@@ -98,10 +127,8 @@ namespace llvm {
     }
   };
 
-  class EscapeAnalysis
-      : public AnalysisInfoMixin<EscapeAnalysis> {
+  class EscapeAnalysis : public AnalysisInfoMixin<EscapeAnalysis> {
     friend AnalysisInfoMixin<EscapeAnalysis>;
-
     static AnalysisKey Key;
 
   public:
@@ -109,7 +136,7 @@ namespace llvm {
     using Result = EscapeAnalysisInfo;
 
     /// Run the analysis pass
-    Result run(Function &F, FunctionAnalysisManager &AM);
+    static Result run(const Function &F, FunctionAnalysisManager &AM);
   };
 
   /// Printer pass for the \c EscapeAnalysis results.
@@ -120,7 +147,7 @@ namespace llvm {
   public:
     explicit EscapeAnalysisPrinterPass(raw_ostream &OS) : OS(OS) { }
 
-    PreservedAnalyses run(Function &F, FunctionAnalysisManager &AM);
+    PreservedAnalyses run(Function &F, FunctionAnalysisManager &AM) const;
 
     static bool isRequired() { return true; }
   };

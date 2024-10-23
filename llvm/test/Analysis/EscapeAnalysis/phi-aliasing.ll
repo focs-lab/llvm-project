@@ -102,3 +102,33 @@ while.end:                                        ; preds = %while.cond
   store ptr %5, ptr @VoidGPtr, align 8
   ret void
 }
+
+define dso_local ptr @func1() {
+entry:
+  ret ptr null
+}
+
+define dso_local ptr @func2() {
+entry:
+  ret ptr null
+}
+
+define dso_local ptr @phi_in_GEP() {
+; CHECK: Printing analysis 'Escape Analysis' for function 'phi_in_GEP':
+; CHECK-NEXT: Escaping variables:
+; CHECK-DAG:   %a = alloca ptr, align 4
+BB0:
+  %a = alloca ptr, align 4
+  %call1 = call ptr @func2()
+  br label %BB2
+
+BB1:
+  %call2 = call ptr @func2()
+  br label %BB2
+
+BB2:
+  %PHI = phi ptr [ %call1, %BB0 ], [ %call2, %BB1 ]
+  %GEP = getelementptr inbounds i8, ptr %PHI, i64 28
+  store ptr %a, ptr %GEP, align 4
+  ret ptr %a
+}

@@ -23,8 +23,8 @@ if.end:                                           ; preds = %if.then, %entry
 define dso_local void @escape_in_loop() {
 ; CHECK: Printing analysis 'Escape Analysis' for function 'escape_in_loop':
 ; CHECK-NEXT: Escaping variables:
-; CHECK-DAG:   %x = alloca i32, align 4
 ; CHECK-DAG:   %i = alloca i32, align 4
+; CHECK-DAG:   %x = alloca i32, align 4
 entry:
   %i = alloca i32, align 4
   %x = alloca i32, align 4

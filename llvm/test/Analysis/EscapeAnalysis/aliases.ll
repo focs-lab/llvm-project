@@ -51,3 +51,38 @@ entry:
   store atomic i32 %1, ptr %arrayidx release, align 4
   ret void
 }
+
+define dso_local void @escape_pointee_object() {
+; CHECK: Printing analysis 'Escape Analysis' for function 'escape_pointee_object':
+; CHECK-NEXT: Escaping variables:
+; CHECK-DAG:   %p = alloca ptr, align 8
+; CHECK-DAG:   %x = alloca [10 x i32], align 16
+entry:
+  %x = alloca [10 x i32], align 16
+  %p = alloca ptr, align 8
+  %arrayidx = getelementptr inbounds [10 x i32], ptr %x, i64 0, i64 5
+  store ptr %arrayidx, ptr %p, align 8
+  %arrayidx1 = getelementptr inbounds [10 x i32], ptr %x, i64 0, i64 2
+  store ptr %arrayidx1, ptr @GPtr, align 8
+  ret void
+}
+
+define dso_local void @escape_in_the_middle_of_alias_chain() {
+; CHECK: Printing analysis 'Escape Analysis' for function 'escape_in_the_middle_of_alias_chain':
+; CHECK-NEXT: Escaping variables:
+; CHECK-DAG:  %z = alloca ptr, align 8
+; CHECK-DAG:  %y = alloca ptr, align 8
+; CHECK-DAG:  %x = alloca [10 x i32], align 16
+entry:
+  %x = alloca [10 x i32], align 16
+  %y = alloca ptr, align 8
+  %z = alloca ptr, align 8
+  %arrayidx = getelementptr inbounds [10 x i32], ptr %x, i64 0, i64 3
+  store ptr %arrayidx, ptr %y, align 8
+  %0 = load ptr, ptr %y, align 8
+  %arrayidx1 = getelementptr inbounds i32, ptr %0, i64 4
+  store ptr %arrayidx1, ptr %z, align 8
+  %1 = load ptr, ptr %y, align 8
+  store ptr %1, ptr @GPtr, align 8
+  ret void
+}
