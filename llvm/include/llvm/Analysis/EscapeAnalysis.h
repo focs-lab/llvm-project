@@ -13,17 +13,8 @@
 #ifndef LLVM_ANALYSIS_ESCAPEANALYSIS_H
 #define LLVM_ANALYSIS_ESCAPEANALYSIS_H
 
-#include "../../../../clang/include/clang/InstallAPI/MachO.h"
-
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/PassManager.h"
-
-/// Types of use capture kinds, see \p DetermineUseCaptureKind.
-enum class EscapeKind {
-  NO_ESCAPE,
-  MAY_ESCAPE,
-  ALIASING,
-};
 
 
 namespace llvm {
@@ -35,6 +26,13 @@ namespace llvm {
     void print(raw_ostream &OS);
 
   private:
+    /// Types of object escaping states
+    enum class EscapeKind {
+      NO_ESCAPE,
+      MAY_ESCAPE,
+      ALIASING,
+    };
+
     // Reference to the function being analyzed.
     const Function &F;
     using EscapedAllocasTy = DenseSet<const Value *>;
@@ -80,27 +78,25 @@ namespace llvm {
     /// Map of basic blocks to their escape analysis states.
     DenseMap<const BasicBlock *, EscapeState> BBEscapeStates;
 
-    /// Find escaping alloca in the instruction and add all aliases to the
-    /// resulting set of affected allocas
-    static std::optional<SmallPtrSet<const AllocaInst *, 8>>
-    getAffectedAllocasNew(const Use &Opnd, const AliasRelationTy &AliasRel);
+    static std::optional<SmallPtrSet<const Value *, 8>>
+    getAffectedObjects(const Use &Opnd, const AliasRelationTy &AliasRel);
 
-    static void addAliasesToAffectedAllocas(
-        const AliasRelationTy &AliasRel, const AllocaInst *EscapedAlloca,
-        SmallPtrSet<const AllocaInst *, 8> &AffectedAllocas);
+    /// Add aliases to escaping object
+    static void addAliasesToAffectedObject(
+        const AliasRelationTy &AliasRel, const Value *EscapingObject,
+        SmallPtrSet<const Value *, 8> &AffectedObjects);
 
     /// Compute Out set for BB
-    static void compOutEscapeState(const BasicBlock *BB,
-                            EscapeState &ES);
+    static void compOutEscapeState(const BasicBlock *BB, EscapeState &ES);
 
     /// Merges the escape analysis states from multiple incoming blocks.
     EscapeState mergePredEscapeStates(const BasicBlock *BB);
 
-    /// Determine what kind of capture behaviour V may exhibit.
+    /// Determine what kind of escape behaviour V may exhibit.
     static std::pair<EscapeKind, std::optional<const Value*>>
         getEscapeKindForPtrOpnd(const Use &U, const Instruction *I);
 
-    // void printAliasToAlloca(const BasicBlock *BB);
+    /// Print escaped objects
     void printEscaped(const BasicBlock *BB);
 
     /// Taken from CaptureTracker
@@ -108,7 +104,7 @@ namespace llvm {
 
     /// Recuresively search for the underlying local object (alloca)
     /// in the instruction
-    static const AllocaInst *getUnderlyingAlloca(const Value *V);
+    static const Value *getUnderlyingEscapingObject(const Value *V);
 
     /// Check whether type contains pointers
     static bool containsPointerType(const Type *Ty);
