@@ -924,7 +924,10 @@ int Finalize(ThreadState *thr) {
     failed = true;
 #if !SANITIZER_GO
 #define TSAN_STRINGIFY(s) #s
-    Printf("ThreadSanitizer: reported %d warnings " TSAN_SETTING_NAME "\n", ctx->nreported);
+#define TSAN_XSTRINGIFY(s) TSAN_STRINGIFY(s)
+    Printf("ThreadSanitizer: reported %d warnings " TSAN_SETTING_NAME " " TSAN_XSTRINGIFY(TSAN_SAMPLING_RATE) "\n", ctx->nreported);
+#undef TSAN_STRINGIFY
+#undef TSAN_XSTRINGIFY
 #else
     Printf("Found %d data race(s)\n", ctx->nreported);
 #endif

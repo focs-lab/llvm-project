@@ -631,9 +631,12 @@ ALWAYS_INLINE bool ShouldSample(ThreadState *thr) {
   rng_state ^= rng_state << 5;
   thr->sampling_rng_state = rng_state;
 
+  // u32 rng_state = thr->sampling_rng_state--;
+
   // 0.03 * 65536 = 1966.08
-  // bool should_sample = (rng_state & 0xffff) < 2000;
-  bool should_sample = (rng_state & 0xffff) < 200;  // 0.3%
+  // bool should_sample = (rng_state & 0xffff) < 6554;    // 10%
+  // bool should_sample = (rng_state & 0xffff) < 1966; // 3%
+  bool should_sample = (rng_state & 0xffff) < TSAN_SAMPLING_THRESHOLD;  // 0.3%
 #if TSAN_UCLOCKS || TSAN_OL
   if (UNLIKELY(should_sample)) thr->SetSampled(true);
 #endif
