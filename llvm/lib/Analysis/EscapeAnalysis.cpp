@@ -107,7 +107,7 @@ EscapeAnalysisInfo::EscapeAnalysisInfo(const Function &Fn): F(Fn) {
     // BBEscapeStates[BB] = NewES;
 
     // If something changed, proceed with this BB
-    LLVM_DEBUG(dbgs() << ">> Check changes for " << BB->getName() << "\n");
+    LLVM_DEBUG(dbgs() << "\n>> Check changes for " << BB->getName() << " -- ");
     if (NewES != BBEscapeStates[BB]) {
       LLVM_DEBUG(dbgs() << "Changed!\n");
       // Add BB's successors to WorkList and update BB state
@@ -116,6 +116,8 @@ EscapeAnalysisInfo::EscapeAnalysisInfo(const Function &Fn): F(Fn) {
         WorkList.push_back(SuccBB);
       }
       BBEscapeStates[BB] = NewES;
+    } else {
+      LLVM_DEBUG(dbgs() << "Not Changed!\n");
     }
 
     LLVM_DEBUG(
@@ -258,11 +260,12 @@ bool EscapeAnalysisInfo::containsPointerType(const Type *Ty) {
 std::pair<EscapeAnalysisInfo::EscapeKind, std::optional<const Value *>>
 EscapeAnalysisInfo::getEscapeKindForPtrOpnd(const Use &U,
                                             const Instruction *I) {
-  LLVM_DEBUG(dbgs() << "\tgetEscapeKindForPtrOpnd:\n");
+  LLVM_DEBUG(dbgs() << "\tgetEscapeKindForPtrOpnd -- ");
 
   switch (I->getOpcode()) {
   case Instruction::Call:
   case Instruction::Invoke: {
+    LLVM_DEBUG(dbgs() << "Call/Invoke\n");
     auto *Call = cast<CallBase>(I);
 
     // Considering llvm.memcpy intrinsic
@@ -310,35 +313,52 @@ EscapeAnalysisInfo::getEscapeKindForPtrOpnd(const Use &U,
 
     // Not captured if only passed via 'nocapture' arguments.
     if (Call->isDataOperand(&U) &&
-        !Call->doesNotCapture(Call->getDataOperandNo(&U))) {
+        !Call->doesNotCapture(Call->getDataOperandNo(&U)) &&
+        U->getType()->isPointerTy()) {
       // The parameter is not marked 'nocapture' - captured.
       return {EscapeKind::MAY_ESCAPE, std::nullopt};
     }
     return {EscapeKind::NO_ESCAPE, std::nullopt};
   }
   case Instruction::Load:
+    LLVM_DEBUG(dbgs() << "Load\n");
     // Volatile loads make the address observable.
     if (cast<LoadInst>(I)->isVolatile())
       return {EscapeKind::MAY_ESCAPE, std::nullopt};
     return {EscapeKind::NO_ESCAPE, std::nullopt};
   case Instruction::VAArg:
+    LLVM_DEBUG(dbgs() << "VAArg\n");
     // "va-arg" from a pointer does not cause it to be captured.
     return {EscapeKind::NO_ESCAPE, std::nullopt};
   case Instruction::Store: {
-    auto *CE = dyn_cast<ConstantExpr>(I->getOperand(1));
+    LLVM_DEBUG(dbgs() << "Store\n");
     // Volatile stores make the address observable.
+    if (cast<StoreInst>(I)->isVolatile())
+      return {EscapeKind::MAY_ESCAPE, std::nullopt};
+
+    const auto *Src = I->getOperand(0)->stripPointerCasts();
+    const auto *Dst = I->getOperand(1)->stripPointerCasts();
+
+    // Passing value instead of pointer is neither escape nor alias
+    if (!Src->getType()->isPointerTy())
+      return {EscapeKind::NO_ESCAPE, std::nullopt};
+
     // Store to global variable is an escape as well
-    if ((cast<StoreInst>(I)->isVolatile()) ||
-        (isa<GlobalVariable>(I->getOperand(1))) ||
-        (CE && isa<GlobalVariable>(CE->getOperand(0))))
+    // If storing value is not a pointer, that's not escape
+    if (auto *CE = dyn_cast<ConstantExpr>(Dst);
+        ((isa<GlobalVariable>(Dst)) ||
+         (CE && isa<GlobalVariable>(CE->getOperand(0)))))
       return {EscapeKind::MAY_ESCAPE, std::nullopt};
 
     if (U.getOperandNo() == 0)
+      // NOTE: We could find underlying pointee object here -- think about it
+      // return {EscapeKind::ALIASING, getUnderlyingEscapingObject(Dst)};
       return {EscapeKind::ALIASING, cast<StoreInst>(I)->getPointerOperand()};
 
     return {EscapeKind::NO_ESCAPE, std::nullopt};
   }
   case Instruction::AtomicRMW: {
+    LLVM_DEBUG(dbgs() << "AtomicRMW\n");
     // atomicrmw conceptually includes both a load and store from
     // the same location.
     // As with a store, the location being accessed is not captured,
@@ -350,6 +370,7 @@ EscapeAnalysisInfo::getEscapeKindForPtrOpnd(const Use &U,
     return {EscapeKind::NO_ESCAPE, std::nullopt};
   }
   case Instruction::AtomicCmpXchg: {
+    LLVM_DEBUG(dbgs() << "AtomicCmpXchg\n");
     // cmpxchg conceptually includes both a load and store from
     // the same location.
     // As with a store, the location being accessed is not captured,
@@ -361,6 +382,7 @@ EscapeAnalysisInfo::getEscapeKindForPtrOpnd(const Use &U,
     return {EscapeKind::NO_ESCAPE, std::nullopt};
   }
   case Instruction::GetElementPtr: {
+    LLVM_DEBUG(dbgs() << "GetElementPtr\n");
     // AA does not support pointers of vectors, so GEP vector splats need to
     // be considered as captures.
     if (I->getType()->isVectorTy())
@@ -373,9 +395,11 @@ EscapeAnalysisInfo::getEscapeKindForPtrOpnd(const Use &U,
   case Instruction::PHI:
   case Instruction::Select:
   case Instruction::AddrSpaceCast:
+    LLVM_DEBUG(dbgs() << "AddrSpaceCast\n");
     // The original value is not captured via this if the new value isn't.
     return {EscapeKind::ALIASING, I};
   case Instruction::ICmp: {
+    LLVM_DEBUG(dbgs() << "ICmp\n");
     unsigned Idx = U.getOperandNo();
     unsigned OtherIdx = 1 - Idx;
     if (auto *CPN = dyn_cast<ConstantPointerNull>(I->getOperand(OtherIdx))) {
@@ -385,6 +409,7 @@ EscapeAnalysisInfo::getEscapeKindForPtrOpnd(const Use &U,
       if (CPN->getType()->getAddressSpace() == 0)
         if (isNoAliasCall(U.get()->stripPointerCasts()))
           return {EscapeKind::NO_ESCAPE, std::nullopt};
+
       if (!I->getFunction()->nullPointerIsDefined()) {
         auto *O = I->getOperand(Idx)->stripPointerCastsSameRepresentation();
         // Comparing a dereferenceable_or_null pointer against null cannot
@@ -436,25 +461,43 @@ EscapeAnalysisInfo::getEscapeKindForPtrOpnd(const Use &U,
   case Instruction::SIToFP:
   case Instruction::FPTrunc:
   case Instruction::FPExt:
+
     // Treat binary operators as not escaping
+    LLVM_DEBUG(dbgs() << "Binary operator\n");
     return {EscapeKind::NO_ESCAPE, std::nullopt};
+
+  case Instruction::Alloca:
+    LLVM_DEBUG(dbgs() << "Alloca\n");
+    return {EscapeKind::NO_ESCAPE, std::nullopt};
+
   case Instruction::PtrToInt:
   case Instruction::IntToPtr:
+    LLVM_DEBUG(dbgs() << "PtrToInt/IntToPtr\n");
     return {EscapeKind::ALIASING, I};
 
   case Instruction::Ret: {
+    LLVM_DEBUG(dbgs() << "Ret\n");
+
+    if (!U->getType()->isPointerTy())
+      return {EscapeKind::NO_ESCAPE, std::nullopt};
+
     // 1. Check if returning the address of alloca directly
-    if (isa<AllocaInst>(U.get()->stripPointerCasts()))
+    const Value *StrippedOpnd = U.get()->stripPointerCasts();
+
+    if (isa<AllocaInst>(StrippedOpnd))
       return {EscapeKind::MAY_ESCAPE, std::nullopt};
 
     // 2. Check if returning a pointer loaded from a stack location
-    if (auto *LI = dyn_cast<LoadInst>(U.get())) {
-      if (isa<AllocaInst>(LI->getPointerOperand()))
+    if (auto *LI = dyn_cast<LoadInst>(StrippedOpnd)) {
+      if (isa<AllocaInst>(LI->getPointerOperand()) &&
+          LI->getPointerOperandType()->isPointerTy())
         return {EscapeKind::MAY_ESCAPE, std::nullopt};
     }
+
     return {EscapeKind::NO_ESCAPE, std::nullopt};
   }
   default:
+    LLVM_DEBUG(dbgs() << "Default\n");
     // Something else - be conservative and say it is escaped.
     return {EscapeKind::MAY_ESCAPE, std::nullopt};
   }

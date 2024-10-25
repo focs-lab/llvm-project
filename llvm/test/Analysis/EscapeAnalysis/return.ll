@@ -1,7 +1,5 @@
 ; RUN: opt < %s -passes='print<escape-analysis>' -disable-output 2>&1 | FileCheck %s
 
-@global_ptr = dso_local global ptr null, align 8
-
 define dso_local ptr @escape_local() {
 ; CHECK: Printing analysis 'Escape Analysis' for function 'escape_local':
 ; CHECK-NEXT: Escaping variables:

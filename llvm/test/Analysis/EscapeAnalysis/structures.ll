@@ -54,9 +54,9 @@ entry:
 define dso_local void @escape_nested_struct() {
 ; CHECK: Printing analysis 'Escape Analysis' for function 'escape_nested_struct':
 ; CHECK-NEXT: Escaping variables:
-; CHECK-DAG:   %x = alloca i32, align 4
-; CHECK-DAG:   %OuterS = alloca %struct.OuterStructTy, align 8
-; CHECK-DAG:   %InnerS = alloca %struct.InnerStructTy, align 8
+; CHECK-DAG:  %x = alloca i32, align 4
+; CHECK-DAG:  %OuterS = alloca %struct.OuterStructTy, align 8
+; CHECK-DAG:  %InnerS = alloca %struct.InnerStructTy, align 8
 entry:
   %x = alloca i32, align 4
   %InnerS = alloca %struct.InnerStructTy, align 8

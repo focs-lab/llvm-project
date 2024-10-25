@@ -86,3 +86,15 @@ entry:
   store ptr %1, ptr @GPtr, align 8
   ret void
 }
+
+define dso_local i32 @passing_value_is_not_aliasing() #0 {
+; CHECK: Printing analysis 'Escape Analysis' for function 'passing_value_is_not_aliasing':
+; CHECK-NEXT: Escaping variables:
+; CHECK-DAG:  %y = alloca i32, align 4
+entry:
+  %y = alloca i32, align 4
+  store i32 undef, ptr %y, align 4
+  store ptr %y, ptr @GPtr, align 8
+  %0 = load i32, ptr %y, align 4
+  ret i32 %0
+}

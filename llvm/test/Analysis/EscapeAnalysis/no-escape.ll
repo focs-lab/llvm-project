@@ -19,3 +19,22 @@ entry:
   store i32 %x, ptr %x.addr, align 4
   ret void
 }
+
+@GV = dso_local global i32 0, align 4
+
+define dso_local void @func(i32 noundef %v) {
+  ret void
+}
+
+define dso_local i32 @passing_value_is_not_escape() #0 {
+; CHECK: Printing analysis 'Escape Analysis' for function 'passing_value_is_not_escape':
+; CHECK-NOT: Escaping variables:
+entry:
+  %x = alloca i32, align 4
+  %0 = load i32, ptr %x, align 4
+  store i32 %0, ptr @GV, align 4
+  %1 = load i32, ptr %x, align 4
+  call void @func(i32 noundef %1)
+  %2 = load i32, ptr %x, align 4
+  ret i32 %2
+}

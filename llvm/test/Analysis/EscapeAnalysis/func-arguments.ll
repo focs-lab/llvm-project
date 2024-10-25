@@ -11,8 +11,6 @@ entry:
 define dso_local void @escaping_func_arguments(i32 noundef %x, i32 noundef %y, ptr noundef %z) {
 ; CHECK: Printing analysis 'Escape Analysis' for function 'escaping_func_arguments':
 ; CHECK-NEXT: Escaping variables:
-; CHECK-DAG: i32 %x
-; CHECK-DAG: i32 %y
 ; CHECK-DAG:   %y.addr = alloca i32, align 4
 ; CHECK-DAG:   %x.addr = alloca i32, align 4
 entry:
