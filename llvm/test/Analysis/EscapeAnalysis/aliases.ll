@@ -98,3 +98,21 @@ entry:
   %0 = load i32, ptr %y, align 4
   ret i32 %0
 }
+
+define dso_local void @mutual_aliases() {
+; CHECK: Printing analysis 'Escape Analysis' for function 'mutual_aliases':
+; CHECK-NEXT: Escaping variables:
+; CHECK-DAG:  %x = alloca i32, align 4
+; CHECK-DAG:  %a1 = alloca ptr, align 8
+; CHECK-DAG:  %a2 = alloca ptr, align 8
+entry:
+  %x = alloca i32, align 4
+  %a1 = alloca ptr, align 8
+  %a2 = alloca ptr, align 8
+  %0 = load ptr, ptr %a2, align 8
+  store ptr %0, ptr %a1, align 8
+  store ptr %x, ptr %a1, align 8
+  %1 = load ptr, ptr %a2, align 8
+  store ptr %1, ptr @GPtr, align 8
+  ret void
+}

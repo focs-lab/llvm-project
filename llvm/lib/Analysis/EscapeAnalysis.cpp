@@ -41,16 +41,24 @@ void EscapeAnalysisInfo::AliasRelationTy::merge(const AliasRelationTy &Other) {
     AliasMap.insert({OtherKey, OtherValueSet});
 }
 
-/// Add the order of aliases (a, b)
+/// Add the alias: Alias --> PointeeValue
 void EscapeAnalysisInfo::AliasRelationTy::addAlias(const Value *Alias,
                                                    const Value *PointeeValue) {
-  if (Alias == PointeeValue)
+  if ((Alias == PointeeValue) || (AliasMap[Alias].contains(PointeeValue)))
     return;
+
+  LLVM_DEBUG(dbgs() << "\taddAlias: " << *PointeeValue << " --> " << *Alias
+                    << "\n");
   AliasMap[Alias].insert(PointeeValue);
+
+  //  Resursively add new alias to all existing aliases of PointeeValue
+  if (const auto ExistingAliases = getAliases(PointeeValue); ExistingAliases)
+    for (const Value *ExistingAlias : ExistingAliases.value())
+      addAlias(Alias, ExistingAlias);
 
   // If Alloca A --> Alloca B we assume that B --> A
   if (isa<AllocaInst>(Alias))
-    AliasMap[PointeeValue].insert(Alias);
+    addAlias(PointeeValue, Alias);
 }
 
 /// Get list of aliases for the object a
@@ -151,7 +159,7 @@ EscapeAnalysisInfo::getAffectedObjects(const Use &Opnd,
   if (!EscapingObject)
     return std::nullopt;
 
-  LLVM_DEBUG(dbgs() << "\tFound escaped Obj: " << *EscapingObject << "\n");
+  LLVM_DEBUG(dbgs() << "\tEscapingObject: " << *EscapingObject << "\n");
 
   SmallPtrSet<const Value *, 8> AffectedObjects;
 
