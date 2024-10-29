@@ -6,7 +6,7 @@
 
 define dso_local ptr @escape_struct_field() {
 ; CHECK: Printing analysis 'Escape Analysis' for function 'escape_struct_field':
-; CHECK-NEXT: Escaping variables:
+; CHECK-NEXT: Escaping objects for BB entry:
 ; CHECK-DAG:   %s = alloca ptr, align 8
 ; CHECK-DAG:   %x = alloca i32, align 4
 entry:
@@ -21,7 +21,7 @@ entry:
 
 define dso_local void @escape_memcpy() {
 ; CHECK: Printing analysis 'Escape Analysis' for function 'escape_memcpy':
-; CHECK-NEXT: Escaping variables:
+; CHECK-NEXT: Escaping objects for BB entry:
 ; CHECK-DAG:  %S2 = alloca %struct.StructTy, align 8
 ; CHECK-DAG:  %S1 = alloca %struct.StructTy, align 8
 entry:
@@ -35,7 +35,7 @@ entry:
 
 define dso_local void @no_escape_memcpy() {
 ; CHECK: Printing analysis 'Escape Analysis' for function 'no_escape_memcpy':
-; CHECK-NEXT: Escaping variables:
+; CHECK-NEXT: Escaping objects for BB entry:
 ; CHECK-DAG: %S2 = alloca %struct.StructWithoutPointers, align 4
 ; CHECK-NOT: %S1 = alloca %struct.StructWithoutPointers, align 4
 entry:
@@ -53,7 +53,7 @@ entry:
 
 define dso_local void @escape_nested_struct() {
 ; CHECK: Printing analysis 'Escape Analysis' for function 'escape_nested_struct':
-; CHECK-NEXT: Escaping variables:
+; CHECK-NEXT: Escaping objects for BB entry:
 ; CHECK-DAG:  %x = alloca i32, align 4
 ; CHECK-DAG:  %OuterS = alloca %struct.OuterStructTy, align 8
 ; CHECK-DAG:  %InnerS = alloca %struct.InnerStructTy, align 8

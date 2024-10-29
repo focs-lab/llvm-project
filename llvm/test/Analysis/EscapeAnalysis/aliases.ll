@@ -6,7 +6,7 @@
 
 define dso_local ptr @escape_aliasing() {
 ; CHECK: Printing analysis 'Escape Analysis' for function 'escape_aliasing':
-; CHECK-NEXT: Escaping variables:
+; CHECK-NEXT: Escaping objects for BB entry:
 ; CHECK-DAG:   %x = alloca i32, align 4
 ; CHECK-DAG:   %alias = alloca ptr, align 8
 entry:
@@ -21,7 +21,7 @@ entry:
 
 define dso_local void @multiple_aliases() {
 ; CHECK: Printing analysis 'Escape Analysis' for function 'multiple_aliases':
-; CHECK-NEXT: Escaping variables:
+; CHECK-NEXT: Escaping objects for BB entry:
 ; CHECK-DAG:   %x = alloca i32, align 4
 ; CHECK-DAG:   %y = alloca i32, align 4
 ; CHECK-DAG:   %z = alloca i32, align 4
@@ -41,7 +41,7 @@ entry:
 
 define dso_local void @global_variable_as_alias_in_GEP() {
 ; CHECK: Printing analysis 'Escape Analysis' for function 'global_variable_as_alias_in_GEP':
-; CHECK-NOT: Escaping variables:
+; CHECK-NOT: Escaping objects for BB entry:
 entry:
   %.atomictmp = alloca i32, align 4
   %0 = load ptr, ptr @GPtr, align 8
@@ -54,7 +54,7 @@ entry:
 
 define dso_local void @escape_pointee_object() {
 ; CHECK: Printing analysis 'Escape Analysis' for function 'escape_pointee_object':
-; CHECK-NEXT: Escaping variables:
+; CHECK-NEXT: Escaping objects for BB entry:
 ; CHECK-DAG:   %p = alloca ptr, align 8
 ; CHECK-DAG:   %x = alloca [10 x i32], align 16
 entry:
@@ -69,7 +69,7 @@ entry:
 
 define dso_local void @escape_in_the_middle_of_alias_chain() {
 ; CHECK: Printing analysis 'Escape Analysis' for function 'escape_in_the_middle_of_alias_chain':
-; CHECK-NEXT: Escaping variables:
+; CHECK-NEXT: Escaping objects for BB entry:
 ; CHECK-DAG:  %z = alloca ptr, align 8
 ; CHECK-DAG:  %y = alloca ptr, align 8
 ; CHECK-DAG:  %x = alloca [10 x i32], align 16
@@ -89,7 +89,7 @@ entry:
 
 define dso_local i32 @passing_value_is_not_aliasing() #0 {
 ; CHECK: Printing analysis 'Escape Analysis' for function 'passing_value_is_not_aliasing':
-; CHECK-NEXT: Escaping variables:
+; CHECK-NEXT: Escaping objects for BB entry:
 ; CHECK-DAG:  %y = alloca i32, align 4
 entry:
   %y = alloca i32, align 4
@@ -101,7 +101,7 @@ entry:
 
 define dso_local void @mutual_aliases() {
 ; CHECK: Printing analysis 'Escape Analysis' for function 'mutual_aliases':
-; CHECK-NEXT: Escaping variables:
+; CHECK-NEXT: Escaping objects for BB entry:
 ; CHECK-DAG:  %x = alloca i32, align 4
 ; CHECK-DAG:  %a1 = alloca ptr, align 8
 ; CHECK-DAG:  %a2 = alloca ptr, align 8

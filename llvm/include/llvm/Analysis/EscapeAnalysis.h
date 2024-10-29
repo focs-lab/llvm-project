@@ -35,7 +35,7 @@ namespace llvm {
 
     // Reference to the function being analyzed.
     const Function &F;
-    using EscapedAllocasTy = DenseSet<const Value *>;
+    using EscapedObjectsTy = DenseSet<const Value *>;
 
     class AliasRelationTy {
       using AliasListTy = SmallPtrSet<const Value *, 8>;
@@ -60,7 +60,7 @@ namespace llvm {
 
     struct EscapeState {
       // Set of allocations that escape in this block.
-      EscapedAllocasTy EscapedAllocas;
+      EscapedObjectsTy EscapedObjects;
 
       // map from Alloca aliases to the original Allocas
       // Note that a Value may be the alias of multiple Allocas
@@ -68,7 +68,7 @@ namespace llvm {
 
       bool operator==(const EscapeState &ES) const {
         if (this == &ES) return true;
-        return ((EscapedAllocas == ES.EscapedAllocas) &&
+        return ((EscapedObjects == ES.EscapedObjects) &&
                 (AliasRel == ES.AliasRel));
       }
 
@@ -78,6 +78,8 @@ namespace llvm {
     /// Map of basic blocks to their escape analysis states.
     DenseMap<const BasicBlock *, EscapeState> BBEscapeStates;
 
+    /// For current operand, get the list of affected objects (escaping object +
+    /// its aliases)
     static std::optional<SmallPtrSet<const Value *, 8>>
     getAffectedObjects(const Use &Opnd, const AliasRelationTy &AliasRel);
 
@@ -96,30 +98,36 @@ namespace llvm {
     static std::pair<EscapeKind, std::optional<const Value*>>
         getEscapeKindForPtrOpnd(const Use &U, const Instruction *I);
 
-    /// Print escaped objects
-    void printEscaped(const BasicBlock *BB);
+    /// Print escaped objects in some path from Entry to BB
+    void printEscapingForBB(const BasicBlock *BB, raw_ostream &OS);
 
     /// Taken from CaptureTracker
     static bool isDereferenceableOrNull(const Value *O, const DataLayout &DL);
 
+    /// Check whether type contains pointers
+    static bool containsPointerType(const Type *Ty);
+
+    /// Escaping state for the function is the escape state for Exit BB
+    const EscapedObjectsTy &getFuncEscState() const;
+
+  public:
     /// Recuresively search for the underlying local object (alloca)
     /// in the instruction
     static const Value *getUnderlyingEscapingObject(const Value *V);
 
-    /// Check whether type contains pointers
-    static bool containsPointerType(const Type *Ty);
-
-  public:
-
-    const EscapedAllocasTy &getFuncEscState() const {
-      auto  It  =  BBEscapeStates.find(&F.back());
-      assert(It != BBEscapeStates.end() &&
-             "Escape state for exit  block  not  found");
-      return  It->second.EscapedAllocas;
-    }
-
+    /// Is Value V is escaping somewhere in the function
     bool isEscapedInFunc(const Value *V) const {
       return getFuncEscState().contains(V);
+    }
+
+    /// Is Value V is escaping in some path from Entry to BB?
+    bool isEscapingForBB(const BasicBlock *BB, const Value *V) const {
+      const auto FoundIt = BBEscapeStates.find(BB);
+      assert((FoundIt != BBEscapeStates.end()) &&
+             "BBEScapeState must exist for each BB\n");
+      dbgs() << "isEscapedForBB: BB: " << BB->getName() << " V: " << *V
+             << " -- " << FoundIt->second.EscapedObjects.contains(V) << "\n";
+      return FoundIt->second.EscapedObjects.contains(V);
     }
   };
 

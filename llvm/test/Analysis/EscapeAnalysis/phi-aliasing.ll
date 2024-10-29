@@ -10,7 +10,10 @@
 ; Function Attrs: noinline nounwind optnone uwtable
 define dso_local void @phi_aliasing(ptr noundef %str, i32 noundef %n, ...) #0 {
 ; CHECK: Printing analysis 'Escape Analysis' for function 'phi_aliasing':
-; CHECK-NEXT: Escaping variables:
+; CHECK-NOT: Escaping objects for BB entry:
+; CHECK-NOT: Escaping objects for BB vaarg.in_reg:
+; CHECK-NOT: Escaping objects for BB vaarg.in_mem:
+; CHECK-NEXT: Escaping objects for BB vaarg.end:
 ; CHECK-DAG:   %p = alloca ptr, align 8
 entry:
   %str.addr = alloca ptr, align 8
@@ -51,7 +54,13 @@ vaarg.end:                                        ; preds = %vaarg.in_mem, %vaar
 
 define dso_local void @phi_aliasing_with_loop(ptr noundef %str, i32 noundef %n, ...) {
 ; CHECK: Printing analysis 'Escape Analysis' for function 'phi_aliasing_with_loop':
-; CHECK-NEXT: Escaping variables:
+; CHECK-NOT: Escaping objects for BB entry:
+; CHECK-NOT: Escaping objects for BB while.cond:
+; CHECK-NOT: Escaping objects for BB while.body:
+; CHECK-NOT: Escaping objects for BB vaarg.in_reg:
+; CHECK-NOT: Escaping objects for BB vaarg.in_mem:
+; CHECK-NOT: Escaping objects for BB vaarg.end:
+; CHECK-NEXT: Escaping objects for BB while.end:
 ; CHECK-DAG:   %p = alloca ptr, align 8
 entry:
   %str.addr = alloca ptr, align 8
@@ -115,7 +124,9 @@ entry:
 
 define dso_local ptr @phi_in_GEP() {
 ; CHECK: Printing analysis 'Escape Analysis' for function 'phi_in_GEP':
-; CHECK-NEXT: Escaping variables:
+; CHECK-NOT: Escaping objects for BB BB0:
+; CHECK-NOT: Escaping objects for BB BB1:
+; CHECK-NEXT: Escaping objects for BB BB2:
 ; CHECK-DAG:   %a = alloca ptr, align 4
 BB0:
   %a = alloca ptr, align 4

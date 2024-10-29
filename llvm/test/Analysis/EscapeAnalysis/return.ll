@@ -2,7 +2,7 @@
 
 define dso_local ptr @escape_local() {
 ; CHECK: Printing analysis 'Escape Analysis' for function 'escape_local':
-; CHECK-NEXT: Escaping variables:
+; CHECK-NEXT: Escaping objects for BB entry:
 ; CHECK-NEXT:   %x = alloca i32, align 4
 entry:
   %x = alloca i32, align 4
@@ -11,7 +11,7 @@ entry:
 
 define dso_local ptr @escape_by_returning_ptr() {
 ; CHECK: Printing analysis 'Escape Analysis' for function 'escape_by_returning_ptr':
-; CHECK-NEXT: Escaping variables:
+; CHECK-NEXT: Escaping objects for BB entry:
 ; CHECK-NEXT:   %x = alloca ptr, align 8
 entry:
   %x = alloca ptr, align 8

@@ -37,8 +37,10 @@ cl::opt<std::string> PrintEscapeAnalysis(
 
 /// Merge two relations into one (Other), save results into current (this)
 void EscapeAnalysisInfo::AliasRelationTy::merge(const AliasRelationTy &Other) {
+  // Add all pairs from Other.AliasMap, considering transitivity
   for (const auto &[OtherKey, OtherValueSet] : Other.AliasMap)
-    AliasMap.insert({OtherKey, OtherValueSet});
+    for (const auto *OtherPointeeValue: OtherValueSet)
+      addAlias(OtherKey, OtherPointeeValue);
 }
 
 /// Add the alias: Alias --> PointeeValue
@@ -51,7 +53,8 @@ void EscapeAnalysisInfo::AliasRelationTy::addAlias(const Value *Alias,
                     << "\n");
   AliasMap[Alias].insert(PointeeValue);
 
-  //  Resursively add new alias to all existing aliases of PointeeValue
+  // Considering transitivity: resursively add new alias to all existing aliases
+  // of PointeeValue
   if (const auto ExistingAliases = getAliases(PointeeValue); ExistingAliases)
     for (const Value *ExistingAlias : ExistingAliases.value())
       addAlias(Alias, ExistingAlias);
@@ -107,7 +110,7 @@ EscapeAnalysisInfo::EscapeAnalysisInfo(const Function &Fn): F(Fn) {
     const BasicBlock *BB = WorkList.front();
     WorkList.pop_front();
 
-    LLVM_DEBUG(errs() << "****************** BB " << BB->getName() << " (func "
+    LLVM_DEBUG(dbgs() << "****************** BB " << BB->getName() << " (func "
                       << Fn.getName() << ") ******************\n");
 
     EscapeState NewES = mergePredEscapeStates(BB);
@@ -117,7 +120,7 @@ EscapeAnalysisInfo::EscapeAnalysisInfo(const Function &Fn): F(Fn) {
     // If something changed, proceed with this BB
     LLVM_DEBUG(dbgs() << "\n>> Check changes for " << BB->getName() << " -- ");
     if (NewES != BBEscapeStates[BB]) {
-      LLVM_DEBUG(dbgs() << "Changed!\n");
+      LLVM_DEBUG(dbgs() << "Changed!\n\n");
       // Add BB's successors to WorkList and update BB state
       for (const auto *SuccBB : successors(BB)) {
         LLVM_DEBUG(dbgs() << "Add succ " << SuccBB->getName() << "\n");
@@ -125,13 +128,13 @@ EscapeAnalysisInfo::EscapeAnalysisInfo(const Function &Fn): F(Fn) {
       }
       BBEscapeStates[BB] = NewES;
     } else {
-      LLVM_DEBUG(dbgs() << "Not Changed!\n");
+      LLVM_DEBUG(dbgs() << "Not Changed!\n\n");
     }
 
     LLVM_DEBUG(
-      printEscaped(BB);
+      printEscapingForBB(BB, dbgs());
       BBEscapeStates[BB].AliasRel.print(dbgs());
-      errs() << "**** END of BB " <<  BB->getName() << " **** \n\n";
+      dbgs() << "******** END of BB " <<  BB->getName() << " ******** \n\n";
     );
   }
 }
@@ -188,7 +191,7 @@ void EscapeAnalysisInfo::compOutEscapeState(
         auto AffectedObjects = getAffectedObjects(Opnd, ES.AliasRel);
         if (AffectedObjects == std::nullopt) break;
 
-        ES.EscapedAllocas.insert(AffectedObjects.value().begin(),
+        ES.EscapedObjects.insert(AffectedObjects.value().begin(),
                                  AffectedObjects.value().end());
         break;
       }
@@ -201,10 +204,8 @@ void EscapeAnalysisInfo::compOutEscapeState(
         for (const auto *AffectedObject : AffectedObjects.value())
           // If Alias is GEP, find base pointer and add it as alias too
           if (auto *GEP = dyn_cast<GetElementPtrInst>(Alias.value())) {
-            // Underlying alloca used in this GEP
+            // Underlying object used in this GEP
             // GEP itself is not an alias
-            // if (const AllocaInst *GEPUnderlyingAlloca = getUnderlyingAlloca(GEP))
-              // ES.AliasRel.addAlias(GEPUnderlyingAlloca, Alloca);
             if (const Value *GEPUnderlyingAlloca = getUnderlyingEscapingObject(GEP))
               ES.AliasRel.addAlias(GEPUnderlyingAlloca, AffectedObject);
 
@@ -226,30 +227,19 @@ void EscapeAnalysisInfo::compOutEscapeState(
 
 EscapeAnalysisInfo::EscapeState EscapeAnalysisInfo::mergePredEscapeStates(
     const BasicBlock *BB) {
-  // EscapeState &MergedES = BBEscapeStates[BB];
   EscapeState MergedES;
 
   // Merge states of predecessors
   for (auto *PredBB : predecessors(BB)) {
-    // errs() << "PRED " << PredBB->getName() << "\n";
-    EscapeState &PredES = BBEscapeStates[PredBB];
+    LLVM_DEBUG(dbgs() << "Merge to << " << BB->getName() << " <-- "
+                      << PredBB->getName() << "\n");
+    auto &[EscapedObjects, AliasRel] = BBEscapeStates[PredBB];
 
-    MergedES.EscapedAllocas.insert(PredES.EscapedAllocas.begin(),
-    PredES.EscapedAllocas.end());
+    MergedES.EscapedObjects.insert(EscapedObjects.begin(),
+                                   EscapedObjects.end());
 
-    MergedES.AliasRel.merge(PredES.AliasRel);
+    MergedES.AliasRel.merge(AliasRel);
   }
-
-  // DEBUG
-  /*
-  errs() << "RESULT OF MERGE\n";
-  for (const auto &Pair : MergedES.AliasesToAlloca)
-    errs() << "\tALIAS: " << *Pair.first << " --> " << *Pair.second << "\n";
-  errs() << "\n";
-  for (const auto *V : MergedES.EscapedAllocas)
-    errs() << "\tESCAPE " << *V << "\n";
-  errs() << "END\n";
-  */
   return MergedES;
 }
 
@@ -262,6 +252,15 @@ bool EscapeAnalysisInfo::containsPointerType(const Type *Ty) {
     if (containsPointerType(EltTy))
       return true;
   return false;
+}
+
+/// Escaping state for the function is the escape state for Exit BB
+const EscapeAnalysisInfo::EscapedObjectsTy &
+EscapeAnalysisInfo::getFuncEscState() const {
+  const auto It = BBEscapeStates.find(&F.back());
+  assert(It != BBEscapeStates.end() &&
+         "Escape state for exit  block  not  found");
+  return It->second.EscapedObjects;
 }
 
 /// Determine what kind of escape behaviour V may exhibit.
@@ -548,23 +547,32 @@ const Value *EscapeAnalysisInfo::getUnderlyingEscapingObject(const Value *V) {
   return nullptr;
 }
 
-void EscapeAnalysisInfo::printEscaped(const BasicBlock *BB) {
-  dbgs() << "Escaped allocas for BB " << BB->getName() << ":\n";
-  if (BBEscapeStates.find(BB) == BBEscapeStates.end()) return;
-  for (const auto *V : BBEscapeStates[BB].EscapedAllocas)
-    dbgs() << *V << "\n";
-  dbgs() << "\n";
+void EscapeAnalysisInfo::printEscapingForBB(const BasicBlock *BB,
+                                           raw_ostream &OS) {
+  auto It = BBEscapeStates.find(BB);
+  if ((It == BBEscapeStates.end()) || (It->second.EscapedObjects.empty()))
+    return;
+
+  OS << "Escaping objects for BB " << BB->getName() << ":\n";
+  for (const auto *V : It->second.EscapedObjects)
+    OS << *V << "\n";
+  OS << "\n";
 }
 
 void EscapeAnalysisInfo::print(raw_ostream &OS) {
-  const auto FuncEscapingAllocas = BBEscapeStates[&F.back()].EscapedAllocas;
-  if (FuncEscapingAllocas.empty())
-    return;
+  ////
+  // This is function-wise output
+  //
+  // const auto FuncEscapingAllocas = BBEscapeStates[&F.back()].EscapedObjects;
+  // if (FuncEscapingAllocas.empty())
+  //   return;
+  // OS << "Escaping variables:\n";
+  // for (const auto *V : FuncEscapingAllocas)
+  //   OS << *V << "\n";
+  // OS << "\n";
 
-  OS << "Escaping variables:\n";
-  for (const auto *Alloca : FuncEscapingAllocas)
-    OS << *Alloca << "\n";
-  OS << "\n";
+  for (const auto &BB: F)
+    printEscapingForBB(&BB, OS);
 }
 
 AnalysisKey EscapeAnalysis::Key;

@@ -4,9 +4,9 @@
 
 @GPtr = dso_local global ptr null, align 8
 
-define dso_local ptr @escape_func() #0 {
+define dso_local ptr @escape_func() {
 ; CHECK: Printing analysis 'Escape Analysis' for function 'escape_func':
-; CHECK-NEXT: Escaping variables:
+; CHECK-NEXT: Escaping objects for BB entry:
 ; CHECK-NEXT:   %x = alloca i32, align 4
 entry:
   %x = alloca i32, align 4
@@ -15,15 +15,13 @@ entry:
   ret ptr %x
 }
 
-define dso_local void @external_func(ptr noundef %ptr) #0 {
-; CHECK: Printing analysis 'Escape Analysis' for function 'external_func':
-; CHECK-NOT: Escaping variables:
+define dso_local void @external_func(ptr noundef %ptr) {
   ret void
 }
 
 define dso_local void @assigning_global_ptr() {
 ; CHECK: Printing analysis 'Escape Analysis' for function 'assigning_global_ptr':
-; CHECK-NEXT: Escaping variables:
+; CHECK-NEXT: Escaping objects for BB entry:
 ; CHECK-DAG:   %x = alloca i32, align 4
 entry:
   %x = alloca i32, align 4

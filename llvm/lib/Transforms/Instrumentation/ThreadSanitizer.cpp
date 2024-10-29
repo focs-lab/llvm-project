@@ -437,6 +437,8 @@ void ThreadSanitizer::chooseInstructionsToInstrument(
   DenseMap<Value *, size_t> WriteTargets; // Map of addresses to index in All
   // Iterate from the end.
   for (Instruction *I : reverse(Local)) {
+    LLVM_DEBUG(dbgs() << "\nchoose I: " << *I << "\n");
+
     const bool IsWrite = isa<StoreInst>(*I);
     Value *Addr = IsWrite ? cast<StoreInst>(I)->getPointerOperand()
                           : cast<LoadInst>(I)->getPointerOperand();
@@ -468,30 +470,23 @@ void ThreadSanitizer::chooseInstructionsToInstrument(
       }
     }
 
-    if (isa<AllocaInst>(getUnderlyingObject(Addr))) {
-      if (EAI.has_value() ? !EAI.value().isEscapedInFunc(Addr)
-                          : !PointerMayBeCaptured(Addr, true, true)) {
-        NumOmittedNonCaptured++;
-        continue;
+    if (EAI.has_value()) {
+      if (const Value *V =
+              EscapeAnalysisInfo::getUnderlyingEscapingObject(Addr)) {
+        LLVM_DEBUG(dbgs() << "underlyingEscapingObj: " << *V << "\n");
+        if (!EAI.value().isEscapingForBB(I->getParent(), V)) {
+          NumOmittedNonCaptured++;
+          continue;
+        }
+      }
+    } else {
+      if (isa<AllocaInst>(getUnderlyingObject(Addr))) {
+        if (!PointerMayBeCaptured(Addr, true, true)) {
+          NumOmittedNonCaptured++;
+          continue;
+        }
       }
     }
-
-    /*
-    if (isa<AllocaInst>(getUnderlyingObject(Addr)) &&
-        !PointerMayBeCaptured(Addr, true, true)) {
-      // The variable is addressable but not captured, so it cannot be
-      // referenced from a different thread and participate in a data race
-      // (see llvm/Analysis/CaptureTracking.h for details).
-      NumOmittedNonCaptured++;
-      continue;
-    }
-
-    if (isa<AllocaInst>(getUnderlyingObject(Addr)) &&
-        !EAI.isEscapedInFunc(Addr)) {
-      NumOmittedNonCaptured++;
-      continue;
-    }
-    */
 
     // Instrument this instruction.
     All.emplace_back(I);
@@ -554,7 +549,10 @@ bool ThreadSanitizer::sanitizeFunction(
 
   // Traverse all instructions, collect loads/stores/returns, check for calls.
   for (auto &BB : F) {
+    LLVM_DEBUG(dbgs() << "\nInstrumenting BB: " << BB.getName() << "\n");
     for (auto &Inst : BB) {
+      LLVM_DEBUG(dbgs() << "Instrumenting I: " << Inst << "\n");
+
       // Skip instructions inserted by another instrumentation.
       if (Inst.hasMetadata(LLVMContext::MD_nosanitize))
         continue;
