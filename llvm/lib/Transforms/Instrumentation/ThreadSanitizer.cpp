@@ -100,6 +100,9 @@ STATISTIC(NumOmittedReadsFromConstantGlobals,
           "Number of reads from constant globals");
 STATISTIC(NumOmittedReadsFromVtable, "Number of vtable reads");
 STATISTIC(NumOmittedNonCaptured, "Number of accesses ignored due to capturing");
+STATISTIC(NumOmittedNonEscaped, "Number of accesses ignored due to non-escaping");
+STATISTIC(NumEscapeAnalysisOutperformsCaptureTracking,
+          "Number of instructions where Escape Analysis was better than Capture Tracking");
 
 const char kTsanModuleCtorName[] = "tsan.module_ctor";
 const char kTsanInitName[] = "__tsan_init";
@@ -474,8 +477,24 @@ void ThreadSanitizer::chooseInstructionsToInstrument(
       if (const Value *V =
               EscapeAnalysisInfo::getUnderlyingEscapingObject(Addr)) {
         LLVM_DEBUG(dbgs() << "underlyingEscapingObj: " << *V << "\n");
+
+        auto CompareCaptureAndEA = [=] {
+          dbgs() << "Instr: " << *I << "\n";
+          bool IsCaptured = true;
+          if (isa<AllocaInst>(getUnderlyingObject(Addr)))
+            IsCaptured = PointerMayBeCaptured(Addr, true, true);
+
+          const auto IsEscaped = EAI.value().isEscapingForBB(I->getParent(), V);
+          if ((IsCaptured == true) && (IsEscaped == false)) {
+            dbgs() << "EscapeAnalysis outperforms CaptureTracking!\n";
+            NumEscapeAnalysisOutperformsCaptureTracking++;
+          }
+        };
+
+        DEBUG_WITH_TYPE("tsan-ea", CompareCaptureAndEA());
+
         if (!EAI.value().isEscapingForBB(I->getParent(), V)) {
-          NumOmittedNonCaptured++;
+          NumOmittedNonEscaped++;
           continue;
         }
       }

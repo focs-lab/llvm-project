@@ -103,6 +103,7 @@ EscapeAnalysisInfo::EscapeAnalysisInfo(const Function &Fn): F(Fn) {
   ReversePostOrderTraversal<const Function *> RPOT(&F);
   for (const BasicBlock *BB : RPOT) {
     WorkList.push_back(BB);
+    // BBEscapeStates[BB] = EscapeState(BB);
     BBEscapeStates[BB] = EscapeState();
   }
 
@@ -115,7 +116,6 @@ EscapeAnalysisInfo::EscapeAnalysisInfo(const Function &Fn): F(Fn) {
 
     EscapeState NewES = mergePredEscapeStates(BB);
     compOutEscapeState(BB, NewES);
-    // BBEscapeStates[BB] = NewES;
 
     // If something changed, proceed with this BB
     LLVM_DEBUG(dbgs() << "\n>> Check changes for " << BB->getName() << " -- ");
@@ -173,6 +173,14 @@ EscapeAnalysisInfo::getAffectedObjects(const Use &Opnd,
 
 void EscapeAnalysisInfo::compOutEscapeState(
     const BasicBlock *BB, EscapeState &ES) {
+  // For the Entry BB, add pointer arguments as escaping (by definition)
+  // TODO maybe instead introduce 'already escape objects' notion?
+  if (BB->isEntryBlock()) {
+    for (const auto &Arg : BB->getParent()->args())
+      if (Arg.getType()->isPointerTy())
+        ES.EscapedObjects.insert(&Arg);
+  }
+
   for (const Instruction &I: *BB) {
     LLVM_DEBUG(dbgs() << "\nI " << I << "\n");
     for (const Use &Opnd: I.operands()) {
@@ -201,13 +209,14 @@ void EscapeAnalysisInfo::compOutEscapeState(
         auto AffectedObjects = getAffectedObjects(Opnd, ES.AliasRel);
         if (AffectedObjects == std::nullopt) break;
 
-        for (const auto *AffectedObject : AffectedObjects.value())
+        for (const auto *AffectedObject : AffectedObjects.value()) {
+          LLVM_DEBUG(dbgs() << "Affected " << *AffectedObject << "\n");
           // If Alias is GEP, find base pointer and add it as alias too
           if (auto *GEP = dyn_cast<GetElementPtrInst>(Alias.value())) {
             // Underlying object used in this GEP
             // GEP itself is not an alias
-            if (const Value *GEPUnderlyingAlloca = getUnderlyingEscapingObject(GEP))
-              ES.AliasRel.addAlias(GEPUnderlyingAlloca, AffectedObject);
+            if (const Value *GEPUnderlyingObject = getUnderlyingEscapingObject(GEP))
+              ES.AliasRel.addAlias(GEPUnderlyingObject, AffectedObject);
 
             // GEP may be computed from global variable, or from a phi-node
             // and both cases seems to be no-escape cases.
@@ -218,6 +227,7 @@ void EscapeAnalysisInfo::compOutEscapeState(
             // If alias is not GEP, add Alias itself
             ES.AliasRel.addAlias(Alias.value(), AffectedObject);
           }
+        }
         break;
       }
       }
@@ -227,18 +237,19 @@ void EscapeAnalysisInfo::compOutEscapeState(
 
 EscapeAnalysisInfo::EscapeState EscapeAnalysisInfo::mergePredEscapeStates(
     const BasicBlock *BB) {
+  // EscapeState MergedES(BB);
   EscapeState MergedES;
 
   // Merge states of predecessors
   for (auto *PredBB : predecessors(BB)) {
     LLVM_DEBUG(dbgs() << "Merge to << " << BB->getName() << " <-- "
                       << PredBB->getName() << "\n");
-    auto &[EscapedObjects, AliasRel] = BBEscapeStates[PredBB];
+    auto &ES = BBEscapeStates[PredBB];
 
-    MergedES.EscapedObjects.insert(EscapedObjects.begin(),
-                                   EscapedObjects.end());
+    MergedES.EscapedObjects.insert(ES.EscapedObjects.begin(),
+                                   ES.EscapedObjects.end());
 
-    MergedES.AliasRel.merge(AliasRel);
+    MergedES.AliasRel.merge(ES.AliasRel);
   }
   return MergedES;
 }
@@ -540,16 +551,39 @@ const Value *EscapeAnalysisInfo::getUnderlyingEscapingObject(const Value *V) {
   // 1. Stack-allocated variable
   // 2. Arguments passing by value (as argument passin by pointer are supposed
   // to be escaping by definition)
+
+  // if (isa<Argument>(V)) {
+    // dbgs() << "Argument! " << *V->getType() << "\n";
+    // return nullptr;
+  // }
+
+  // if ((isa<AllocaInst>(V)) ||
+      // Because we've already added all pointer argument as escaping objects
+      // (isa<Argument>(V) && !V->getType()->isPointerTy()))
+    // return V;
+
   if ((isa<AllocaInst>(V)) ||
-      (isa<Argument>(V) && !V->getType()->isPointerTy()))
+      (isa<Argument>(V)))
     return V;
 
   return nullptr;
 }
 
+/// Is Value V is escaping in some path from Entry to BB?
+bool EscapeAnalysisInfo::isEscapingForBB(const BasicBlock *BB,
+                                         const Value *V) const {
+  const auto FoundIt = BBEscapeStates.find(BB);
+  assert((FoundIt != BBEscapeStates.end()) &&
+         "BBEscapeState must exist for each BB\n");
+  LLVM_DEBUG(dbgs() << "isEscapedForBB: BB: " << BB->getName() << " V: " << *V
+                    << " -- " << FoundIt->second.EscapedObjects.contains(V)
+                    << "\n");
+  return FoundIt->second.EscapedObjects.contains(V);
+}
+
 void EscapeAnalysisInfo::printEscapingForBB(const BasicBlock *BB,
                                            raw_ostream &OS) {
-  auto It = BBEscapeStates.find(BB);
+  const auto It = BBEscapeStates.find(BB);
   if ((It == BBEscapeStates.end()) || (It->second.EscapedObjects.empty()))
     return;
 

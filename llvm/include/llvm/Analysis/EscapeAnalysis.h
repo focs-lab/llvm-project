@@ -59,6 +59,10 @@ namespace llvm {
     };
 
     struct EscapeState {
+      // const BasicBlock *BB = nullptr;
+
+      // EscapeState(const BasicBlock *BB_) : BB(BB_) {}
+
       // Set of allocations that escape in this block.
       EscapedObjectsTy EscapedObjects;
 
@@ -67,7 +71,8 @@ namespace llvm {
       AliasRelationTy AliasRel;
 
       bool operator==(const EscapeState &ES) const {
-        if (this == &ES) return true;
+        if (this == &ES)
+          return true;
         return ((EscapedObjects == ES.EscapedObjects) &&
                 (AliasRel == ES.AliasRel));
       }
@@ -121,14 +126,7 @@ namespace llvm {
     }
 
     /// Is Value V is escaping in some path from Entry to BB?
-    bool isEscapingForBB(const BasicBlock *BB, const Value *V) const {
-      const auto FoundIt = BBEscapeStates.find(BB);
-      assert((FoundIt != BBEscapeStates.end()) &&
-             "BBEScapeState must exist for each BB\n");
-      dbgs() << "isEscapedForBB: BB: " << BB->getName() << " V: " << *V
-             << " -- " << FoundIt->second.EscapedObjects.contains(V) << "\n";
-      return FoundIt->second.EscapedObjects.contains(V);
-    }
+    bool isEscapingForBB(const BasicBlock *BB, const Value *V) const;
   };
 
   class EscapeAnalysis : public AnalysisInfoMixin<EscapeAnalysis> {
