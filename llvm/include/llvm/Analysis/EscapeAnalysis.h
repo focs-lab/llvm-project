@@ -13,6 +13,8 @@
 #ifndef LLVM_ANALYSIS_ESCAPEANALYSIS_H
 #define LLVM_ANALYSIS_ESCAPEANALYSIS_H
 
+#include "ValueTracking.h"
+
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/PassManager.h"
 
@@ -117,10 +119,16 @@ namespace llvm {
     EscapeState mergePredEscapeStates(const BasicBlock *BB);
 
     /// Check if that's the object is "already escaped":
-    /// pointer function argument or global variable.
-    static bool isAlreadyEscaped(const Value *V) {
-      return ((isa<Argument>(V) && V->getType()->isPointerTy()) ||
-              (isa<GlobalVariable>(V)));
+    /// e.g. pointer function argument or global variable.
+    static bool isExternalEscapedObject(const Value *V) {
+      const Value *UnderlyingObj = getUnderlyingObject(V);
+
+      if (const auto *CI = dyn_cast<CallInst>(UnderlyingObj))
+        return CI->getFunctionType()->getReturnType()->isPointerTy();
+
+      return ((isa<Argument>(UnderlyingObj) &&
+               UnderlyingObj->getType()->isPointerTy()) ||
+              (isa<GlobalVariable>(UnderlyingObj)));
     }
 
     /// Determine what kind of escape behaviour V may exhibit.
@@ -145,7 +153,7 @@ namespace llvm {
     static const Value *getUnderlyingMayEscapingObject(const Value *V);
 
     /// Is Value V is escaping somewhere in the function
-    bool isEscapedInFunc(const Value *V) const {
+    bool isEscapedForFunc(const Value *V) const {
       return getFuncEscState().contains(V);
     }
 

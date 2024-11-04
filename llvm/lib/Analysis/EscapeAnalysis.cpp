@@ -49,7 +49,8 @@ void EscapeAnalysisInfo::EscapeState::addAlias(
   // If instruction creates an alias to the object which has escaped before
   // or escapes "by definition" (e.g. pointer function argument,
   // global pointer), then that's not just aliasing, but escaping as well
-  if (isAlreadyEscaped(PointeeValue) || EscapedObjects.contains(PointeeValue))
+  if (isExternalEscapedObject(PointeeValue) ||
+      EscapedObjects.contains(PointeeValue))
     addEscapingObject(Alias);
 
   // Considering transitivity: recursively add new alias to all existing aliases
@@ -335,10 +336,12 @@ EscapeAnalysisInfo::getEscapeKindForPtrOpnd(const Use &U,
     if (cast<StoreInst>(I)->isVolatile())
       return {EscapeKind::MAY_ESCAPE, std::nullopt};
 
-//    const auto *Src = I->getOperand(0)->stripPointerCasts();
-//    const auto *Dst = I->getOperand(1)->stripPointerCasts();
-    const auto *Src = getUnderlyingObject(I->getOperand(0));
-    const auto *Dst = getUnderlyingObject(I->getOperand(1)->stripPointerCasts());
+    // const auto *Src = I->getOperand(0)->stripPointerCasts();
+    // const auto *Dst = I->getOperand(1)->stripPointerCasts();
+    const auto *Src =
+        getUnderlyingObject(I->getOperand(0)->stripPointerCasts());
+    const auto *Dst =
+        getUnderlyingObject(I->getOperand(1)->stripPointerCasts());
 
     // Passing value instead of pointer is neither escape nor alias
     if (!Src->getType()->isPointerTy())
@@ -532,11 +535,13 @@ const Value *EscapeAnalysisInfo::getUnderlyingMayEscapingObject(const Value *V) 
   // This is the object which can escape
   // AllocaInst, Argument - may escape or not escape
   // GlobalVariable - escapes by definition
-  if ((isa<AllocaInst>(V)) || (isa<Argument>(V)) ||
-      (isa<GlobalVariable>(V)))
+  if ((isa<AllocaInst>(V)) || (isa<Argument>(V)) || (isa<GlobalVariable>(V)))
     return V;
 
   if (isa<PHINode>(V))
+    return V;
+
+  if (V->getType()->isPointerTy())
     return V;
 
   return nullptr;
@@ -545,6 +550,9 @@ const Value *EscapeAnalysisInfo::getUnderlyingMayEscapingObject(const Value *V) 
 /// Is Value V is escaping in some path from Entry to BB?
 bool EscapeAnalysisInfo::isEscapingForBB(const BasicBlock *BB,
                                          const Value *V) const {
+  if (isExternalEscapedObject(V))
+    return true;
+
   const auto FoundIt = BBEscapeStates.find(BB);
   assert((FoundIt != BBEscapeStates.end()) &&
          "BBEscapeState must exist for each BB\n");
@@ -562,7 +570,7 @@ void EscapeAnalysisInfo::printEscapingForBB(const BasicBlock *BB,
 
   OS << "Escaping objects for BB " << BB->getName() << ":\n";
   for (const auto *V : It->second.EscapedObjects) {
-    if (isAlreadyEscaped(V))
+    if (isExternalEscapedObject(V))
       // I'm not sure, we should not print objects escaping by definition
       // (such as global variables or pointer arguments),
       // but let's omit them for now
