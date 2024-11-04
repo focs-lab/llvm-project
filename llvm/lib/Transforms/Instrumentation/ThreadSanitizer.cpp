@@ -475,7 +475,7 @@ void ThreadSanitizer::chooseInstructionsToInstrument(
 
     if (EAI.has_value()) {
       if (const Value *V =
-              EscapeAnalysisInfo::getUnderlyingEscapingObject(Addr)) {
+              EscapeAnalysisInfo::getUnderlyingMayEscapingObject(Addr)) {
         LLVM_DEBUG(dbgs() << "underlyingEscapingObj: " << *V << "\n");
 
         auto CompareCaptureAndEA = [=] {

@@ -24,7 +24,7 @@
 using namespace llvm;
 
 #define DEBUG_TYPE "escape-analysis"
-#define DEV_DEBUG_TYPE "escape-analysis-dev"
+#define DEEP_DEBUG_TYPE "ea-deep-debug"
 
 cl::opt<std::string> PrintEscapeAnalysis(
     "print-escape-analysis", cl::Hidden,
@@ -35,33 +35,34 @@ cl::opt<std::string> PrintEscapeAnalysis(
 // Alias relation
 //===----------------------------------------------------------------------===//
 
-/// Merge two relations into one (Other), save results into current (this)
-void EscapeAnalysisInfo::AliasRelationTy::merge(const AliasRelationTy &Other) {
-  // Add all pairs from Other.AliasMap, considering transitivity
-  for (const auto &[OtherKey, OtherValueSet] : Other.AliasMap)
-    for (const auto *OtherPointeeValue: OtherValueSet)
-      addAlias(OtherKey, OtherPointeeValue);
-}
-
 /// Add the alias: Alias --> PointeeValue
-void EscapeAnalysisInfo::AliasRelationTy::addAlias(const Value *Alias,
-                                                   const Value *PointeeValue) {
-  if ((Alias == PointeeValue) || (AliasMap[Alias].contains(PointeeValue)))
+void EscapeAnalysisInfo::EscapeState::addAlias(
+    const Value *Alias, const Value *PointeeValue) {
+  if ((Alias == PointeeValue) || (PointeeValue == nullptr) ||
+      (AliasRel.AliasMap[Alias].contains(PointeeValue)))
     return;
 
   LLVM_DEBUG(dbgs() << "\taddAlias: " << *PointeeValue << " --> " << *Alias
                     << "\n");
-  AliasMap[Alias].insert(PointeeValue);
+  AliasRel.AliasMap[Alias].insert(PointeeValue);
 
-  // Considering transitivity: resursively add new alias to all existing aliases
+  // If instruction creates an alias to the object which has escaped before
+  // or escapes "by definition" (e.g. pointer function argument,
+  // global pointer), then that's not just aliasing, but escaping as well
+  if (isAlreadyEscaped(PointeeValue) || EscapedObjects.contains(PointeeValue))
+    addEscapingObject(Alias);
+
+  // Considering transitivity: recursively add new alias to all existing aliases
   // of PointeeValue
-  if (const auto ExistingAliases = getAliases(PointeeValue); ExistingAliases)
+  if (const auto ExistingAliases = AliasRel.getAliases(PointeeValue);
+      ExistingAliases)
     for (const Value *ExistingAlias : ExistingAliases.value())
       addAlias(Alias, ExistingAlias);
 
-  // If Alloca A --> Alloca B we assume that B --> A
-  if (isa<AllocaInst>(Alias))
-    addAlias(PointeeValue, Alias);
+  // NOTE: That's not true that all alias pairs are symmetrical,
+  // but let's assume that for simplicity
+  //  if (isa<AllocaInst>(Alias) || isa<Argument>(Alias))
+  addAlias(PointeeValue, Alias);
 }
 
 /// Get list of aliases for the object a
@@ -90,6 +91,43 @@ void EscapeAnalysisInfo::AliasRelationTy::print(raw_ostream &OS) const {
       OS << "\t\t --> " << *Alias << "\n";
   }
   OS << "\n";
+}
+
+//===----------------------------------------------------------------------===//
+// EscapeState
+//===----------------------------------------------------------------------===//
+
+bool EscapeAnalysisInfo::EscapeState::operator==(
+    const llvm::EscapeAnalysisInfo::EscapeState &ES) const {
+  if (this == &ES) return true;
+  return ((EscapedObjects == ES.EscapedObjects) &&
+          (AliasRel == ES.AliasRel));
+}
+
+void EscapeAnalysisInfo::EscapeState::addEscapingObject(
+    const Value *EscapingObject) {
+  SmallPtrSet<const Value *, 8> EscObjList;
+  getEscapingObjectsList(EscapingObject, EscObjList);
+  DEBUG_WITH_TYPE(DEEP_DEBUG_TYPE,
+    for (auto *V: EscObjList)
+      dbgs() << "Add escaping object: " << *V << "\n";
+    dbgs() << "%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%\n";);
+
+  EscapedObjects.insert(EscObjList.begin(), EscObjList.end());
+}
+
+void EscapeAnalysisInfo::EscapeState::getEscapingObjectsList(
+    const Value *EscapingObject, SmallPtrSetImpl<const Value *> &EscObjList) {
+  if (EscObjList.contains(EscapingObject))
+    return;
+
+  EscObjList.insert(EscapingObject);
+
+  // Suppose we add as escaping an object which is alias of some other objects.
+  // Then all these aliases also escape!
+  if (const auto Aliases = AliasRel.getAliases(EscapingObject); Aliases.has_value())
+    for (const Value *Alias : Aliases.value())
+      getEscapingObjectsList(Alias, EscObjList);
 }
 
 //===----------------------------------------------------------------------===//
@@ -123,7 +161,7 @@ EscapeAnalysisInfo::EscapeAnalysisInfo(const Function &Fn): F(Fn) {
       LLVM_DEBUG(dbgs() << "Changed!\n\n");
       // Add BB's successors to WorkList and update BB state
       for (const auto *SuccBB : successors(BB)) {
-        LLVM_DEBUG(dbgs() << "Add succ " << SuccBB->getName() << "\n");
+        LLVM_DEBUG(dbgs() << "Add succ BB " << SuccBB->getName() << "\n");
         WorkList.push_back(SuccBB);
       }
       BBEscapeStates[BB] = NewES;
@@ -139,56 +177,17 @@ EscapeAnalysisInfo::EscapeAnalysisInfo(const Function &Fn): F(Fn) {
   }
 }
 
-void EscapeAnalysisInfo::addAliasesToAffectedObject(
-    const AliasRelationTy &AliasRel, const Value *EscapingObject,
-    SmallPtrSet<const Value *, 8> &AffectedObjects) {
-
-  if (const auto Aliases = AliasRel.getAliases(EscapingObject);
-      (Aliases != std::nullopt)) {
-    for (const Value *PointeeObj : Aliases.value()) {
-      LLVM_DEBUG(dbgs() << "\t\tFOUND ALIAS: " << *EscapingObject << " --> "
-                        << *PointeeObj << "\n");
-      AffectedObjects.insert(PointeeObj);
-    }
-  }
-}
-
-/// Find escaping object in the instruction and add all aliases to the resulting
-/// set of affected objects
-std::optional<SmallPtrSet<const Value *, 8>>
-EscapeAnalysisInfo::getAffectedObjects(const Use &Opnd,
-                                      const AliasRelationTy &AliasRel) {
-  const Value *EscapingObject = getUnderlyingEscapingObject(Opnd.get());
-  if (!EscapingObject)
-    return std::nullopt;
-
-  LLVM_DEBUG(dbgs() << "\tEscapingObject: " << *EscapingObject << "\n");
-
-  SmallPtrSet<const Value *, 8> AffectedObjects;
-
-  AffectedObjects.insert(EscapingObject);
-  addAliasesToAffectedObject(AliasRel, EscapingObject, AffectedObjects);
-  return AffectedObjects;
-}
-
+/// Compute the resulting escape state for BB
 void EscapeAnalysisInfo::compOutEscapeState(
     const BasicBlock *BB, EscapeState &ES) {
-  // For the Entry BB, add pointer arguments as escaping (by definition)
-  // TODO maybe instead introduce 'already escape objects' notion?
-  if (BB->isEntryBlock()) {
-    for (const auto &Arg : BB->getParent()->args())
-      if (Arg.getType()->isPointerTy())
-        ES.EscapedObjects.insert(&Arg);
-  }
-
   for (const Instruction &I: *BB) {
     LLVM_DEBUG(dbgs() << "\nI " << I << "\n");
     for (const Use &Opnd: I.operands()) {
       LLVM_DEBUG(dbgs() << "\n\tOPND \t" << *Opnd.get() << "\n";);
 
-      auto [CaptureKnd, Alias] = getEscapeKindForPtrOpnd(Opnd, &I);
+      const auto [EscKind, Alias] = getEscapeKindForPtrOpnd(Opnd, &I);
 
-      switch (CaptureKnd) {
+      switch (EscKind) {
       case EscapeKind::NO_ESCAPE: { // Nothing to do
         LLVM_DEBUG(dbgs() << "\t-- NO_ESCAPE --\n");
         break;
@@ -196,38 +195,23 @@ void EscapeAnalysisInfo::compOutEscapeState(
       case EscapeKind::MAY_ESCAPE: { // Update all affected allocas
         LLVM_DEBUG(dbgs() << "\t-- MAY_ESCAPE --\n");
 
-        auto AffectedObjects = getAffectedObjects(Opnd, ES.AliasRel);
-        if (AffectedObjects == std::nullopt) break;
-
-        ES.EscapedObjects.insert(AffectedObjects.value().begin(),
-                                 AffectedObjects.value().end());
+        if (const Value *EscapingObject =
+                getUnderlyingMayEscapingObject(Opnd.get()); EscapingObject)
+          ES.addEscapingObject(EscapingObject);
         break;
       }
       case EscapeKind::ALIASING: {
         LLVM_DEBUG(dbgs() << "\t-- ALIASING --\n");
-        assert(Alias != std::nullopt && "If found alias, alias must be set\n");
-        auto AffectedObjects = getAffectedObjects(Opnd, ES.AliasRel);
-        if (AffectedObjects == std::nullopt) break;
-
-        for (const auto *AffectedObject : AffectedObjects.value()) {
-          LLVM_DEBUG(dbgs() << "Affected " << *AffectedObject << "\n");
-          // If Alias is GEP, find base pointer and add it as alias too
-          if (auto *GEP = dyn_cast<GetElementPtrInst>(Alias.value())) {
-            // Underlying object used in this GEP
-            // GEP itself is not an alias
-            if (const Value *GEPUnderlyingObject = getUnderlyingEscapingObject(GEP))
-              ES.AliasRel.addAlias(GEPUnderlyingObject, AffectedObject);
-
-            // GEP may be computed from global variable, or from a phi-node
-            // and both cases seems to be no-escape cases.
-            // assert((isa<GlobalVariable>(Ptr) || isa<PHINode>(Ptr) ||
-            // isa<CallInst>(Ptr)) && "GEP underlying object is neither
-            // AllocaInst nor GlobalVariable");
-          } else {
-            // If alias is not GEP, add Alias itself
-            ES.AliasRel.addAlias(Alias.value(), AffectedObject);
-          }
-        }
+        assert(Alias != std::nullopt && Alias.value() != nullptr &&
+               "If found alias, alias must be set\n");
+        LLVM_DEBUG(dbgs() << "\tAlias candidate: " << *Alias.value() << "\n");
+        if (const Value *PointeeMayEscapingObject =
+              getUnderlyingMayEscapingObject(Opnd.get());
+            PointeeMayEscapingObject)
+          ES.addAlias(Alias.value(), PointeeMayEscapingObject);
+        break;
+      }
+      case EscapeKind::MAY_ESCAPE_AND_ALIASING: {
         break;
       }
       }
@@ -244,12 +228,8 @@ EscapeAnalysisInfo::EscapeState EscapeAnalysisInfo::mergePredEscapeStates(
   for (auto *PredBB : predecessors(BB)) {
     LLVM_DEBUG(dbgs() << "Merge to << " << BB->getName() << " <-- "
                       << PredBB->getName() << "\n");
-    auto &ES = BBEscapeStates[PredBB];
-
-    MergedES.EscapedObjects.insert(ES.EscapedObjects.begin(),
-                                   ES.EscapedObjects.end());
-
-    MergedES.AliasRel.merge(ES.AliasRel);
+    auto &PredES = BBEscapeStates[PredBB];
+    MergedES.merge(PredES);
   }
   return MergedES;
 }
@@ -295,7 +275,8 @@ EscapeAnalysisInfo::getEscapeKindForPtrOpnd(const Use &U,
         auto *StructTy = Alloca->getAllocatedType();
         if (StructTy && containsPointerType(StructTy))
           // First argument (destination) is a new alias
-          return {EscapeKind::ALIASING, Call->getArgOperand(0)};
+          return {EscapeKind::ALIASING,
+                  getUnderlyingMayEscapingObject(Call->getArgOperand(0))};
       }
     }
 
@@ -354,8 +335,10 @@ EscapeAnalysisInfo::getEscapeKindForPtrOpnd(const Use &U,
     if (cast<StoreInst>(I)->isVolatile())
       return {EscapeKind::MAY_ESCAPE, std::nullopt};
 
-    const auto *Src = I->getOperand(0)->stripPointerCasts();
-    const auto *Dst = I->getOperand(1)->stripPointerCasts();
+//    const auto *Src = I->getOperand(0)->stripPointerCasts();
+//    const auto *Dst = I->getOperand(1)->stripPointerCasts();
+    const auto *Src = getUnderlyingObject(I->getOperand(0));
+    const auto *Dst = getUnderlyingObject(I->getOperand(1)->stripPointerCasts());
 
     // Passing value instead of pointer is neither escape nor alias
     if (!Src->getType()->isPointerTy())
@@ -369,9 +352,7 @@ EscapeAnalysisInfo::getEscapeKindForPtrOpnd(const Use &U,
       return {EscapeKind::MAY_ESCAPE, std::nullopt};
 
     if (U.getOperandNo() == 0)
-      // NOTE: We could find underlying pointee object here -- think about it
-      // return {EscapeKind::ALIASING, getUnderlyingEscapingObject(Dst)};
-      return {EscapeKind::ALIASING, cast<StoreInst>(I)->getPointerOperand()};
+      return {EscapeKind::ALIASING, getUnderlyingMayEscapingObject(Dst)};
 
     return {EscapeKind::NO_ESCAPE, std::nullopt};
   }
@@ -538,32 +519,24 @@ bool EscapeAnalysisInfo::isDereferenceableOrNull(const Value *O,
 }
 
 /// Get underlying object which may escape
-const Value *EscapeAnalysisInfo::getUnderlyingEscapingObject(const Value *V) {
+const Value *EscapeAnalysisInfo::getUnderlyingMayEscapingObject(const Value *V) {
   LLVM_DEBUG(dbgs() << "\tgetUnderlyingEscapingObject() V " << *V << "\n");
-  if (auto *Load = dyn_cast<LoadInst>(V))
+  if (const auto *Load = dyn_cast<LoadInst>(V))
     // If it's a load, recursively analyze the pointer operand
-    return getUnderlyingEscapingObject(Load->getPointerOperand());
+    return getUnderlyingMayEscapingObject(
+        getUnderlyingObject(Load->getPointerOperand()));
 
   if (const auto *GEP = dyn_cast<GetElementPtrInst>(V))
-    return getUnderlyingEscapingObject(getUnderlyingObject(GEP));
+    return getUnderlyingMayEscapingObject(getUnderlyingObject(GEP));
 
   // This is the object which can escape
-  // 1. Stack-allocated variable
-  // 2. Arguments passing by value (as argument passin by pointer are supposed
-  // to be escaping by definition)
+  // AllocaInst, Argument - may escape or not escape
+  // GlobalVariable - escapes by definition
+  if ((isa<AllocaInst>(V)) || (isa<Argument>(V)) ||
+      (isa<GlobalVariable>(V)))
+    return V;
 
-  // if (isa<Argument>(V)) {
-    // dbgs() << "Argument! " << *V->getType() << "\n";
-    // return nullptr;
-  // }
-
-  // if ((isa<AllocaInst>(V)) ||
-      // Because we've already added all pointer argument as escaping objects
-      // (isa<Argument>(V) && !V->getType()->isPointerTy()))
-    // return V;
-
-  if ((isa<AllocaInst>(V)) ||
-      (isa<Argument>(V)))
+  if (isa<PHINode>(V))
     return V;
 
   return nullptr;
@@ -588,8 +561,14 @@ void EscapeAnalysisInfo::printEscapingForBB(const BasicBlock *BB,
     return;
 
   OS << "Escaping objects for BB " << BB->getName() << ":\n";
-  for (const auto *V : It->second.EscapedObjects)
+  for (const auto *V : It->second.EscapedObjects) {
+    if (isAlreadyEscaped(V))
+      // I'm not sure, we should not print objects escaping by definition
+      // (such as global variables or pointer arguments),
+      // but let's omit them for now
+      continue;
     OS << *V << "\n";
+  }
   OS << "\n";
 }
 
