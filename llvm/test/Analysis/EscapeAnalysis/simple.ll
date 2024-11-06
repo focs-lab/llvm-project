@@ -29,3 +29,22 @@ entry:
   store ptr %x, ptr @GPtr, align 8
   ret void
 }
+
+define dso_local ptr @escape_local() {
+; CHECK: Printing analysis 'Escape Analysis' for function 'escape_local':
+; CHECK-NEXT: Escaping objects for BB entry:
+; CHECK-NEXT:   %x = alloca i32, align 4
+entry:
+  %x = alloca i32, align 4
+  ret ptr %x
+}
+
+define dso_local ptr @escape_by_returning_ptr() {
+; CHECK: Printing analysis 'Escape Analysis' for function 'escape_by_returning_ptr':
+; CHECK-NEXT: Escaping objects for BB entry:
+; CHECK-NEXT:   %x = alloca ptr, align 8
+entry:
+  %x = alloca ptr, align 8
+  %0 = load ptr, ptr %x, align 8
+  ret ptr %0
+}
