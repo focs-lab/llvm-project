@@ -12,6 +12,7 @@
 
 #include "llvm/Analysis/EscapeAnalysis.h"
 #include "llvm/ADT/PostOrderIterator.h"
+#include "llvm/ADT/Statistic.h"
 #include "llvm/Analysis/AliasAnalysis.h"
 #include "llvm/Analysis/ValueTracking.h"
 #include "llvm/IR/CFG.h"
@@ -23,13 +24,17 @@
 
 using namespace llvm;
 
-#define DEBUG_TYPE "escape-analysis"
+#define DEBUG_TYPE "ea"
 #define DEEP_DEBUG_TYPE "ea-deep-debug"
 
 cl::opt<std::string> PrintEscapeAnalysis(
     "print-escape-analysis", cl::Hidden,
     cl::desc("The option to specify the name of the function "
              "whose escape analysis result is printed."));
+
+STATISTIC(NumEscapedGPtr, "Number of escaped by assignment to global pointer");
+STATISTIC(NumEscapedCall, "Number of escaped by passing to a function");
+STATISTIC(NumEscapedRet, "Number of escaped by passing to a function");
 
 //===----------------------------------------------------------------------===//
 // Alias relation
@@ -60,10 +65,10 @@ void EscapeAnalysisInfo::EscapeState::addAlias(
     for (const Value *ExistingAlias : ExistingAliases.value())
       addAlias(Alias, ExistingAlias);
 
-  // NOTE: That's not true that all alias pairs are symmetrical,
-  // but let's assume that for simplicity
-  //  if (isa<AllocaInst>(Alias) || isa<Argument>(Alias))
-  addAlias(PointeeValue, Alias);
+  // FIXME: recheck is it correct
+  if (isa<AllocaInst>(Alias) ||
+      (isa<Argument>(Alias) && !Alias->getType()->isPointerTy()))
+    addAlias(PointeeValue, Alias);
 }
 
 /// Get list of aliases for the object a
@@ -196,9 +201,15 @@ void EscapeAnalysisInfo::compOutEscapeState(
       case EscapeKind::MAY_ESCAPE: { // Update all affected allocas
         LLVM_DEBUG(dbgs() << "\t-- MAY_ESCAPE --\n");
 
-        if (const Value *EscapingObject =
-                getUnderlyingMayEscapingObject(Opnd.get()); EscapingObject)
-          ES.addEscapingObject(EscapingObject);
+        // if (const Value *EscapingObject =
+                // getUnderlyingMayEscapingObject(Opnd.get()); EscapingObject)
+          // ES.addEscapingObject(EscapingObject);
+        if (const auto EscapingObjects =
+                getUnderlyingMayEscapeObjectsNew(Opnd.get());
+            !EscapingObjects.empty()) {
+          for (const Value *EO: EscapingObjects)
+            ES.addEscapingObject(EO);
+        }
         break;
       }
       case EscapeKind::ALIASING: {
@@ -206,10 +217,25 @@ void EscapeAnalysisInfo::compOutEscapeState(
         assert(Alias != std::nullopt && Alias.value() != nullptr &&
                "If found alias, alias must be set\n");
         LLVM_DEBUG(dbgs() << "\tAlias candidate: " << *Alias.value() << "\n");
-        if (const Value *PointeeMayEscapingObject =
-              getUnderlyingMayEscapingObject(Opnd.get());
-            PointeeMayEscapingObject)
-          ES.addAlias(Alias.value(), PointeeMayEscapingObject);
+        ///////////////////////////////////////////////
+        // if (isa<PHINode>(Alias.value())) // DEBUG
+          // break;
+        // if (isa<SelectInst>(Alias.value())) // DEBUG
+          // break;
+        ///////////////////////////////////////////////
+
+        // if (const Value *PointeeMayEscapingObject =
+              // getUnderlyingMayEscapingObject(Opnd.get());
+            // PointeeMayEscapingObject)
+          // ES.addAlias(Alias.value(), PointeeMayEscapingObject);
+
+        if (const auto PointeeMayEscapeObjects =
+                getUnderlyingMayEscapeObjectsNew(Opnd.get());
+            !PointeeMayEscapeObjects.empty()) {
+          for (const Value *EO: PointeeMayEscapeObjects)
+            ES.addAlias(Alias.value(), EO);
+        }
+
         break;
       }
       case EscapeKind::MAY_ESCAPE_AND_ALIASING: {
@@ -317,6 +343,7 @@ EscapeAnalysisInfo::getEscapeKindForPtrOpnd(const Use &U,
         U->getType()->isPointerTy()) {
       // The parameter is not marked 'nocapture' - captured.
       return {EscapeKind::MAY_ESCAPE, std::nullopt};
+      NumEscapedCall++;
     }
     return {EscapeKind::NO_ESCAPE, std::nullopt};
   }
@@ -351,11 +378,16 @@ EscapeAnalysisInfo::getEscapeKindForPtrOpnd(const Use &U,
     // If storing value is not a pointer, that's not escape
     if (auto *CE = dyn_cast<ConstantExpr>(Dst);
         ((isa<GlobalVariable>(Dst)) ||
-         (CE && isa<GlobalVariable>(CE->getOperand(0)))))
+         (CE && isa<GlobalVariable>(CE->getOperand(0))))) {
+      NumEscapedGPtr++;
       return {EscapeKind::MAY_ESCAPE, std::nullopt};
+    }
 
     if (U.getOperandNo() == 0)
       return {EscapeKind::ALIASING, getUnderlyingMayEscapingObject(Dst)};
+      // Or just
+      // return {EscapeKind::ALIASING,
+      //   cast<StoreInst>(I)->getPointerOperand()};
 
     return {EscapeKind::NO_ESCAPE, std::nullopt};
   }
@@ -393,10 +425,8 @@ EscapeAnalysisInfo::getEscapeKindForPtrOpnd(const Use &U,
     // GEP itself is not escape or alias
     return {EscapeKind::NO_ESCAPE, std::nullopt};
   }
-  case Instruction::BitCast:
-  case Instruction::PHI:
-  case Instruction::Select:
-  case Instruction::AddrSpaceCast:
+  case Instruction::BitCast:      // TODO move
+  case Instruction::AddrSpaceCast:// TODO move
     LLVM_DEBUG(dbgs() << "AddrSpaceCast\n");
     // The original value is not captured via this if the new value isn't.
     return {EscapeKind::ALIASING, I};
@@ -486,8 +516,10 @@ EscapeAnalysisInfo::getEscapeKindForPtrOpnd(const Use &U,
     // 1. Check if returning the address of alloca directly
     const Value *StrippedOpnd = U.get()->stripPointerCasts();
 
-    if (isa<AllocaInst>(StrippedOpnd))
+    if (isa<AllocaInst>(StrippedOpnd)) {
+      NumEscapedRet++;
       return {EscapeKind::MAY_ESCAPE, std::nullopt};
+    }
 
     // 2. Check if returning a pointer loaded from a stack location
     if (auto *LI = dyn_cast<LoadInst>(StrippedOpnd)) {
@@ -498,6 +530,9 @@ EscapeAnalysisInfo::getEscapeKindForPtrOpnd(const Use &U,
 
     return {EscapeKind::NO_ESCAPE, std::nullopt};
   }
+  case Instruction::PHI:
+  case Instruction::Select:
+    return {EscapeKind::NO_ESCAPE, std::nullopt};
   default:
     LLVM_DEBUG(dbgs() << "Default\n");
     // Something else - be conservative and say it is escaped.
@@ -521,28 +556,94 @@ bool EscapeAnalysisInfo::isDereferenceableOrNull(const Value *O,
   return O->getPointerDereferenceableBytes(DL, CanBeNull, CanBeFreed);
 }
 
-/// Get underlying object which may escape
-const Value *EscapeAnalysisInfo::getUnderlyingMayEscapingObject(const Value *V) {
-  LLVM_DEBUG(dbgs() << "\tgetUnderlyingEscapingObject() V " << *V << "\n");
-  if (const auto *Load = dyn_cast<LoadInst>(V))
-    // If it's a load, recursively analyze the pointer operand
-    return getUnderlyingMayEscapingObject(
-        getUnderlyingObject(Load->getPointerOperand()));
+/// Recuresively search in the instruction for the underlying objects which
+/// may escape
+SmallPtrSet<const Value *, 8>
+EscapeAnalysisInfo::getUnderlyingMayEscapeObjectsNew(const Value *V) {
+  SmallPtrSet<const Value *, 8> MayEscapeObjects;
+  getUnderlyingMayEscapeObjectsNewImpl(V, MayEscapeObjects);
+  LLVM_DEBUG(if (!MayEscapeObjects.empty()) {
+    dbgs() << "\tMayEscapeObjects:\n";
+    for (auto *Obj: MayEscapeObjects)
+      dbgs() << "\t\t" << *Obj << "\n";
+  });
+  return MayEscapeObjects;
+}
 
-  if (const auto *GEP = dyn_cast<GetElementPtrInst>(V))
-    return getUnderlyingMayEscapingObject(getUnderlyingObject(GEP));
+// TODO rewrite with switch
+// TODO when insert, check if it's already contained in the resulting list
+void EscapeAnalysisInfo::getUnderlyingMayEscapeObjectsNewImpl(
+    const Value *V, SmallPtrSetImpl<const Value *> &MayEscapeObjects) {
+  const Value *UndrV = getUnderlyingObject(V);
+
+  LLVM_DEBUG(dbgs() << "\tgetUnderlyingEscapingObject() V " << *UndrV << "\n");
+  if (const auto *Load = dyn_cast<LoadInst>(UndrV)) {
+    // If it's a load, recursively analyze the pointer operand
+    getUnderlyingMayEscapeObjectsNewImpl(Load->getPointerOperand(),
+                                         MayEscapeObjects);
+    return;
+  }
 
   // This is the object which can escape
   // AllocaInst, Argument - may escape or not escape
   // GlobalVariable - escapes by definition
-  if ((isa<AllocaInst>(V)) || (isa<Argument>(V)) || (isa<GlobalVariable>(V)))
-    return V;
+  if ((isa<AllocaInst>(UndrV)) || (isa<Argument>(UndrV)) ||
+      (isa<GlobalVariable>(UndrV))) {
+    MayEscapeObjects.insert(UndrV);
+    return;
+  }
 
-  if (isa<PHINode>(V))
-    return V;
+  // Value is an instruction which use many objects which can escape
+  if (isa<PHINode>(UndrV) || isa<SelectInst>(UndrV)) {
+    for (const auto &U: cast<Instruction>(UndrV)->operands())
+      getUnderlyingMayEscapeObjectsNewImpl(U.get(), MayEscapeObjects);
+    return;
+  }
 
-  if (V->getType()->isPointerTy())
-    return V;
+  if (const auto *CI = dyn_cast<CastInst>(UndrV)) {
+    getUnderlyingMayEscapeObjectsNewImpl(CI->getOperand(0), MayEscapeObjects);
+    return;
+  }
+
+  if (const auto *CI = dyn_cast<CallInst>(UndrV);
+      CI && CI->getFunctionType()->getReturnType()->isPointerTy()) {
+    MayEscapeObjects.insert(UndrV);
+    return;
+  }
+}
+
+/// Get underlying object which may escape
+const Value *
+EscapeAnalysisInfo::getUnderlyingMayEscapingObject(const Value *V) {
+  const Value *UndrV = getUnderlyingObject(V);
+
+  LLVM_DEBUG(dbgs() << "\tgetUnderlyingEscapingObject() V " << *UndrV << "\n");
+  if (const auto *Load = dyn_cast<LoadInst>(UndrV))
+    // If it's a load, recursively analyze the pointer operand
+    return getUnderlyingMayEscapingObject(Load->getPointerOperand());
+
+  // This is the object which can escape
+  // AllocaInst, Argument - may escape or not escape
+  // GlobalVariable - escapes by definition
+  if ((isa<AllocaInst>(UndrV)) || (isa<Argument>(UndrV)) ||
+      (isa<GlobalVariable>(UndrV)))
+    return UndrV;
+
+  if (isa<PHINode>(UndrV))
+    return UndrV; // FIXME is it only way?
+
+  if (const auto *CI = dyn_cast<CastInst>(UndrV))
+    return getUnderlyingObject(CI->getOperand(0));
+
+  if (isa<SelectInst>(UndrV))
+    return UndrV; // FIXME is it only way?
+
+  // if (V->getType()->isPointerTy())
+    // return V;
+
+  if (const auto *CI = dyn_cast<CallInst>(UndrV);
+      CI && CI->getFunctionType()->getReturnType()->isPointerTy())
+    return UndrV;
 
   return nullptr;
 }

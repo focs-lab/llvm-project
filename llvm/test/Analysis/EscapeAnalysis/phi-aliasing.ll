@@ -52,7 +52,6 @@ vaarg.in_mem:                                     ; preds = %entry
 ; CHECK-DAG: %str.addr = alloca ptr, align 8
 ; CHECK-DAG: %p = alloca ptr, align 8
 ; CHECK-DAG: %ap = alloca [1 x %struct.__va_list_tag], align 16
-; CHECK-DAG: %vaarg.addr = phi ptr [ %1, %vaarg.in_reg ], [ %overflow_arg_area, %vaarg.in_mem ]
 vaarg.end:                                        ; preds = %vaarg.in_mem, %vaarg.in_reg
   %vaarg.addr = phi ptr [ %1, %vaarg.in_reg ], [ %overflow_arg_area, %vaarg.in_mem ]
   %3 = load ptr, ptr %vaarg.addr, align 8
@@ -130,7 +129,6 @@ vaarg.end:                                        ; preds = %vaarg.in_mem, %vaar
 ; !OLD-CHECK-DAG!: ptr %str
 ; CHECK-DAG: %str.addr = alloca ptr, align 8
 ; CHECK-DAG: %p = alloca ptr, align 8
-; CHECK-DAG: %vaarg.addr = phi ptr [ %2, %vaarg.in_reg ], [ %overflow_arg_area, %vaarg.in_mem ]
 ; CHECK-DAG: %ap = alloca [1 x %struct.__va_list_tag], align 16
 while.end:                                        ; preds = %while.cond
   %5 = load ptr, ptr %p, align 8

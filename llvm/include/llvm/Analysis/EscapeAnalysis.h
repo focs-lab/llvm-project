@@ -18,7 +18,6 @@
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/PassManager.h"
 
-
 namespace llvm {
   /// This is the implementation of simple escape analysis
 
@@ -148,9 +147,17 @@ namespace llvm {
     const EscapedObjectsTy &getFuncEscState() const;
 
   public:
-    /// Recuresively search for the underlying local object (alloca)
-    /// in the instruction
+    /// Recuresively search in the instruction for the underlying objects which
+    /// may escape
     static const Value *getUnderlyingMayEscapingObject(const Value *V);
+
+    /// Recuresively search in the instruction for the underlying objects which
+    /// may escape
+    static SmallPtrSet<const Value *, 8>
+    getUnderlyingMayEscapeObjectsNew(const Value *V);
+
+    static void getUnderlyingMayEscapeObjectsNewImpl(
+        const Value *V, SmallPtrSetImpl<const Value *> &MayEscapeObjects);
 
     /// Is Value V is escaping somewhere in the function
     bool isEscapedForFunc(const Value *V) const {
