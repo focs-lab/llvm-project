@@ -34,6 +34,7 @@ namespace llvm {
       ALIASING,
       MAY_ESCAPE_AND_ALIASING
     };
+    static const unsigned GetUndrlObjMaxLookup = 20;
 
     // Reference to the function being analyzed.
     const Function &F;
@@ -41,7 +42,7 @@ namespace llvm {
 
     struct EscapeState;
 
-    struct AliasRelationTy {
+    class AliasRelationTy {
       friend struct EscapeState;
 
       using AliasListTy = SmallPtrSet<const Value *, 8>;
@@ -153,11 +154,8 @@ namespace llvm {
 
     /// Recuresively search in the instruction for the underlying objects which
     /// may escape
-    static SmallPtrSet<const Value *, 8>
-    getUnderlyingMayEscapeObjectsNew(const Value *V);
-
-    static void getUnderlyingMayEscapeObjectsNewImpl(
-        const Value *V, SmallPtrSetImpl<const Value *> &MayEscapeObjects);
+    static SmallVector<Value *, 8>
+    getUnderlyingMayEscObjectsNew(const Value *V);
 
     /// Is Value V is escaping somewhere in the function
     bool isEscapedForFunc(const Value *V) const {

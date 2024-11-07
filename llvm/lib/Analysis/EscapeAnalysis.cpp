@@ -201,15 +201,11 @@ void EscapeAnalysisInfo::compOutEscapeState(
       case EscapeKind::MAY_ESCAPE: { // Update all affected allocas
         LLVM_DEBUG(dbgs() << "\t-- MAY_ESCAPE --\n");
 
-        // if (const Value *EscapingObject =
-                // getUnderlyingMayEscapingObject(Opnd.get()); EscapingObject)
-          // ES.addEscapingObject(EscapingObject);
-        if (const auto EscapingObjects =
-                getUnderlyingMayEscapeObjectsNew(Opnd.get());
-            !EscapingObjects.empty()) {
-          for (const Value *EO: EscapingObjects)
-            ES.addEscapingObject(EO);
-        }
+        const auto MayEscObjects = getUnderlyingMayEscObjectsNew(Opnd.get());
+        if (MayEscObjects.empty())
+          break;
+        for (const Value *EO : MayEscObjects)
+          ES.addEscapingObject(EO);
         break;
       }
       case EscapeKind::ALIASING: {
@@ -217,24 +213,14 @@ void EscapeAnalysisInfo::compOutEscapeState(
         assert(Alias != std::nullopt && Alias.value() != nullptr &&
                "If found alias, alias must be set\n");
         LLVM_DEBUG(dbgs() << "\tAlias candidate: " << *Alias.value() << "\n");
-        ///////////////////////////////////////////////
-        // if (isa<PHINode>(Alias.value())) // DEBUG
-          // break;
-        // if (isa<SelectInst>(Alias.value())) // DEBUG
-          // break;
-        ///////////////////////////////////////////////
 
-        // if (const Value *PointeeMayEscapingObject =
-              // getUnderlyingMayEscapingObject(Opnd.get());
-            // PointeeMayEscapingObject)
-          // ES.addAlias(Alias.value(), PointeeMayEscapingObject);
-
-        if (const auto PointeeMayEscapeObjects =
-                getUnderlyingMayEscapeObjectsNew(Opnd.get());
-            !PointeeMayEscapeObjects.empty()) {
-          for (const Value *EO: PointeeMayEscapeObjects)
-            ES.addAlias(Alias.value(), EO);
-        }
+        const auto Pointees = getUnderlyingMayEscObjectsNew(Opnd.get());
+        const auto Aliases = getUnderlyingMayEscObjectsNew(Alias.value());
+        if (Pointees.empty() || Aliases.empty())
+          break;
+        for (const Value *Alias : Aliases)
+          for (const Value *Pointee : Pointees)
+            ES.addAlias(Alias, Pointee);
 
         break;
       }
@@ -299,7 +285,7 @@ EscapeAnalysisInfo::getEscapeKindForPtrOpnd(const Use &U,
         (Call->getArgOperand(1) == U.get())) {
       // Check whether the source argument is a struct containing pointers
       if (AllocaInst *Alloca = dyn_cast<AllocaInst>(U.get())) {
-        auto *StructTy = Alloca->getAllocatedType();
+        const auto *StructTy = Alloca->getAllocatedType();
         if (StructTy && containsPointerType(StructTy))
           // First argument (destination) is a new alias
           return {EscapeKind::ALIASING,
@@ -342,8 +328,8 @@ EscapeAnalysisInfo::getEscapeKindForPtrOpnd(const Use &U,
         !Call->doesNotCapture(Call->getDataOperandNo(&U)) &&
         U->getType()->isPointerTy()) {
       // The parameter is not marked 'nocapture' - captured.
+      ++NumEscapedCall;
       return {EscapeKind::MAY_ESCAPE, std::nullopt};
-      NumEscapedCall++;
     }
     return {EscapeKind::NO_ESCAPE, std::nullopt};
   }
@@ -353,10 +339,6 @@ EscapeAnalysisInfo::getEscapeKindForPtrOpnd(const Use &U,
     if (cast<LoadInst>(I)->isVolatile())
       return {EscapeKind::MAY_ESCAPE, std::nullopt};
     return {EscapeKind::NO_ESCAPE, std::nullopt};
-  case Instruction::VAArg:
-    LLVM_DEBUG(dbgs() << "VAArg\n");
-    // "va-arg" from a pointer does not cause it to be captured.
-    return {EscapeKind::NO_ESCAPE, std::nullopt};
   case Instruction::Store: {
     LLVM_DEBUG(dbgs() << "Store\n");
     // Volatile stores make the address observable.
@@ -365,10 +347,8 @@ EscapeAnalysisInfo::getEscapeKindForPtrOpnd(const Use &U,
 
     // const auto *Src = I->getOperand(0)->stripPointerCasts();
     // const auto *Dst = I->getOperand(1)->stripPointerCasts();
-    const auto *Src =
-        getUnderlyingObject(I->getOperand(0)->stripPointerCasts());
-    const auto *Dst =
-        getUnderlyingObject(I->getOperand(1)->stripPointerCasts());
+    const auto *Src = getUnderlyingObject(I->getOperand(0));
+    const auto *Dst = getUnderlyingObject(I->getOperand(1));
 
     // Passing value instead of pointer is neither escape nor alias
     if (!Src->getType()->isPointerTy())
@@ -379,15 +359,12 @@ EscapeAnalysisInfo::getEscapeKindForPtrOpnd(const Use &U,
     if (auto *CE = dyn_cast<ConstantExpr>(Dst);
         ((isa<GlobalVariable>(Dst)) ||
          (CE && isa<GlobalVariable>(CE->getOperand(0))))) {
-      NumEscapedGPtr++;
+      ++NumEscapedGPtr;
       return {EscapeKind::MAY_ESCAPE, std::nullopt};
     }
 
     if (U.getOperandNo() == 0)
-      return {EscapeKind::ALIASING, getUnderlyingMayEscapingObject(Dst)};
-      // Or just
-      // return {EscapeKind::ALIASING,
-      //   cast<StoreInst>(I)->getPointerOperand()};
+      return {EscapeKind::ALIASING, Dst};
 
     return {EscapeKind::NO_ESCAPE, std::nullopt};
   }
@@ -425,11 +402,6 @@ EscapeAnalysisInfo::getEscapeKindForPtrOpnd(const Use &U,
     // GEP itself is not escape or alias
     return {EscapeKind::NO_ESCAPE, std::nullopt};
   }
-  case Instruction::BitCast:      // TODO move
-  case Instruction::AddrSpaceCast:// TODO move
-    LLVM_DEBUG(dbgs() << "AddrSpaceCast\n");
-    // The original value is not captured via this if the new value isn't.
-    return {EscapeKind::ALIASING, I};
   case Instruction::ICmp: {
     LLVM_DEBUG(dbgs() << "ICmp\n");
     unsigned Idx = U.getOperandNo();
@@ -459,6 +431,7 @@ EscapeAnalysisInfo::getEscapeKindForPtrOpnd(const Use &U,
     return {EscapeKind::NO_ESCAPE, std::nullopt};
   }
 
+    /*
   case Instruction::FCmp: // ICmp we addressed above
 
   // Binary arithmetical operators
@@ -502,10 +475,20 @@ EscapeAnalysisInfo::getEscapeKindForPtrOpnd(const Use &U,
     LLVM_DEBUG(dbgs() << "Alloca\n");
     return {EscapeKind::NO_ESCAPE, std::nullopt};
 
+  case Instruction::BitCast:
+  case Instruction::AddrSpaceCast:
+    LLVM_DEBUG(dbgs() << "AddrSpaceCast\n");
+    // The original value is not captured via this if the new value isn't.
+    return {EscapeKind::ALIASING, I};
   case Instruction::PtrToInt:
   case Instruction::IntToPtr:
     LLVM_DEBUG(dbgs() << "PtrToInt/IntToPtr\n");
     return {EscapeKind::ALIASING, I};
+  case Instruction::VAArg:
+    LLVM_DEBUG(dbgs() << "VAArg\n");
+    // "va-arg" from a pointer does not cause it to be captured.
+    return {EscapeKind::NO_ESCAPE, std::nullopt};
+    */
 
   case Instruction::Ret: {
     LLVM_DEBUG(dbgs() << "Ret\n");
@@ -517,7 +500,7 @@ EscapeAnalysisInfo::getEscapeKindForPtrOpnd(const Use &U,
     const Value *StrippedOpnd = U.get()->stripPointerCasts();
 
     if (isa<AllocaInst>(StrippedOpnd)) {
-      NumEscapedRet++;
+      ++NumEscapedRet;
       return {EscapeKind::MAY_ESCAPE, std::nullopt};
     }
 
@@ -530,13 +513,14 @@ EscapeAnalysisInfo::getEscapeKindForPtrOpnd(const Use &U,
 
     return {EscapeKind::NO_ESCAPE, std::nullopt};
   }
-  case Instruction::PHI:
-  case Instruction::Select:
-    return {EscapeKind::NO_ESCAPE, std::nullopt};
+  // case Instruction::PHI:
+  // case Instruction::Select:
+    // return {EscapeKind::NO_ESCAPE, std::nullopt};
   default:
     LLVM_DEBUG(dbgs() << "Default\n");
     // Something else - be conservative and say it is escaped.
-    return {EscapeKind::MAY_ESCAPE, std::nullopt};
+    return {EscapeKind::NO_ESCAPE, std::nullopt};
+    // return {EscapeKind::MAY_ESCAPE, std::nullopt};
   }
 }
 
@@ -556,60 +540,141 @@ bool EscapeAnalysisInfo::isDereferenceableOrNull(const Value *O,
   return O->getPointerDereferenceableBytes(DL, CanBeNull, CanBeFreed);
 }
 
-/// Recuresively search in the instruction for the underlying objects which
-/// may escape
-SmallPtrSet<const Value *, 8>
-EscapeAnalysisInfo::getUnderlyingMayEscapeObjectsNew(const Value *V) {
-  SmallPtrSet<const Value *, 8> MayEscapeObjects;
-  getUnderlyingMayEscapeObjectsNewImpl(V, MayEscapeObjects);
-  LLVM_DEBUG(if (!MayEscapeObjects.empty()) {
-    dbgs() << "\tMayEscapeObjects:\n";
-    for (auto *Obj: MayEscapeObjects)
-      dbgs() << "\t\t" << *Obj << "\n";
-  });
-  return MayEscapeObjects;
+//===----------------------------------------------------------------------===//
+// getUnderlyingObject infrastracture (taken and modified from ValueTracker.cpp)
+//===----------------------------------------------------------------------===//
+
+/// Wrapper around getUnderlyingObject to look through loads
+static const Value *getUnderlyingObjectThroughLoads(const Value *&P,
+                                                    unsigned MaxLookup) {
+  while (true) {
+    P = getUnderlyingObject(P, MaxLookup);
+    if (const auto *Load = dyn_cast<LoadInst>(P))
+      P = Load->getPointerOperand();
+    else
+      return P;
+  }
 }
 
-// TODO rewrite with switch
-// TODO when insert, check if it's already contained in the resulting list
-void EscapeAnalysisInfo::getUnderlyingMayEscapeObjectsNewImpl(
-    const Value *V, SmallPtrSetImpl<const Value *> &MayEscapeObjects) {
-  const Value *UndrV = getUnderlyingObject(V);
+/// This method is similar to getUnderlyingObject except that it can
+/// look through phi and select instructions and return multiple objects.
+///
+/// This is slightly modified version from ValueTracking.cpp. The differences:
+/// 1. Look through LoadInst
+/// 2. Ignore phi invariant check.
+static void getUnderlyingObjectsWithoutPHIInvCheck(
+    const Value *V, SmallVectorImpl<const Value *> &Objects,
+    unsigned MaxLookup) {
+  SmallPtrSet<const Value *, 4> Visited;
+  SmallVector<const Value *, 4> Worklist;
+  Worklist.push_back(V);
+  do {
+    const Value *P = Worklist.pop_back_val();
 
-  LLVM_DEBUG(dbgs() << "\tgetUnderlyingEscapingObject() V " << *UndrV << "\n");
-  if (const auto *Load = dyn_cast<LoadInst>(UndrV)) {
-    // If it's a load, recursively analyze the pointer operand
-    getUnderlyingMayEscapeObjectsNewImpl(Load->getPointerOperand(),
-                                         MayEscapeObjects);
-    return;
-  }
+    P = getUnderlyingObjectThroughLoads(P, MaxLookup);
 
-  // This is the object which can escape
-  // AllocaInst, Argument - may escape or not escape
-  // GlobalVariable - escapes by definition
-  if ((isa<AllocaInst>(UndrV)) || (isa<Argument>(UndrV)) ||
-      (isa<GlobalVariable>(UndrV))) {
-    MayEscapeObjects.insert(UndrV);
-    return;
-  }
+    if (!Visited.insert(P).second)
+      continue;
 
-  // Value is an instruction which use many objects which can escape
-  if (isa<PHINode>(UndrV) || isa<SelectInst>(UndrV)) {
-    for (const auto &U: cast<Instruction>(UndrV)->operands())
-      getUnderlyingMayEscapeObjectsNewImpl(U.get(), MayEscapeObjects);
-    return;
-  }
+    if (auto *SI = dyn_cast<SelectInst>(P)) {
+      Worklist.push_back(SI->getTrueValue());
+      Worklist.push_back(SI->getFalseValue());
+      continue;
+    }
 
-  if (const auto *CI = dyn_cast<CastInst>(UndrV)) {
-    getUnderlyingMayEscapeObjectsNewImpl(CI->getOperand(0), MayEscapeObjects);
-    return;
-  }
+    if (auto *PN = dyn_cast<PHINode>(P)) {
+      // In original function, we check here whether PHI is invariant during
+      // the loop. In this version, we are conservative and ignore it.
+      append_range(Worklist, PN->incoming_values());
+      continue;
+    }
 
-  if (const auto *CI = dyn_cast<CallInst>(UndrV);
-      CI && CI->getFunctionType()->getReturnType()->isPointerTy()) {
-    MayEscapeObjects.insert(UndrV);
-    return;
-  }
+    Objects.push_back(P);
+  } while (!Worklist.empty());
+}
+
+/// This is the function that does the work of looking through basic
+/// ptrtoint+arithmetic+inttoptr sequences.
+static const Value *getUnderlyingObjectFromInt(const Value *V) {
+  do {
+    if (const Operator *U = dyn_cast<Operator>(V)) {
+      // If we find a ptrtoint, we can transfer control back to the
+      // regular getUnderlyingObjectFromInt.
+      if (U->getOpcode() == Instruction::PtrToInt)
+        return U->getOperand(0);
+      // If we find an add of a constant, a multiplied value, or a phi, it's
+      // likely that the other operand will lead us to the base
+      // object. We don't have to worry about the case where the
+      // object address is somehow being computed by the multiply,
+      // because our callers only care when the result is an
+      // identifiable object.
+      if (U->getOpcode() != Instruction::Add ||
+          (!isa<ConstantInt>(U->getOperand(1)) &&
+           Operator::getOpcode(U->getOperand(1)) != Instruction::Mul &&
+           !isa<PHINode>(U->getOperand(1))))
+        return V;
+      V = U->getOperand(0);
+    } else {
+      return V;
+    }
+    assert(V->getType()->isIntegerTy() && "Unexpected operand type!");
+  } while (true);
+}
+
+/// This is a wrapper around getUnderlyingObjects and adds support for basic
+/// ptrtoint+arithmetic+inttoptr sequences.
+/// It returns false if unidentified object is found in getUnderlyingObjects.
+static bool getUnderlyingObjectsForCodeGenWithoutPHIInvCheck(
+    const Value *V, SmallVectorImpl<Value *> &Objects,
+    unsigned MaxLookup) {
+  SmallPtrSet<const Value *, 16> Visited;
+  SmallVector<const Value *, 4> Working(1, V);
+  do {
+    V = Working.pop_back_val();
+
+    SmallVector<const Value *, 4> Objs;
+    getUnderlyingObjectsWithoutPHIInvCheck(V, Objs, MaxLookup);
+
+    LLVM_DEBUG(dbgs() << "\tgetUnderlyingObjectsWithoutPHIInvCheck:\n");
+    for (const Value *V : Objs) {
+      LLVM_DEBUG(dbgs() << "\t\t" << *V << "\n");
+      if (!Visited.insert(V).second)
+        continue;
+      if (Operator::getOpcode(V) == Instruction::IntToPtr) {
+        const Value *O =
+          getUnderlyingObjectFromInt(cast<User>(V)->getOperand(0));
+        if (O->getType()->isPointerTy()) {
+          Working.push_back(O);
+          continue;
+        }
+      }
+      // If getUnderlyingObjects fails to find an identifiable object,
+      // getUnderlyingObjectsForCodeGen also fails for safety.
+      if (!isIdentifiedObject(V) &&
+          // Added because function arguments may escape or be aliases */
+          !isa<Argument>(V)) {
+        Objects.clear();
+        return false;
+      }
+      Objects.push_back(const_cast<Value *>(V));
+    }
+  } while (!Working.empty());
+  return true;
+}
+
+/// Recuresively search in the instruction for the underlying objects which
+/// may escape
+SmallVector<Value *, 8>
+EscapeAnalysisInfo::getUnderlyingMayEscObjectsNew(const Value *V) {
+  SmallVector<Value *, 8> UnderlyinglObjects;
+  getUnderlyingObjectsForCodeGenWithoutPHIInvCheck(V, UnderlyinglObjects,
+                                                   GetUndrlObjMaxLookup);
+  LLVM_DEBUG(if (!UnderlyinglObjects.empty()) {
+    dbgs() << "\tMayEscapeObjects (new):\n";
+    for (auto *Obj : UnderlyinglObjects)
+      dbgs() << "\t\t" << *Obj << "\n";
+  });
+  return UnderlyinglObjects;
 }
 
 /// Get underlying object which may escape
