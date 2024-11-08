@@ -32,9 +32,9 @@ cl::opt<std::string> PrintEscapeAnalysis(
     cl::desc("The option to specify the name of the function "
              "whose escape analysis result is printed."));
 
-STATISTIC(NumEscapedGPtr, "Number of escaped by assignment to global pointer");
+// STATISTIC(NumEscapedGPtr, "Number of escaped by assignment to global pointer");
 STATISTIC(NumEscapedCall, "Number of escaped by passing to a function");
-STATISTIC(NumEscapedRet, "Number of escaped by passing to a function");
+// STATISTIC(NumEscapedRet, "Number of escaped by passing to a function");
 
 //===----------------------------------------------------------------------===//
 // Alias relation
@@ -191,7 +191,7 @@ void EscapeAnalysisInfo::compOutEscapeState(
     for (const Use &Opnd: I.operands()) {
       LLVM_DEBUG(dbgs() << "\n\tOPND \t" << *Opnd.get() << "\n";);
 
-      const auto [EscKind, Alias] = getEscapeKindForPtrOpnd(Opnd, &I);
+      const auto [EscKind, Aliases] = getEscapeKindForPtrOpnd(Opnd);
 
       switch (EscKind) {
       case EscapeKind::NO_ESCAPE: { // Nothing to do
@@ -210,15 +210,16 @@ void EscapeAnalysisInfo::compOutEscapeState(
       }
       case EscapeKind::ALIASING: {
         LLVM_DEBUG(dbgs() << "\t-- ALIASING --\n");
-        assert(Alias != std::nullopt && Alias.value() != nullptr &&
+        assert(Aliases != std::nullopt && !Aliases.value().empty() &&
                "If found alias, alias must be set\n");
-        LLVM_DEBUG(dbgs() << "\tAlias candidate: " << *Alias.value() << "\n");
+
+        LLVM_DEBUG(for (auto *A: Aliases.value())
+            dbgs() << "\tAlias candidate: " << *A << "\n");
 
         const auto Pointees = getUnderlyingMayEscObjectsNew(Opnd.get());
-        const auto Aliases = getUnderlyingMayEscObjectsNew(Alias.value());
-        if (Pointees.empty() || Aliases.empty())
+        if (Pointees.empty())
           break;
-        for (const Value *Alias : Aliases)
+        for (const Value *Alias : Aliases.value())
           for (const Value *Pointee : Pointees)
             ES.addAlias(Alias, Pointee);
 
@@ -268,30 +269,19 @@ EscapeAnalysisInfo::getFuncEscState() const {
 }
 
 /// Determine what kind of escape behaviour V may exhibit.
-std::pair<EscapeAnalysisInfo::EscapeKind, std::optional<const Value *>>
-EscapeAnalysisInfo::getEscapeKindForPtrOpnd(const Use &U,
-                                            const Instruction *I) {
+std::pair<EscapeAnalysisInfo::EscapeKind,
+          std::optional<SmallVector<Value *, 8>>>
+EscapeAnalysisInfo::getEscapeKindForPtrOpnd(const Use &U) {
   LLVM_DEBUG(dbgs() << "\tgetEscapeKindForPtrOpnd -- ");
+  const auto *I = dyn_cast<Instruction>(U.getUser());
+  if (!I)
+    return {EscapeKind::NO_ESCAPE, std::nullopt};
 
   switch (I->getOpcode()) {
   case Instruction::Call:
   case Instruction::Invoke: {
     LLVM_DEBUG(dbgs() << "Call/Invoke\n");
     auto *Call = cast<CallBase>(I);
-
-    // Considering llvm.memcpy intrinsic
-    if (Call->getCalledFunction() &&
-        (Call->getCalledFunction()->getIntrinsicID() == Intrinsic::memcpy) &&
-        (Call->getArgOperand(1) == U.get())) {
-      // Check whether the source argument is a struct containing pointers
-      if (AllocaInst *Alloca = dyn_cast<AllocaInst>(U.get())) {
-        const auto *StructTy = Alloca->getAllocatedType();
-        if (StructTy && containsPointerType(StructTy))
-          // First argument (destination) is a new alias
-          return {EscapeKind::ALIASING,
-                  getUnderlyingMayEscapingObject(Call->getArgOperand(0))};
-      }
-    }
 
     // Not captured if the callee is readonly, doesn't return a copy through
     // its return value and doesn't unwind (a readonly function can leak bits
@@ -306,13 +296,27 @@ EscapeAnalysisInfo::getEscapeKindForPtrOpnd(const Use &U,
     // getUnderlyingObject in ValueTracking or DecomposeGEPExpression
     // in BasicAA also need to know about this property.
     if (isIntrinsicReturningPointerAliasingArgumentWithoutCapturing(Call, true))
-      return {EscapeKind::ALIASING, I};
+      return {EscapeKind::ALIASING, getUnderlyingMayEscObjectsNew(I)};
 
     // Volatile operations effectively capture the memory location that they
     // load and store to.
-    if (auto *MI = dyn_cast<MemIntrinsic>(Call))
+    if (auto *MI = dyn_cast<MemIntrinsic>(Call)) {
       if (MI->isVolatile())
         return {EscapeKind::MAY_ESCAPE, std::nullopt};
+
+      const auto *Src = MI->getArgOperand(1);
+      const auto DstObjs = getUnderlyingMayEscObjectsNew(MI->getArgOperand(0));
+
+      // Considering llvm.memcpy intrinsic
+      if ((MI->getIntrinsicID() == Intrinsic::memcpy) && (Src == U.get())) {
+        // Check whether the source argument is a struct containing pointers
+        if (const auto *Alloca = dyn_cast<AllocaInst>(U.get())) {
+          const Type *StructTy = Alloca->getAllocatedType();
+          if (StructTy && containsPointerType(StructTy))
+            return {EscapeKind::ALIASING, DstObjs};
+        }
+      }
+    }
 
     // Calling a function pointer does not in itself cause the pointer to
     // be captured.  This is a subtle point considering that (for example)
@@ -327,7 +331,7 @@ EscapeAnalysisInfo::getEscapeKindForPtrOpnd(const Use &U,
     if (Call->isDataOperand(&U) &&
         !Call->doesNotCapture(Call->getDataOperandNo(&U)) &&
         U->getType()->isPointerTy()) {
-      // The parameter is not marked 'nocapture' - captured.
+      // The parameter is passed by pointer and not marked 'nocapture'.
       ++NumEscapedCall;
       return {EscapeKind::MAY_ESCAPE, std::nullopt};
     }
@@ -345,28 +349,25 @@ EscapeAnalysisInfo::getEscapeKindForPtrOpnd(const Use &U,
     if (cast<StoreInst>(I)->isVolatile())
       return {EscapeKind::MAY_ESCAPE, std::nullopt};
 
-    // const auto *Src = I->getOperand(0)->stripPointerCasts();
-    // const auto *Dst = I->getOperand(1)->stripPointerCasts();
-    const auto *Src = getUnderlyingObject(I->getOperand(0));
-    const auto *Dst = getUnderlyingObject(I->getOperand(1));
+    if (U.getOperandNo() != 0)
+      return {EscapeKind::NO_ESCAPE, std::nullopt};
+
+    const auto *Src = I->getOperand(0);
 
     // Passing value instead of pointer is neither escape nor alias
     if (!Src->getType()->isPointerTy())
       return {EscapeKind::NO_ESCAPE, std::nullopt};
 
-    // Store to global variable is an escape as well
-    // If storing value is not a pointer, that's not escape
-    if (auto *CE = dyn_cast<ConstantExpr>(Dst);
-        ((isa<GlobalVariable>(Dst)) ||
-         (CE && isa<GlobalVariable>(CE->getOperand(0))))) {
-      ++NumEscapedGPtr;
-      return {EscapeKind::MAY_ESCAPE, std::nullopt};
-    }
+    const auto DstObjs = getUnderlyingMayEscObjectsNew(I->getOperand(1));
+    if (DstObjs.empty())
+      return {EscapeKind::NO_ESCAPE, std::nullopt};
 
-    if (U.getOperandNo() == 0)
-      return {EscapeKind::ALIASING, Dst};
+    // Store to GV - escape
+    for (const auto *Obj : DstObjs)
+      if (isa<GlobalVariable>(Obj))
+        return {EscapeKind::MAY_ESCAPE, std::nullopt};
 
-    return {EscapeKind::NO_ESCAPE, std::nullopt};
+    return {EscapeKind::ALIASING, DstObjs};
   }
   case Instruction::AtomicRMW: {
     LLVM_DEBUG(dbgs() << "AtomicRMW\n");
@@ -375,7 +376,7 @@ EscapeAnalysisInfo::getEscapeKindForPtrOpnd(const Use &U,
     // As with a store, the location being accessed is not captured,
     // but the value being stored is.
     // Volatile stores make the address observable.
-    auto *ARMWI = cast<AtomicRMWInst>(I);
+    const auto *ARMWI = cast<AtomicRMWInst>(I);
     if (U.getOperandNo() == 1 || ARMWI->isVolatile())
       return {EscapeKind::MAY_ESCAPE, std::nullopt};
     return {EscapeKind::NO_ESCAPE, std::nullopt};
@@ -431,91 +432,13 @@ EscapeAnalysisInfo::getEscapeKindForPtrOpnd(const Use &U,
     return {EscapeKind::NO_ESCAPE, std::nullopt};
   }
 
-    /*
-  case Instruction::FCmp: // ICmp we addressed above
-
-  // Binary arithmetical operators
-  case Instruction::Add:
-  case Instruction::FAdd:
-  case Instruction::Sub:
-  case Instruction::FSub:
-  case Instruction::Mul:
-  case Instruction::FMul:
-  case Instruction::UDiv:
-  case Instruction::SDiv:
-  case Instruction::FDiv:
-  case Instruction::URem:
-  case Instruction::SRem:
-  case Instruction::FRem:
-
-  // Logical operators
-  case Instruction::Shl:
-  case Instruction::LShr:
-  case Instruction::AShr:
-  case Instruction::And:
-  case Instruction::Or:
-  case Instruction::Xor:
-
-  // Cast operators
-  case Instruction::Trunc:
-  case Instruction::ZExt:
-  case Instruction::SExt:
-  case Instruction::FPToUI:
-  case Instruction::FPToSI:
-  case Instruction::UIToFP:
-  case Instruction::SIToFP:
-  case Instruction::FPTrunc:
-  case Instruction::FPExt:
-
-    // Treat binary operators as not escaping
-    LLVM_DEBUG(dbgs() << "Binary operator\n");
-    return {EscapeKind::NO_ESCAPE, std::nullopt};
-
-  case Instruction::Alloca:
-    LLVM_DEBUG(dbgs() << "Alloca\n");
-    return {EscapeKind::NO_ESCAPE, std::nullopt};
-
-  case Instruction::BitCast:
-  case Instruction::AddrSpaceCast:
-    LLVM_DEBUG(dbgs() << "AddrSpaceCast\n");
-    // The original value is not captured via this if the new value isn't.
-    return {EscapeKind::ALIASING, I};
-  case Instruction::PtrToInt:
-  case Instruction::IntToPtr:
-    LLVM_DEBUG(dbgs() << "PtrToInt/IntToPtr\n");
-    return {EscapeKind::ALIASING, I};
-  case Instruction::VAArg:
-    LLVM_DEBUG(dbgs() << "VAArg\n");
-    // "va-arg" from a pointer does not cause it to be captured.
-    return {EscapeKind::NO_ESCAPE, std::nullopt};
-    */
-
   case Instruction::Ret: {
     LLVM_DEBUG(dbgs() << "Ret\n");
 
     if (!U->getType()->isPointerTy())
       return {EscapeKind::NO_ESCAPE, std::nullopt};
-
-    // 1. Check if returning the address of alloca directly
-    const Value *StrippedOpnd = U.get()->stripPointerCasts();
-
-    if (isa<AllocaInst>(StrippedOpnd)) {
-      ++NumEscapedRet;
-      return {EscapeKind::MAY_ESCAPE, std::nullopt};
-    }
-
-    // 2. Check if returning a pointer loaded from a stack location
-    if (auto *LI = dyn_cast<LoadInst>(StrippedOpnd)) {
-      if (isa<AllocaInst>(LI->getPointerOperand()) &&
-          LI->getPointerOperandType()->isPointerTy())
-        return {EscapeKind::MAY_ESCAPE, std::nullopt};
-    }
-
-    return {EscapeKind::NO_ESCAPE, std::nullopt};
+    return {EscapeKind::MAY_ESCAPE, std::nullopt};
   }
-  // case Instruction::PHI:
-  // case Instruction::Select:
-    // return {EscapeKind::NO_ESCAPE, std::nullopt};
   default:
     LLVM_DEBUG(dbgs() << "Default\n");
     // Something else - be conservative and say it is escaped.
@@ -641,8 +564,11 @@ static bool getUnderlyingObjectsForCodeGenWithoutPHIInvCheck(
       if (!Visited.insert(V).second)
         continue;
       if (Operator::getOpcode(V) == Instruction::IntToPtr) {
+        const Value *OWithoutCast =
+            getUnderlyingObjectFromInt(cast<User>(V)->getOperand(0));
+        // Pass through loads
         const Value *O =
-          getUnderlyingObjectFromInt(cast<User>(V)->getOperand(0));
+            getUnderlyingObjectThroughLoads(OWithoutCast, MaxLookup);
         if (O->getType()->isPointerTy()) {
           Working.push_back(O);
           continue;
@@ -675,42 +601,6 @@ EscapeAnalysisInfo::getUnderlyingMayEscObjectsNew(const Value *V) {
       dbgs() << "\t\t" << *Obj << "\n";
   });
   return UnderlyinglObjects;
-}
-
-/// Get underlying object which may escape
-const Value *
-EscapeAnalysisInfo::getUnderlyingMayEscapingObject(const Value *V) {
-  const Value *UndrV = getUnderlyingObject(V);
-
-  LLVM_DEBUG(dbgs() << "\tgetUnderlyingEscapingObject() V " << *UndrV << "\n");
-  if (const auto *Load = dyn_cast<LoadInst>(UndrV))
-    // If it's a load, recursively analyze the pointer operand
-    return getUnderlyingMayEscapingObject(Load->getPointerOperand());
-
-  // This is the object which can escape
-  // AllocaInst, Argument - may escape or not escape
-  // GlobalVariable - escapes by definition
-  if ((isa<AllocaInst>(UndrV)) || (isa<Argument>(UndrV)) ||
-      (isa<GlobalVariable>(UndrV)))
-    return UndrV;
-
-  if (isa<PHINode>(UndrV))
-    return UndrV; // FIXME is it only way?
-
-  if (const auto *CI = dyn_cast<CastInst>(UndrV))
-    return getUnderlyingObject(CI->getOperand(0));
-
-  if (isa<SelectInst>(UndrV))
-    return UndrV; // FIXME is it only way?
-
-  // if (V->getType()->isPointerTy())
-    // return V;
-
-  if (const auto *CI = dyn_cast<CallInst>(UndrV);
-      CI && CI->getFunctionType()->getReturnType()->isPointerTy())
-    return UndrV;
-
-  return nullptr;
 }
 
 /// Is Value V is escaping in some path from Entry to BB?

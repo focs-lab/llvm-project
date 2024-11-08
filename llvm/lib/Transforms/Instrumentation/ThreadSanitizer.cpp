@@ -474,26 +474,25 @@ void ThreadSanitizer::chooseInstructionsToInstrument(
     }
 
     if (EAI.has_value()) {
-      if (const Value *V =
-              EscapeAnalysisInfo::getUnderlyingMayEscapingObject(Addr)) {
-        LLVM_DEBUG(dbgs() << "underlyingEscapingObj: " << *V << "\n");
-
+      const auto EscObjs = EscapeAnalysisInfo::getUnderlyingMayEscObjectsNew(Addr);
+      for (auto *Obj : EscObjs) {
         auto CompareCaptureAndEA = [=] {
           LLVM_DEBUG(dbgs() << "Instr: " << *I << "\n");
           bool IsCaptured = true;
           if (isa<AllocaInst>(getUnderlyingObject(Addr)))
             IsCaptured = PointerMayBeCaptured(Addr, true, true);
 
-          const auto IsEscaped = EAI.value().isEscapingForBB(I->getParent(), V);
+          const auto IsEscaped = EAI.value().isEscapingForBB(I->getParent(), Obj);
           if ((IsCaptured == true) && (IsEscaped == false)) {
-            LLVM_DEBUG(dbgs() << "EscapeAnalysis outperforms CaptureTracking!\n");
+            LLVM_DEBUG(dbgs()
+                       << "EscapeAnalysis outperforms CaptureTracking!\n");
             NumEscapeAnalysisOutperformsCaptureTracking++;
           }
         };
 
         DEBUG_WITH_TYPE("tsan-ea", CompareCaptureAndEA());
 
-        if (!EAI.value().isEscapingForBB(I->getParent(), V)) {
+        if (!EAI.value().isEscapingForBB(I->getParent(), Obj)) {
           LLVM_DEBUG(dbgs() << "Omit\n");
           NumOmittedNonEscaped++;
           continue;

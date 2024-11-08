@@ -132,8 +132,9 @@ namespace llvm {
     }
 
     /// Determine what kind of escape behaviour V may exhibit.
-    static std::pair<EscapeKind, std::optional<const Value*>>
-        getEscapeKindForPtrOpnd(const Use &U, const Instruction *I);
+    static std::pair<EscapeAnalysisInfo::EscapeKind,
+                     std::optional<SmallVector<Value *, 8>>>
+    getEscapeKindForPtrOpnd(const Use &U);
 
     /// Print escaped objects in some path from Entry to BB
     void printEscapingForBB(const BasicBlock *BB, raw_ostream &OS);
@@ -148,10 +149,6 @@ namespace llvm {
     const EscapedObjectsTy &getFuncEscState() const;
 
   public:
-    /// Recuresively search in the instruction for the underlying objects which
-    /// may escape
-    static const Value *getUnderlyingMayEscapingObject(const Value *V);
-
     /// Recuresively search in the instruction for the underlying objects which
     /// may escape
     static SmallVector<Value *, 8>
