@@ -31,8 +31,7 @@ namespace llvm {
     enum class EscapeKind {
       NO_ESCAPE,
       MAY_ESCAPE,
-      ALIASING,
-      MAY_ESCAPE_AND_ALIASING
+      MAY_ALIASING
     };
     static const unsigned GetUndrlObjMaxLookup = 20;
 
@@ -121,20 +120,17 @@ namespace llvm {
     /// Check if that's the object is "already escaped":
     /// e.g. pointer function argument or global variable.
     static bool isExternalEscapedObject(const Value *V) {
-      const Value *UnderlyingObj = getUnderlyingObject(V);
-
-      if (const auto *CI = dyn_cast<CallInst>(UnderlyingObj))
+      if (const auto *CI = dyn_cast<CallInst>(V))
         return CI->getFunctionType()->getReturnType()->isPointerTy();
 
-      return ((isa<Argument>(UnderlyingObj) &&
-               UnderlyingObj->getType()->isPointerTy()) ||
-              (isa<GlobalVariable>(UnderlyingObj)));
+      return ((isa<Argument>(V) && V->getType()->isPointerTy()) ||
+              (isa<GlobalVariable>(V)));
     }
 
     /// Determine what kind of escape behaviour V may exhibit.
     static std::pair<EscapeAnalysisInfo::EscapeKind,
                      std::optional<SmallVector<Value *, 8>>>
-    getEscapeKindForPtrOpnd(const Use &U);
+    getEscapeKindForOpnd(const Use &U);
 
     /// Print escaped objects in some path from Entry to BB
     void printEscapingForBB(const BasicBlock *BB, raw_ostream &OS);
@@ -152,7 +148,8 @@ namespace llvm {
     /// Recuresively search in the instruction for the underlying objects which
     /// may escape
     static SmallVector<Value *, 8>
-    getUnderlyingMayEscObjectsNew(const Value *V);
+    getUnderlyingMayEscObjects(const Value *V,
+                               unsigned MaxLookup = GetUndrlObjMaxLookup);
 
     /// Is Value V is escaping somewhere in the function
     bool isEscapedForFunc(const Value *V) const {

@@ -43,6 +43,8 @@ STATISTIC(NumEscapedCall, "Number of escaped by passing to a function");
 /// Add the alias: Alias --> PointeeValue
 void EscapeAnalysisInfo::EscapeState::addAlias(
     const Value *Alias, const Value *PointeeValue) {
+  assert(Alias->getType()->isPointerTy() && "Alias must be a pointer\n");
+
   if ((Alias == PointeeValue) || (PointeeValue == nullptr) ||
       (AliasRel.AliasMap[Alias].contains(PointeeValue)))
     return;
@@ -60,12 +62,11 @@ void EscapeAnalysisInfo::EscapeState::addAlias(
 
   // Considering transitivity: recursively add new alias to all existing aliases
   // of PointeeValue
-  if (const auto ExistingAliases = AliasRel.getAliases(PointeeValue);
-      ExistingAliases)
-    for (const Value *ExistingAlias : ExistingAliases.value())
+  if (const auto ExistAliases = AliasRel.getAliases(PointeeValue); ExistAliases)
+    for (const Value *ExistingAlias : ExistAliases.value())
       addAlias(Alias, ExistingAlias);
 
-  // FIXME: recheck is it correct
+  // TODO: remove condition?
   if (isa<AllocaInst>(Alias) ||
       (isa<Argument>(Alias) && !Alias->getType()->isPointerTy()))
     addAlias(PointeeValue, Alias);
@@ -184,50 +185,38 @@ EscapeAnalysisInfo::EscapeAnalysisInfo(const Function &Fn): F(Fn) {
 }
 
 /// Compute the resulting escape state for BB
-void EscapeAnalysisInfo::compOutEscapeState(
-    const BasicBlock *BB, EscapeState &ES) {
-  for (const Instruction &I: *BB) {
+void EscapeAnalysisInfo::compOutEscapeState(const BasicBlock *BB,
+                                            EscapeState &ES) {
+  for (const Instruction &I : *BB) {
     LLVM_DEBUG(dbgs() << "\nI " << I << "\n");
-    for (const Use &Opnd: I.operands()) {
+    for (const Use &Opnd : I.operands()) {
       LLVM_DEBUG(dbgs() << "\n\tOPND \t" << *Opnd.get() << "\n";);
 
-      const auto [EscKind, Aliases] = getEscapeKindForPtrOpnd(Opnd);
+      const auto [EscKind, Aliases] = getEscapeKindForOpnd(Opnd);
 
-      switch (EscKind) {
-      case EscapeKind::NO_ESCAPE: { // Nothing to do
-        LLVM_DEBUG(dbgs() << "\t-- NO_ESCAPE --\n");
-        break;
-      }
-      case EscapeKind::MAY_ESCAPE: { // Update all affected allocas
+      if (EscKind == EscapeKind::NO_ESCAPE)
+        continue;
+
+      const auto UnderlyingObjs = getUnderlyingMayEscObjects(Opnd.get());
+      if (UnderlyingObjs.empty())
+        continue;
+
+      if (EscKind == EscapeKind::MAY_ESCAPE) {
         LLVM_DEBUG(dbgs() << "\t-- MAY_ESCAPE --\n");
-
-        const auto MayEscObjects = getUnderlyingMayEscObjectsNew(Opnd.get());
-        if (MayEscObjects.empty())
-          break;
-        for (const Value *EO : MayEscObjects)
+        for (const Value *EO : UnderlyingObjs)
           ES.addEscapingObject(EO);
-        break;
-      }
-      case EscapeKind::ALIASING: {
-        LLVM_DEBUG(dbgs() << "\t-- ALIASING --\n");
+      } else {
+        assert(EscKind == EscapeKind::MAY_ALIASING);
         assert(Aliases != std::nullopt && !Aliases.value().empty() &&
                "If found alias, alias must be set\n");
 
-        LLVM_DEBUG(for (auto *A: Aliases.value())
-            dbgs() << "\tAlias candidate: " << *A << "\n");
+        LLVM_DEBUG(dbgs() << "\t-- ALIASING --\n";
+                   for (auto *A : Aliases.value())
+                     dbgs() << "\tAlias candidate: " << *A << "\n");
 
-        const auto Pointees = getUnderlyingMayEscObjectsNew(Opnd.get());
-        if (Pointees.empty())
-          break;
         for (const Value *Alias : Aliases.value())
-          for (const Value *Pointee : Pointees)
+          for (const Value *Pointee : UnderlyingObjs)
             ES.addAlias(Alias, Pointee);
-
-        break;
-      }
-      case EscapeKind::MAY_ESCAPE_AND_ALIASING: {
-        break;
-      }
       }
     }
   }
@@ -271,7 +260,7 @@ EscapeAnalysisInfo::getFuncEscState() const {
 /// Determine what kind of escape behaviour V may exhibit.
 std::pair<EscapeAnalysisInfo::EscapeKind,
           std::optional<SmallVector<Value *, 8>>>
-EscapeAnalysisInfo::getEscapeKindForPtrOpnd(const Use &U) {
+EscapeAnalysisInfo::getEscapeKindForOpnd(const Use &U) {
   LLVM_DEBUG(dbgs() << "\tgetEscapeKindForPtrOpnd -- ");
   const auto *I = dyn_cast<Instruction>(U.getUser());
   if (!I)
@@ -296,7 +285,7 @@ EscapeAnalysisInfo::getEscapeKindForPtrOpnd(const Use &U) {
     // getUnderlyingObject in ValueTracking or DecomposeGEPExpression
     // in BasicAA also need to know about this property.
     if (isIntrinsicReturningPointerAliasingArgumentWithoutCapturing(Call, true))
-      return {EscapeKind::ALIASING, getUnderlyingMayEscObjectsNew(I)};
+      return {EscapeKind::MAY_ALIASING, getUnderlyingMayEscObjects(I)};
 
     // Volatile operations effectively capture the memory location that they
     // load and store to.
@@ -305,7 +294,7 @@ EscapeAnalysisInfo::getEscapeKindForPtrOpnd(const Use &U) {
         return {EscapeKind::MAY_ESCAPE, std::nullopt};
 
       const auto *Src = MI->getArgOperand(1);
-      const auto DstObjs = getUnderlyingMayEscObjectsNew(MI->getArgOperand(0));
+      const auto DstObjs = getUnderlyingMayEscObjects(MI->getArgOperand(0));
 
       // Considering llvm.memcpy intrinsic
       if ((MI->getIntrinsicID() == Intrinsic::memcpy) && (Src == U.get())) {
@@ -313,7 +302,7 @@ EscapeAnalysisInfo::getEscapeKindForPtrOpnd(const Use &U) {
         if (const auto *Alloca = dyn_cast<AllocaInst>(U.get())) {
           const Type *StructTy = Alloca->getAllocatedType();
           if (StructTy && containsPointerType(StructTy))
-            return {EscapeKind::ALIASING, DstObjs};
+            return {EscapeKind::MAY_ALIASING, DstObjs};
         }
       }
     }
@@ -358,7 +347,7 @@ EscapeAnalysisInfo::getEscapeKindForPtrOpnd(const Use &U) {
     if (!Src->getType()->isPointerTy())
       return {EscapeKind::NO_ESCAPE, std::nullopt};
 
-    const auto DstObjs = getUnderlyingMayEscObjectsNew(I->getOperand(1));
+    const auto DstObjs = getUnderlyingMayEscObjects(I->getOperand(1));
     if (DstObjs.empty())
       return {EscapeKind::NO_ESCAPE, std::nullopt};
 
@@ -367,7 +356,7 @@ EscapeAnalysisInfo::getEscapeKindForPtrOpnd(const Use &U) {
       if (isa<GlobalVariable>(Obj))
         return {EscapeKind::MAY_ESCAPE, std::nullopt};
 
-    return {EscapeKind::ALIASING, DstObjs};
+    return {EscapeKind::MAY_ALIASING, DstObjs};
   }
   case Instruction::AtomicRMW: {
     LLVM_DEBUG(dbgs() << "AtomicRMW\n");
@@ -388,8 +377,8 @@ EscapeAnalysisInfo::getEscapeKindForPtrOpnd(const Use &U) {
     // As with a store, the location being accessed is not captured,
     // but the value being stored is.
     // Volatile stores make the address observable.
-    auto *ACXI = cast<AtomicCmpXchgInst>(I);
-    if (U.getOperandNo() == 1 || U.getOperandNo() == 2 || ACXI->isVolatile())
+    if (const auto *ACXI = cast<AtomicCmpXchgInst>(I);
+        U.getOperandNo() == 1 || U.getOperandNo() == 2 || ACXI->isVolatile())
       return {EscapeKind::MAY_ESCAPE, std::nullopt};
     return {EscapeKind::NO_ESCAPE, std::nullopt};
   }
@@ -405,8 +394,8 @@ EscapeAnalysisInfo::getEscapeKindForPtrOpnd(const Use &U) {
   }
   case Instruction::ICmp: {
     LLVM_DEBUG(dbgs() << "ICmp\n");
-    unsigned Idx = U.getOperandNo();
-    unsigned OtherIdx = 1 - Idx;
+    const unsigned Idx = U.getOperandNo();
+    const unsigned OtherIdx = 1 - Idx;
     if (auto *CPN = dyn_cast<ConstantPointerNull>(I->getOperand(OtherIdx))) {
       // Don't count comparisons of a no-alias return value against null as
       // captures. This allows us to ignore comparisons of malloc results
@@ -559,13 +548,13 @@ static bool getUnderlyingObjectsForCodeGenWithoutPHIInvCheck(
     getUnderlyingObjectsWithoutPHIInvCheck(V, Objs, MaxLookup);
 
     LLVM_DEBUG(dbgs() << "\tgetUnderlyingObjectsWithoutPHIInvCheck:\n");
-    for (const Value *V : Objs) {
-      LLVM_DEBUG(dbgs() << "\t\t" << *V << "\n");
-      if (!Visited.insert(V).second)
+    for (const Value *VV : Objs) {
+      LLVM_DEBUG(dbgs() << "\t\t" << *VV << "\n");
+      if (!Visited.insert(VV).second)
         continue;
-      if (Operator::getOpcode(V) == Instruction::IntToPtr) {
+      if (Operator::getOpcode(VV) == Instruction::IntToPtr) {
         const Value *OWithoutCast =
-            getUnderlyingObjectFromInt(cast<User>(V)->getOperand(0));
+            getUnderlyingObjectFromInt(cast<User>(VV)->getOperand(0));
         // Pass through loads
         const Value *O =
             getUnderlyingObjectThroughLoads(OWithoutCast, MaxLookup);
@@ -576,13 +565,13 @@ static bool getUnderlyingObjectsForCodeGenWithoutPHIInvCheck(
       }
       // If getUnderlyingObjects fails to find an identifiable object,
       // getUnderlyingObjectsForCodeGen also fails for safety.
-      if (!isIdentifiedObject(V) &&
+      if (!isIdentifiedObject(VV) &&
           // Added because function arguments may escape or be aliases */
-          !isa<Argument>(V)) {
+          !isa<Argument>(VV)) {
         Objects.clear();
         return false;
       }
-      Objects.push_back(const_cast<Value *>(V));
+      Objects.push_back(const_cast<Value *>(VV));
     }
   } while (!Working.empty());
   return true;
@@ -591,7 +580,8 @@ static bool getUnderlyingObjectsForCodeGenWithoutPHIInvCheck(
 /// Recuresively search in the instruction for the underlying objects which
 /// may escape
 SmallVector<Value *, 8>
-EscapeAnalysisInfo::getUnderlyingMayEscObjectsNew(const Value *V) {
+EscapeAnalysisInfo::getUnderlyingMayEscObjects(const Value *V,
+                                               unsigned MaxLookup) {
   SmallVector<Value *, 8> UnderlyinglObjects;
   getUnderlyingObjectsForCodeGenWithoutPHIInvCheck(V, UnderlyinglObjects,
                                                    GetUndrlObjMaxLookup);
@@ -619,7 +609,7 @@ bool EscapeAnalysisInfo::isEscapingForBB(const BasicBlock *BB,
 }
 
 void EscapeAnalysisInfo::printEscapingForBB(const BasicBlock *BB,
-                                           raw_ostream &OS) {
+                                            raw_ostream &OS) {
   const auto It = BBEscapeStates.find(BB);
   if ((It == BBEscapeStates.end()) || (It->second.EscapedObjects.empty()))
     return;

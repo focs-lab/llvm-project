@@ -474,8 +474,10 @@ void ThreadSanitizer::chooseInstructionsToInstrument(
     }
 
     if (EAI.has_value()) {
-      const auto EscObjs = EscapeAnalysisInfo::getUnderlyingMayEscObjectsNew(Addr);
-      for (auto *Obj : EscObjs) {
+      const auto EscObjs = EscapeAnalysisInfo::getUnderlyingMayEscObjects(Addr);
+      for (const auto *Obj : EscObjs) {
+        ////
+        // Debug
         auto CompareCaptureAndEA = [=] {
           LLVM_DEBUG(dbgs() << "Instr: " << *I << "\n");
           bool IsCaptured = true;
