@@ -11,10 +11,11 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/Analysis/EscapeAnalysis.h"
-#include "llvm/ADT/PostOrderIterator.h"
-#include "llvm/ADT/Statistic.h"
 #include "llvm/Analysis/AliasAnalysis.h"
 #include "llvm/Analysis/ValueTracking.h"
+#include "llvm/ADT/PostOrderIterator.h"
+#include "llvm/ADT/Statistic.h"
+#include "llvm/ADT/SCCIterator.h"
 #include "llvm/IR/CFG.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/IntrinsicInst.h"
@@ -27,10 +28,14 @@ using namespace llvm;
 #define DEBUG_TYPE "ea"
 #define DEEP_DEBUG_TYPE "ea-deep-debug"
 
-cl::opt<std::string> PrintEscapeAnalysis(
-    "print-escape-analysis", cl::Hidden,
-    cl::desc("The option to specify the name of the function "
-             "whose escape analysis result is printed."));
+static cl::opt<std::string> PrintEscapeAnalysis(
+  "print-escape-analysis", cl::Hidden,
+  cl::desc("Print escape analysis info for all functions "
+           "using intraprocedural analysis."));
+
+static cl::opt<std::string> PrintEscapeAnalysisGlobal(
+    "print-escape-analysis-global", cl::Hidden,
+    cl::desc("Print global escape analysis info for the module."));
 
 // STATISTIC(NumEscapedGPtr, "Number of escaped by assignment to global pointer");
 STATISTIC(NumEscapedCall, "Number of escaped by passing to a function");
@@ -41,8 +46,9 @@ STATISTIC(NumEscapedCall, "Number of escaped by passing to a function");
 //===----------------------------------------------------------------------===//
 
 /// Add the alias: Alias --> PointeeValue
-void EscapeAnalysisInfo::EscapeState::addAlias(
-    const Value *Alias, const Value *PointeeValue) {
+void EscapeAnalysisInfo::EscapeState::addAlias(const Value *Alias,
+                                               const Value *PointeeValue,
+                                               const EscapeAnalysisInfo *EAI) {
   assert(Alias->getType()->isPointerTy() && "Alias must be a pointer\n");
 
   if ((Alias == PointeeValue) || (PointeeValue == nullptr) ||
@@ -56,7 +62,7 @@ void EscapeAnalysisInfo::EscapeState::addAlias(
   // If instruction creates an alias to the object which has escaped before
   // or escapes "by definition" (e.g. pointer function argument,
   // global pointer), then that's not just aliasing, but escaping as well
-  if (isExternalEscapedObject(PointeeValue) ||
+  if (EAI->isExternalEscapedObject(PointeeValue) ||
       EscapedObjects.contains(PointeeValue))
     addEscapingObject(Alias);
 
@@ -64,12 +70,12 @@ void EscapeAnalysisInfo::EscapeState::addAlias(
   // of PointeeValue
   if (const auto ExistAliases = AliasRel.getAliases(PointeeValue); ExistAliases)
     for (const Value *ExistingAlias : ExistAliases.value())
-      addAlias(Alias, ExistingAlias);
+      addAlias(Alias, ExistingAlias, EAI);
 
   // TODO: remove condition?
   if (isa<AllocaInst>(Alias) ||
       (isa<Argument>(Alias) && !Alias->getType()->isPointerTy()))
-    addAlias(PointeeValue, Alias);
+    addAlias(PointeeValue, Alias, EAI);
 }
 
 /// Get list of aliases for the object a
@@ -141,7 +147,12 @@ void EscapeAnalysisInfo::EscapeState::getEscapingObjectsList(
 // Main analysis
 //===----------------------------------------------------------------------===//
 
-EscapeAnalysisInfo::EscapeAnalysisInfo(const Function &Fn): F(Fn) {
+EscapeAnalysisInfo::EscapeAnalysisInfo(const Function &Fn, bool ArgEsc)
+    : F(Fn), ArgumentsEscape(ArgEsc) {
+  LLVM_DEBUG(dbgs() <<
+    "\n||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||\n"
+    "|||||||||||||||||||| Func " << Fn.getName() << "\t||||||||||||||||||||||\n"
+    "||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||\n");
   std::deque<const BasicBlock *> WorkList;
 
   // Try to traverse CFG in reverse post-order
@@ -216,7 +227,7 @@ void EscapeAnalysisInfo::compOutEscapeState(const BasicBlock *BB,
 
         for (const Value *Alias : Aliases.value())
           for (const Value *Pointee : UnderlyingObjs)
-            ES.addAlias(Alias, Pointee);
+            ES.addAlias(Alias, Pointee, this);
       }
     }
   }
@@ -231,8 +242,8 @@ EscapeAnalysisInfo::EscapeState EscapeAnalysisInfo::mergePredEscapeStates(
   for (auto *PredBB : predecessors(BB)) {
     LLVM_DEBUG(dbgs() << "Merge to << " << BB->getName() << " <-- "
                       << PredBB->getName() << "\n");
-    auto &PredES = BBEscapeStates[PredBB];
-    MergedES.merge(PredES);
+    const auto &PredES = BBEscapeStates[PredBB];
+    MergedES.merge(PredES, this);
   }
   return MergedES;
 }
@@ -457,7 +468,8 @@ bool EscapeAnalysisInfo::isDereferenceableOrNull(const Value *O,
 //===----------------------------------------------------------------------===//
 
 /// Wrapper around getUnderlyingObject to look through loads
-static const Value *getUnderlyingObjectThroughLoads(const Value *&P,
+const Value *
+EscapeAnalysisInfo::getUnderlyingObjectThroughLoads(const Value *&P,
                                                     unsigned MaxLookup) {
   while (true) {
     P = getUnderlyingObject(P, MaxLookup);
@@ -472,9 +484,9 @@ static const Value *getUnderlyingObjectThroughLoads(const Value *&P,
 /// look through phi and select instructions and return multiple objects.
 ///
 /// This is slightly modified version from ValueTracking.cpp. The differences:
-/// 1. Look through LoadInst
+/// 1. Pass through LoadInst to get the original loaded object.
 /// 2. Ignore phi invariant check.
-static void getUnderlyingObjectsWithoutPHIInvCheck(
+void EscapeAnalysisInfo::getUnderlyingObjectsWithoutPHIInvCheck(
     const Value *V, SmallVectorImpl<const Value *> &Objects,
     unsigned MaxLookup) {
   SmallPtrSet<const Value *, 4> Visited;
@@ -507,7 +519,7 @@ static void getUnderlyingObjectsWithoutPHIInvCheck(
 
 /// This is the function that does the work of looking through basic
 /// ptrtoint+arithmetic+inttoptr sequences.
-static const Value *getUnderlyingObjectFromInt(const Value *V) {
+const Value *EscapeAnalysisInfo::getUnderlyingObjectFromInt(const Value *V) {
   do {
     if (const Operator *U = dyn_cast<Operator>(V)) {
       // If we find a ptrtoint, we can transfer control back to the
@@ -536,9 +548,8 @@ static const Value *getUnderlyingObjectFromInt(const Value *V) {
 /// This is a wrapper around getUnderlyingObjects and adds support for basic
 /// ptrtoint+arithmetic+inttoptr sequences.
 /// It returns false if unidentified object is found in getUnderlyingObjects.
-static bool getUnderlyingObjectsForCodeGenWithoutPHIInvCheck(
-    const Value *V, SmallVectorImpl<Value *> &Objects,
-    unsigned MaxLookup) {
+bool EscapeAnalysisInfo::getUnderlyingObjectsForCodeGenWithoutPHIInvCheck(
+    const Value *V, SmallVectorImpl<Value *> &Objects, unsigned MaxLookup) {
   SmallPtrSet<const Value *, 16> Visited;
   SmallVector<const Value *, 4> Working(1, V);
   do {
@@ -584,7 +595,7 @@ EscapeAnalysisInfo::getUnderlyingMayEscObjects(const Value *V,
                                                unsigned MaxLookup) {
   SmallVector<Value *, 8> UnderlyinglObjects;
   getUnderlyingObjectsForCodeGenWithoutPHIInvCheck(V, UnderlyinglObjects,
-                                                   GetUndrlObjMaxLookup);
+                                                   MaxLookup);
   LLVM_DEBUG(if (!UnderlyinglObjects.empty()) {
     dbgs() << "\tMayEscapeObjects (new):\n";
     for (auto *Obj : UnderlyinglObjects)
@@ -594,7 +605,7 @@ EscapeAnalysisInfo::getUnderlyingMayEscObjects(const Value *V,
 }
 
 /// Is Value V is escaping in some path from Entry to BB?
-bool EscapeAnalysisInfo::isEscapingForBB(const BasicBlock *BB,
+bool EscapeAnalysisInfo::isEscapedForBB(const BasicBlock *BB,
                                          const Value *V) const {
   if (isExternalEscapedObject(V))
     return true;
@@ -655,5 +666,53 @@ EscapeAnalysisPrinterPass::run(Function &F, FunctionAnalysisManager &AM) const {
   OS << "Printing analysis 'Escape Analysis' for function '"
       << F.getName() << "':\n";
   AM.getResult<EscapeAnalysis>(F).print(OS);
+  return PreservedAnalyses::all();
+}
+
+//===----------------------------------------------------------------------===//
+// Escape analysis global (IPA)
+//===----------------------------------------------------------------------===//
+
+EscapeAnalysisGlobalInfo::EscapeAnalysisGlobalInfo(Module *M_, CallGraph &CG)
+    : M(M_) {
+  dbgs() << "Hi! Starting analysis for " << M->getName() << "\n";
+
+  // We do a bottom-up SCC traversal of the call graph.  In other words, we
+  // visit all callees before callers (leaf-first).
+  for (scc_iterator<CallGraph *> I = scc_begin(&CG); !I.isAtEnd(); ++I) {
+    const std::vector<CallGraphNode *> &SCC = *I;
+    assert(!SCC.empty() && "SCC with no functions?");
+
+    Function *F = SCC[0]->getFunction();
+
+    if (!F || !F->isDefinitionExact()) {
+      // Calls externally or not exact - can't say anything useful.
+      // TODO: implement, be conservative
+      continue;
+    }
+
+    dbgs() << "F: " << F->getName() << "\n";
+
+    const EscapeAnalysisInfo FuncEAI(*F, false);
+    for (auto &Arg: F->args())
+      dbgs() << "Arg " << Arg << " ESC " << FuncEAI.isEscapedForFunc(&Arg)
+             << "\n";
+  }
+}
+
+void EscapeAnalysisGlobalInfo::print(raw_ostream &O) const {  }
+
+AnalysisKey EscapeAnalysisGlobal::Key;
+
+EscapeAnalysisGlobal::Result
+EscapeAnalysisGlobal::run(Module &M, ModuleAnalysisManager &AM) {
+  return EscapeAnalysisGlobalInfo(&M, AM.getResult<CallGraphAnalysis>(M));
+}
+
+PreservedAnalyses
+EscapeAnalysisGlobalPrinterPass::run(Module &M,
+                                     ModuleAnalysisManager &AM) const {
+  OS << "'Escape Analysis' for module '" << M.getName() << "'\n";
+  AM.getResult<EscapeAnalysisGlobal>(M).print(OS);
   return PreservedAnalyses::all();
 }

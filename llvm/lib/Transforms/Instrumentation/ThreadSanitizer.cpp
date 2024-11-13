@@ -484,7 +484,7 @@ void ThreadSanitizer::chooseInstructionsToInstrument(
           if (isa<AllocaInst>(getUnderlyingObject(Addr)))
             IsCaptured = PointerMayBeCaptured(Addr, true, true);
 
-          const auto IsEscaped = EAI.value().isEscapingForBB(I->getParent(), Obj);
+          const auto IsEscaped = EAI.value().isEscapedForBB(I->getParent(), Obj);
           if ((IsCaptured == true) && (IsEscaped == false)) {
             LLVM_DEBUG(dbgs()
                        << "EscapeAnalysis outperforms CaptureTracking!\n");
@@ -494,7 +494,7 @@ void ThreadSanitizer::chooseInstructionsToInstrument(
 
         DEBUG_WITH_TYPE("tsan-ea", CompareCaptureAndEA());
 
-        if (!EAI.value().isEscapingForBB(I->getParent(), Obj)) {
+        if (!EAI.value().isEscapedForBB(I->getParent(), Obj)) {
           LLVM_DEBUG(dbgs() << "Omit\n");
           NumOmittedNonEscaped++;
           continue;
