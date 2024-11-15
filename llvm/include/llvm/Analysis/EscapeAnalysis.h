@@ -28,7 +28,6 @@ public:
   /// Run analysis for given function.
   /// ArgumentEscape is needed for IPA analysis (because we should ignore
   /// escaping by calls)
-  /// TODO: do we need ArgumentsEscape (with escape reasons system)?
   explicit EscapeAnalysisInfo(const Function &Fn, bool ArgumentsEscape = true);
   void print(raw_ostream &OS);
 
@@ -38,7 +37,7 @@ private:
   static const unsigned GetUndrlObjMaxLookup = 20;
 
   // Reference to the function being analyzed.
-  const Function &F;
+  const Function &AnalyzedFunc;
   using EscapedObjectsTy = DenseSet<const Value *>;
 
   bool ArgumentsEscape;
@@ -53,7 +52,7 @@ private:
 
   public:
     /// Merge two relations into one (Other), save results into current (this)
-    void merge(const AliasRelationTy &Other);
+    // void merge(const AliasRelationTy &Other);
 
     /// Get list of aliases for the object a
     std::optional<AliasListTy> getAliases(const Value *V) const;
@@ -94,8 +93,8 @@ private:
     }
 
   private:
-    void getEscapingObjectsList(const Value *EscapingObject,
-                                SmallPtrSetImpl<const Value *> &EscObjList);
+    void getAliasSubtreeAsList(const Value *Obj,
+                                SmallPtrSetImpl<const Value *> &ConcerningObjs);
 
     /// Merge two Alias relations into one
     void mergeAliases(const EscapeState &OtherES,
@@ -118,7 +117,7 @@ private:
   DenseMap<const BasicBlock *, EscapeState> BBEscapeStates;
 
   /// Compute the resulting escape state for BB
-  void compOutEscapeState(const BasicBlock *BB, EscapeState &ES);
+  void compBBEscapeState(const BasicBlock *BB, EscapeState &ES);
 
   /// Merges the escape analysis states from multiple incoming blocks.
   EscapeState mergePredEscapeStates(const BasicBlock *BB);
@@ -137,7 +136,7 @@ private:
   }
 
   /// Determine what kind of escape behaviour V may exhibit.
-  static std::pair<EscapeAnalysisInfo::EscapeKind,
+  std::pair<EscapeAnalysisInfo::EscapeKind,
                    std::optional<SmallVector<Value *, 8>>>
   getEscapeKindForOpnd(const Use &U);
 
@@ -178,6 +177,10 @@ public:
 
   /// Is Value V is escaping in some path from Entry to BB?
   bool isEscapedForBB(const BasicBlock *BB, const Value *V) const;
+
+  static bool isLocalFunc(const Function *F) {
+   return F && !F->isDeclaration() && F->isDefinitionExact();
+  }
 };
 
 /// Interface to access safety global (interprocedural) analysis results.

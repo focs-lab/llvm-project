@@ -72,7 +72,7 @@ void EscapeAnalysisInfo::EscapeState::addAlias(const Value *Alias,
     for (const Value *ExistingAlias : ExistAliases.value())
       addAlias(Alias, ExistingAlias, EAI);
 
-  // TODO: remove condition?
+  // FIXME: check condition
   if (isa<AllocaInst>(Alias) ||
       (isa<Argument>(Alias) && !Alias->getType()->isPointerTy()))
     addAlias(PointeeValue, Alias, EAI);
@@ -120,7 +120,7 @@ bool EscapeAnalysisInfo::EscapeState::operator==(
 void EscapeAnalysisInfo::EscapeState::addEscapingObject(
     const Value *EscapingObject) {
   SmallPtrSet<const Value *, 8> EscObjList;
-  getEscapingObjectsList(EscapingObject, EscObjList);
+  getAliasSubtreeAsList(EscapingObject, EscObjList);
   DEBUG_WITH_TYPE(DEEP_DEBUG_TYPE,
     for (auto *V: EscObjList)
       dbgs() << "Add escaping object: " << *V << "\n";
@@ -129,18 +129,18 @@ void EscapeAnalysisInfo::EscapeState::addEscapingObject(
   EscapedObjects.insert(EscObjList.begin(), EscObjList.end());
 }
 
-void EscapeAnalysisInfo::EscapeState::getEscapingObjectsList(
-    const Value *EscapingObject, SmallPtrSetImpl<const Value *> &EscObjList) {
-  if (EscObjList.contains(EscapingObject))
+void EscapeAnalysisInfo::EscapeState::getAliasSubtreeAsList(
+    const Value *Obj, SmallPtrSetImpl<const Value *> &ConcerningObjs) {
+  if (ConcerningObjs.contains(Obj))
     return;
 
-  EscObjList.insert(EscapingObject);
+  ConcerningObjs.insert(Obj);
 
   // Suppose we add as escaping an object which is alias of some other objects.
   // Then all these aliases also escape!
-  if (const auto Aliases = AliasRel.getAliases(EscapingObject); Aliases.has_value())
+  if (const auto Aliases = AliasRel.getAliases(Obj); Aliases.has_value())
     for (const Value *Alias : Aliases.value())
-      getEscapingObjectsList(Alias, EscObjList);
+      getAliasSubtreeAsList(Alias, ConcerningObjs);
 }
 
 //===----------------------------------------------------------------------===//
@@ -148,15 +148,16 @@ void EscapeAnalysisInfo::EscapeState::getEscapingObjectsList(
 //===----------------------------------------------------------------------===//
 
 EscapeAnalysisInfo::EscapeAnalysisInfo(const Function &Fn, bool ArgEsc)
-    : F(Fn), ArgumentsEscape(ArgEsc) {
+    : AnalyzedFunc(Fn), ArgumentsEscape(ArgEsc) {
   LLVM_DEBUG(dbgs() <<
     "\n||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||\n"
     "|||||||||||||||||||| Func " << Fn.getName() << "\t||||||||||||||||||||||\n"
     "||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||\n");
+  ArgumentsEscape = ArgEsc;
   std::deque<const BasicBlock *> WorkList;
 
   // Try to traverse CFG in reverse post-order
-  ReversePostOrderTraversal<const Function *> RPOT(&F);
+  ReversePostOrderTraversal<const Function *> RPOT(&AnalyzedFunc);
   for (const BasicBlock *BB : RPOT) {
     WorkList.push_back(BB);
     // BBEscapeStates[BB] = EscapeState(BB);
@@ -171,7 +172,7 @@ EscapeAnalysisInfo::EscapeAnalysisInfo(const Function &Fn, bool ArgEsc)
                       << Fn.getName() << ") ******************\n");
 
     EscapeState NewES = mergePredEscapeStates(BB);
-    compOutEscapeState(BB, NewES);
+    compBBEscapeState(BB, NewES);
 
     // If something changed, proceed with this BB
     LLVM_DEBUG(dbgs() << "\n>> Check changes for " << BB->getName() << " -- ");
@@ -196,18 +197,23 @@ EscapeAnalysisInfo::EscapeAnalysisInfo(const Function &Fn, bool ArgEsc)
 }
 
 /// Compute the resulting escape state for BB
-void EscapeAnalysisInfo::compOutEscapeState(const BasicBlock *BB,
-                                            EscapeState &ES) {
+void EscapeAnalysisInfo::compBBEscapeState(const BasicBlock *BB,
+                                           EscapeState &ES) {
   for (const Instruction &I : *BB) {
     LLVM_DEBUG(dbgs() << "\nI " << I << "\n");
     for (const Use &Opnd : I.operands()) {
-      LLVM_DEBUG(dbgs() << "\n\tOPND \t" << *Opnd.get() << "\n";);
+      LLVM_DEBUG(dbgs() << "\n\tOPND \t";
+        if (const auto F = dyn_cast<Function>(Opnd.get()))
+          dbgs() << F->getName() << "\t";
+        else
+          dbgs() << *Opnd.get() << "\t";);
 
       const auto [EscKind, Aliases] = getEscapeKindForOpnd(Opnd);
 
       if (EscKind == EscapeKind::NO_ESCAPE)
         continue;
 
+      LLVM_DEBUG(dbgs() << "\tOpnd getUnderlyingMayEscObjects:\n");
       const auto UnderlyingObjs = getUnderlyingMayEscObjects(Opnd.get());
       if (UnderlyingObjs.empty())
         continue;
@@ -222,7 +228,7 @@ void EscapeAnalysisInfo::compOutEscapeState(const BasicBlock *BB,
                "If found alias, alias must be set\n");
 
         LLVM_DEBUG(dbgs() << "\t-- ALIASING --\n";
-                   for (auto *A : Aliases.value())
+                   for (const auto *A : Aliases.value())
                      dbgs() << "\tAlias candidate: " << *A << "\n");
 
         for (const Value *Alias : Aliases.value())
@@ -262,7 +268,7 @@ bool EscapeAnalysisInfo::containsPointerType(const Type *Ty) {
 /// Escaping state for the function is the escape state for Exit BB
 const EscapeAnalysisInfo::EscapedObjectsTy &
 EscapeAnalysisInfo::getFuncEscState() const {
-  const auto It = BBEscapeStates.find(&F.back());
+  const auto It = BBEscapeStates.find(&AnalyzedFunc.back());
   assert(It != BBEscapeStates.end() &&
          "Escape state for exit  block  not  found");
   return It->second.EscapedObjects;
@@ -272,7 +278,6 @@ EscapeAnalysisInfo::getFuncEscState() const {
 std::pair<EscapeAnalysisInfo::EscapeKind,
           std::optional<SmallVector<Value *, 8>>>
 EscapeAnalysisInfo::getEscapeKindForOpnd(const Use &U) {
-  LLVM_DEBUG(dbgs() << "\tgetEscapeKindForPtrOpnd -- ");
   const auto *I = dyn_cast<Instruction>(U.getUser());
   if (!I)
     return {EscapeKind::NO_ESCAPE, std::nullopt};
@@ -280,8 +285,8 @@ EscapeAnalysisInfo::getEscapeKindForOpnd(const Use &U) {
   switch (I->getOpcode()) {
   case Instruction::Call:
   case Instruction::Invoke: {
-    LLVM_DEBUG(dbgs() << "Call/Invoke\n");
-    auto *Call = cast<CallBase>(I);
+    LLVM_DEBUG(dbgs() << " -- Call/Invoke\n");
+    const auto *Call = cast<CallBase>(I);
 
     // Not captured if the callee is readonly, doesn't return a copy through
     // its return value and doesn't unwind (a readonly function can leak bits
@@ -300,7 +305,7 @@ EscapeAnalysisInfo::getEscapeKindForOpnd(const Use &U) {
 
     // Volatile operations effectively capture the memory location that they
     // load and store to.
-    if (auto *MI = dyn_cast<MemIntrinsic>(Call)) {
+    if (const auto *MI = dyn_cast<MemIntrinsic>(Call)) {
       if (MI->isVolatile())
         return {EscapeKind::MAY_ESCAPE, std::nullopt};
 
@@ -331,20 +336,27 @@ EscapeAnalysisInfo::getEscapeKindForOpnd(const Use &U) {
     if (Call->isDataOperand(&U) &&
         !Call->doesNotCapture(Call->getDataOperandNo(&U)) &&
         U->getType()->isPointerTy()) {
-      // The parameter is passed by pointer and not marked 'nocapture'.
-      ++NumEscapedCall;
-      return {EscapeKind::MAY_ESCAPE, std::nullopt};
+      // If that's IPA, passing to calls is not escape
+      if (!ArgumentsEscape) {
+        if (!isLocalFunc(Call->getCalledFunction())) {
+          return {EscapeKind::MAY_ESCAPE, std::nullopt};
+        }
+      } else {
+        // The parameter is passed by pointer and not marked 'nocapture'.
+        ++NumEscapedCall;
+        return {EscapeKind::MAY_ESCAPE, std::nullopt};
+      }
     }
     return {EscapeKind::NO_ESCAPE, std::nullopt};
   }
   case Instruction::Load:
-    LLVM_DEBUG(dbgs() << "Load\n");
+    LLVM_DEBUG(dbgs() << " -- Load\n");
     // Volatile loads make the address observable.
     if (cast<LoadInst>(I)->isVolatile())
       return {EscapeKind::MAY_ESCAPE, std::nullopt};
     return {EscapeKind::NO_ESCAPE, std::nullopt};
   case Instruction::Store: {
-    LLVM_DEBUG(dbgs() << "Store\n");
+    LLVM_DEBUG(dbgs() << " -- Store\n");
     // Volatile stores make the address observable.
     if (cast<StoreInst>(I)->isVolatile())
       return {EscapeKind::MAY_ESCAPE, std::nullopt};
@@ -358,6 +370,7 @@ EscapeAnalysisInfo::getEscapeKindForOpnd(const Use &U) {
     if (!Src->getType()->isPointerTy())
       return {EscapeKind::NO_ESCAPE, std::nullopt};
 
+    LLVM_DEBUG(dbgs() << "\tStoreInst getUnderlyingMayEscObjects:\n");
     const auto DstObjs = getUnderlyingMayEscObjects(I->getOperand(1));
     if (DstObjs.empty())
       return {EscapeKind::NO_ESCAPE, std::nullopt};
@@ -370,7 +383,7 @@ EscapeAnalysisInfo::getEscapeKindForOpnd(const Use &U) {
     return {EscapeKind::MAY_ALIASING, DstObjs};
   }
   case Instruction::AtomicRMW: {
-    LLVM_DEBUG(dbgs() << "AtomicRMW\n");
+    LLVM_DEBUG(dbgs() << " -- AtomicRMW\n");
     // atomicrmw conceptually includes both a load and store from
     // the same location.
     // As with a store, the location being accessed is not captured,
@@ -382,7 +395,7 @@ EscapeAnalysisInfo::getEscapeKindForOpnd(const Use &U) {
     return {EscapeKind::NO_ESCAPE, std::nullopt};
   }
   case Instruction::AtomicCmpXchg: {
-    LLVM_DEBUG(dbgs() << "AtomicCmpXchg\n");
+    LLVM_DEBUG(dbgs() << " -- AtomicCmpXchg\n");
     // cmpxchg conceptually includes both a load and store from
     // the same location.
     // As with a store, the location being accessed is not captured,
@@ -394,7 +407,7 @@ EscapeAnalysisInfo::getEscapeKindForOpnd(const Use &U) {
     return {EscapeKind::NO_ESCAPE, std::nullopt};
   }
   case Instruction::GetElementPtr: {
-    LLVM_DEBUG(dbgs() << "GetElementPtr\n");
+    LLVM_DEBUG(dbgs() << " -- GetElementPtr\n");
     // AA does not support pointers of vectors, so GEP vector splats need to
     // be considered as captures.
     if (I->getType()->isVectorTy())
@@ -404,7 +417,7 @@ EscapeAnalysisInfo::getEscapeKindForOpnd(const Use &U) {
     return {EscapeKind::NO_ESCAPE, std::nullopt};
   }
   case Instruction::ICmp: {
-    LLVM_DEBUG(dbgs() << "ICmp\n");
+    LLVM_DEBUG(dbgs() << " -- ICmp\n");
     const unsigned Idx = U.getOperandNo();
     const unsigned OtherIdx = 1 - Idx;
     if (auto *CPN = dyn_cast<ConstantPointerNull>(I->getOperand(OtherIdx))) {
@@ -433,14 +446,14 @@ EscapeAnalysisInfo::getEscapeKindForOpnd(const Use &U) {
   }
 
   case Instruction::Ret: {
-    LLVM_DEBUG(dbgs() << "Ret\n");
+    LLVM_DEBUG(dbgs() << " -- Ret\n");
 
     if (!U->getType()->isPointerTy())
       return {EscapeKind::NO_ESCAPE, std::nullopt};
     return {EscapeKind::MAY_ESCAPE, std::nullopt};
   }
   default:
-    LLVM_DEBUG(dbgs() << "Default\n");
+    LLVM_DEBUG(dbgs() << " -- Default\n");
     // Something else - be conservative and say it is escaped.
     return {EscapeKind::NO_ESCAPE, std::nullopt};
     // return {EscapeKind::MAY_ESCAPE, std::nullopt};
@@ -558,9 +571,7 @@ bool EscapeAnalysisInfo::getUnderlyingObjectsForCodeGenWithoutPHIInvCheck(
     SmallVector<const Value *, 4> Objs;
     getUnderlyingObjectsWithoutPHIInvCheck(V, Objs, MaxLookup);
 
-    LLVM_DEBUG(dbgs() << "\tgetUnderlyingObjectsWithoutPHIInvCheck:\n");
     for (const Value *VV : Objs) {
-      LLVM_DEBUG(dbgs() << "\t\t" << *VV << "\n");
       if (!Visited.insert(VV).second)
         continue;
       if (Operator::getOpcode(VV) == Instruction::IntToPtr) {
@@ -597,8 +608,8 @@ EscapeAnalysisInfo::getUnderlyingMayEscObjects(const Value *V,
   getUnderlyingObjectsForCodeGenWithoutPHIInvCheck(V, UnderlyinglObjects,
                                                    MaxLookup);
   LLVM_DEBUG(if (!UnderlyinglObjects.empty()) {
-    dbgs() << "\tMayEscapeObjects (new):\n";
-    for (auto *Obj : UnderlyinglObjects)
+    dbgs() << "\tgetUnderlyingMayEscObjects:";
+    for (const auto *Obj : UnderlyinglObjects)
       dbgs() << "\t\t" << *Obj << "\n";
   });
   return UnderlyinglObjects;
@@ -649,7 +660,7 @@ void EscapeAnalysisInfo::print(raw_ostream &OS) {
   //   OS << *V << "\n";
   // OS << "\n";
 
-  for (const auto &BB: F)
+  for (const auto &BB: AnalyzedFunc)
     printEscapingForBB(&BB, OS);
 }
 
@@ -685,18 +696,16 @@ EscapeAnalysisGlobalInfo::EscapeAnalysisGlobalInfo(Module *M_, CallGraph &CG)
 
     Function *F = SCC[0]->getFunction();
 
-    if (!F || !F->isDefinitionExact()) {
+    if (!EscapeAnalysisInfo::isLocalFunc(F)) {
       // Calls externally or not exact - can't say anything useful.
       // TODO: implement, be conservative
       continue;
     }
 
-    dbgs() << "F: " << F->getName() << "\n";
-
     const EscapeAnalysisInfo FuncEAI(*F, false);
-    for (auto &Arg: F->args())
-      dbgs() << "Arg " << Arg << " ESC " << FuncEAI.isEscapedForFunc(&Arg)
-             << "\n";
+    // for (auto &Arg: F->args())
+      // dbgs() << "Arg " << Arg << " ESC " << FuncEAI.isEscapedForFunc(&Arg)
+             // << "\n";
   }
 }
 
