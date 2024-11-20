@@ -191,13 +191,13 @@ struct ThreadState {
 #endif
 
 #if TSAN_MEASUREMENTS
-  u32 num_locks;
-  u32 num_read_locks;
-  u32 num_accesses;
-  u32 num_atomic_loads;
-  u32 num_atomic_stores;
-  u32 num_original_accesses;
-  u32 num_sampled_accesses;
+  u64 num_locks;
+  u64 num_read_locks;
+  u64 num_accesses;
+  u64 num_atomic_loads;
+  u64 num_atomic_stores;
+  u64 num_original_accesses;
+  u64 num_sampled_accesses;
   u8 max_slot_id;
 #endif
 
