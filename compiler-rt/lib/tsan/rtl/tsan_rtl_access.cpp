@@ -419,27 +419,41 @@ NOINLINE void TraceRestartMemoryAccess(ThreadState* thr, uptr pc, uptr addr,
 
 ALWAYS_INLINE USED void MemoryAccess(ThreadState* thr, uptr pc, uptr addr,
                                      uptr size, AccessType typ) {
-  RawShadow* shadow_mem = MemToShadow(addr);
-  UNUSED char memBuf[4][64];
-  DPrintf2("#%d: Access: %d@%d %p/%zd typ=0x%x {%s, %s, %s, %s}\n", thr->tid,
-           static_cast<int>(thr->fast_state.sid()),
-           static_cast<int>(thr->fast_state.epoch()), (void*)addr, size,
-           static_cast<int>(typ), DumpShadow(memBuf[0], shadow_mem[0]),
-           DumpShadow(memBuf[1], shadow_mem[1]),
-           DumpShadow(memBuf[2], shadow_mem[2]),
-           DumpShadow(memBuf[3], shadow_mem[3]));
+  // RawShadow* shadow_mem = MemToShadow(addr);
+  // UNUSED char memBuf[4][64];
+  // DPrintf2("#%d: Access: %d@%d %p/%zd typ=0x%x {%s, %s, %s, %s}\n", thr->tid,
+  //          static_cast<int>(thr->fast_state.sid()),
+  //          static_cast<int>(thr->fast_state.epoch()), (void*)addr, size,
+  //          static_cast<int>(typ), DumpShadow(memBuf[0], shadow_mem[0]),
+  //          DumpShadow(memBuf[1], shadow_mem[1]),
+  //          DumpShadow(memBuf[2], shadow_mem[2]),
+  //          DumpShadow(memBuf[3], shadow_mem[3]));
 
   FastState fast_state = thr->fast_state;
   Shadow cur(fast_state, addr, size, typ);
 
-  LOAD_CURRENT_SHADOW(cur, shadow_mem);
-  if (LIKELY(ContainsSameAccess(shadow_mem, cur, shadow, access, typ)))
-    return;
-  if (UNLIKELY(fast_state.GetIgnoreBit()))
-    return;
-  if (!TryTraceMemoryAccess(thr, pc, addr, size, typ))
-    return TraceRestartMemoryAccess(thr, pc, addr, size, typ);
-  CheckRaces(thr, shadow_mem, cur, shadow, access, typ);
+  u16 cur_idx = thr->slot->idx++;
+  u16 next_idx = thr->slot->idx;
+  // *(thr->slot->mem + next_idx) = Shadow(Shadow::kEmpty);
+  // while (LoadShadow(thr->slot->mem + cur_idx) != Shadow::kEmpty);
+  StoreShadow(thr->slot->mem + next_idx, Shadow::kEmpty);
+  // StoreShadow(thr->slot->mem + cur_idx, cur.raw());
+  atomic_store((atomic_uint32_t *)(thr->slot->mem + cur_idx), static_cast<u32>(cur.raw()), memory_order_release);
+
+  // *(thr->slot->mem + next_idx) = Shadow::kEmpty;
+  // *(thr->slot->mem + cur_idx) = cur.raw();
+
+  thr->slot->cnt++;
+  return;
+
+  // LOAD_CURRENT_SHADOW(cur, shadow_mem);
+  // if (LIKELY(ContainsSameAccess(shadow_mem, cur, shadow, access, typ)))
+  //   return;
+  // if (UNLIKELY(fast_state.GetIgnoreBit()))
+  //   return;
+  // if (!TryTraceMemoryAccess(thr, pc, addr, size, typ))
+  //   return TraceRestartMemoryAccess(thr, pc, addr, size, typ);
+  // CheckRaces(thr, shadow_mem, cur, shadow, access, typ);
 }
 
 void MemoryAccess16(ThreadState* thr, uptr pc, uptr addr, AccessType typ);
@@ -453,6 +467,7 @@ void RestartMemoryAccess16(ThreadState* thr, uptr pc, uptr addr,
 
 ALWAYS_INLINE USED void MemoryAccess16(ThreadState* thr, uptr pc, uptr addr,
                                        AccessType typ) {
+  return;
   const uptr size = 16;
   FastState fast_state = thr->fast_state;
   if (UNLIKELY(fast_state.GetIgnoreBit()))
@@ -490,6 +505,7 @@ void RestartUnalignedMemoryAccess(ThreadState* thr, uptr pc, uptr addr,
 ALWAYS_INLINE USED void UnalignedMemoryAccess(ThreadState* thr, uptr pc,
                                               uptr addr, uptr size,
                                               AccessType typ) {
+  return;
   DCHECK_LE(size, 8);
   FastState fast_state = thr->fast_state;
   if (UNLIKELY(fast_state.GetIgnoreBit()))
@@ -545,6 +561,7 @@ void ShadowSet(RawShadow* p, RawShadow* end, RawShadow v) {
 }
 
 static void MemoryRangeSet(uptr addr, uptr size, RawShadow val) {
+  return;
   if (size == 0)
     return;
   DCHECK_EQ(addr % kShadowCell, 0);
@@ -581,12 +598,14 @@ static void MemoryRangeSet(uptr addr, uptr size, RawShadow val) {
 }
 
 void MemoryResetRange(ThreadState* thr, uptr pc, uptr addr, uptr size) {
+  return;
   uptr addr1 = RoundDown(addr, kShadowCell);
   uptr size1 = RoundUp(size + addr - addr1, kShadowCell);
   MemoryRangeSet(addr1, size1, Shadow::kEmpty);
 }
 
 void MemoryRangeFreed(ThreadState* thr, uptr pc, uptr addr, uptr size) {
+  return;
   // Callers must lock the slot to ensure synchronization with the reset.
   // The problem with "freed" memory is that it's not "monotonic"
   // with respect to bug detection: freed memory is bad to access,
@@ -631,6 +650,7 @@ void MemoryRangeFreed(ThreadState* thr, uptr pc, uptr addr, uptr size) {
 }
 
 void MemoryRangeImitateWrite(ThreadState* thr, uptr pc, uptr addr, uptr size) {
+  return;
   DCHECK_EQ(addr % kShadowCell, 0);
   size = RoundUp(size, kShadowCell);
   TraceMemoryAccessRange(thr, pc, addr, size, kAccessWrite);
@@ -640,6 +660,7 @@ void MemoryRangeImitateWrite(ThreadState* thr, uptr pc, uptr addr, uptr size) {
 
 void MemoryRangeImitateWriteOrResetRange(ThreadState* thr, uptr pc, uptr addr,
                                          uptr size) {
+  return;
   if (thr->ignore_reads_and_writes == 0)
     MemoryRangeImitateWrite(thr, pc, addr, size);
   else
@@ -649,6 +670,7 @@ void MemoryRangeImitateWriteOrResetRange(ThreadState* thr, uptr pc, uptr addr,
 ALWAYS_INLINE
 bool MemoryAccessRangeOne(ThreadState* thr, RawShadow* shadow_mem, Shadow cur,
                           AccessType typ) {
+  return false;
   LOAD_CURRENT_SHADOW(cur, shadow_mem);
   if (LIKELY(ContainsSameAccess(shadow_mem, cur, shadow, access, typ)))
     return false;
@@ -664,6 +686,7 @@ NOINLINE void RestartMemoryAccessRange(ThreadState* thr, uptr pc, uptr addr,
 
 template <bool is_read>
 void MemoryAccessRangeT(ThreadState* thr, uptr pc, uptr addr, uptr size) {
+  return;
   const AccessType typ =
       (is_read ? kAccessRead : kAccessWrite) | kAccessNoRodata;
   RawShadow* shadow_mem = MemToShadow(addr);

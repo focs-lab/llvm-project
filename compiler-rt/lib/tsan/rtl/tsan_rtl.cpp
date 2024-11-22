@@ -18,6 +18,7 @@
 #include "sanitizer_common/sanitizer_file.h"
 #include "sanitizer_common/sanitizer_interface_internal.h"
 #include "sanitizer_common/sanitizer_libc.h"
+#include "sanitizer_common/sanitizer_linux.h"
 #include "sanitizer_common/sanitizer_placement_new.h"
 #include "sanitizer_common/sanitizer_stackdepot.h"
 #include "sanitizer_common/sanitizer_symbolizer.h"
@@ -37,6 +38,12 @@ extern "C" void __tsan_resume() {
 
 SANITIZER_WEAK_DEFAULT_IMPL
 void __tsan_test_only_on_fork() {}
+
+using namespace __sanitizer;
+SANITIZER_INTERFACE_ATTRIBUTE
+THREADLOCAL u64* __tsan_channel_ptr;
+SANITIZER_INTERFACE_ATTRIBUTE
+THREADLOCAL u32 __tsan_channel_idx;
 
 namespace __tsan {
 
@@ -395,6 +402,9 @@ Context::Context()
   for (uptr i = 0; i < ARRAY_SIZE(slots); i++) {
     TidSlot* slot = &slots[i];
     slot->sid = static_cast<Sid>(i);
+    slot->mem = reinterpret_cast<RawShadow*>(CreateSlotFile(i));
+    slot->idx = 0;
+    slot->cnt = 0;
     slot_queue.PushBack(slot);
   }
   global_epoch = 1;

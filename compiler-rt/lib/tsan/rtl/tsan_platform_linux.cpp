@@ -207,6 +207,38 @@ static NOINLINE void MapRodata(char* buffer, uptr size) {
   internal_close(fd);
 }
 
+uptr CreateSlotFile(int tid) {
+	// Open a new file descriptor, creating the file if it does not exist
+	// 0666 = read + write access for user, group and world
+  char file_name[64];
+  internal_snprintf(file_name, 64, "/tmp/tsan_slots/%d", tid);
+	int fd = internal_open(file_name, O_RDWR | O_CREAT, 0666);
+
+	if (fd < 0) {
+		Printf("Error opening file!\n");
+    Die();
+	}
+
+	// Ensure that the file will hold enough space
+	internal_lseek(fd, 65536*32, SEEK_SET);
+	if (internal_write(fd, "", 1) < 1) {
+		Printf("Error writing a single byte to file.\n");
+    Die();
+	}
+	internal_lseek(fd, 0, SEEK_SET);
+
+  uptr mem = internal_mmap(
+		NULL,
+	  65536*32,
+		PROT_READ | PROT_WRITE,
+		MAP_SHARED,
+		fd,
+	  0
+	 );
+
+	return mem;
+}
+
 void InitializeShadowMemoryPlatform() {
   char buffer[256];  // Keep in a different frame.
   MapRodata(buffer, sizeof(buffer));

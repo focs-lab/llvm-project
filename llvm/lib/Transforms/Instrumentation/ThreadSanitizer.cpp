@@ -24,7 +24,9 @@
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/Statistic.h"
 #include "llvm/ADT/StringExtras.h"
+#include "llvm/Analysis/AssumptionCache.h"
 #include "llvm/Analysis/CaptureTracking.h"
+#include "llvm/Analysis/LoopInfo.h"
 #include "llvm/Analysis/TargetLibraryInfo.h"
 #include "llvm/Analysis/ValueTracking.h"
 #include "llvm/IR/DataLayout.h"
@@ -43,9 +45,12 @@
 #include "llvm/Support/MathExtras.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Transforms/Instrumentation.h"
+#include "llvm/Transforms/Utils/BasicBlockUtils.h"
 #include "llvm/Transforms/Utils/EscapeEnumerator.h"
 #include "llvm/Transforms/Utils/Local.h"
 #include "llvm/Transforms/Utils/ModuleUtils.h"
+#include "llvm/Transforms/Utils/SSAUpdater.h"
+#include "llvm/Transforms/Utils/PromoteMemToReg.h"
 
 using namespace llvm;
 
@@ -99,6 +104,263 @@ const char kTsanInitName[] = "__tsan_init";
 
 namespace {
 
+using LoadStorePair = std::pair<Instruction *, Instruction *>;
+
+
+// dwslim: Copied from InstrProfiling.cpp
+///
+/// A helper class to promote one counter RMW operation in the loop
+/// into register update.
+///
+/// RWM update for the counter will be sinked out of the loop after
+/// the transformation.
+///
+class IdxPromoterHelper : public LoadAndStorePromoter {
+public:
+  IdxPromoterHelper(
+      Instruction *L, Instruction *S, SSAUpdater &SSA, Value *Init,
+      BasicBlock *PH, ArrayRef<BasicBlock *> ExitBlocks,
+      ArrayRef<Instruction *> InsertPts,
+      DenseMap<Loop *, SmallVector<LoadStorePair, 8>> &LoopToCands,
+      LoopInfo &LI)
+      : LoadAndStorePromoter({L, S}, SSA), Store(S), ExitBlocks(ExitBlocks),
+        InsertPts(InsertPts), LoopToCandidates(LoopToCands), LI(LI) {
+    assert(isa<LoadInst>(L));
+    assert(isa<StoreInst>(S));
+    SSA.AddAvailableValue(PH, Init);
+  }
+
+  void doExtraRewritesBeforeFinalDeletion() override {
+    for (unsigned i = 0, e = ExitBlocks.size(); i != e; ++i) {
+      BasicBlock *ExitBlock = ExitBlocks[i];
+      Instruction *InsertPos = InsertPts[i];
+      // Get LiveIn value into the ExitBlock. If there are multiple
+      // predecessors, the value is defined by a PHI node in this
+      // block.
+      Value *LiveInValue = SSA.GetValueInMiddleOfBlock(ExitBlock);
+      Value *Addr = cast<StoreInst>(Store)->getPointerOperand();
+      Type *Ty = LiveInValue->getType();
+      IRBuilder<> Builder(InsertPos);
+      if (auto *AddrInst = dyn_cast_or_null<IntToPtrInst>(Addr)) {
+        // If isRuntimeCounterRelocationEnabled() is true then the address of
+        // the store instruction is computed with two instructions in
+        // InstrProfiling::getCounterAddress(). We need to copy those
+        // instructions to this block to compute Addr correctly.
+        // %BiasAdd = add i64 ptrtoint <__profc_>, <__llvm_profile_counter_bias>
+        // %Addr = inttoptr i64 %BiasAdd to i64*
+        auto *OrigBiasInst = dyn_cast<BinaryOperator>(AddrInst->getOperand(0));
+        assert(OrigBiasInst->getOpcode() == Instruction::BinaryOps::Add);
+        Value *BiasInst = Builder.Insert(OrigBiasInst->clone());
+        Addr = Builder.CreateIntToPtr(BiasInst,
+                                      PointerType::getUnqual(Ty->getContext()));
+      }
+      // dwslim: Don't do any atomic rmw
+      // if (AtomicCounterUpdatePromoted)
+      //   // automic update currently can only be promoted across the current
+      //   // loop, not the whole loop nest.
+      //   Builder.CreateAtomicRMW(AtomicRMWInst::Add, Addr, LiveInValue,
+      //                           MaybeAlign(),
+      //                           AtomicOrdering::SequentiallyConsistent);
+      // else {
+        LoadInst *OldVal = Builder.CreateLoad(Ty, Addr, "pgocount.promoted");
+        auto *NewVal = Builder.CreateAdd(OldVal, LiveInValue);
+        auto *NewStore = Builder.CreateStore(NewVal, Addr);
+
+        // dwslim: This looks ok.
+        // Now update the parent loop's candidate list:
+        // if (IterativeCounterPromotion) {
+          auto *TargetLoop = LI.getLoopFor(ExitBlock);
+          if (TargetLoop)
+            LoopToCandidates[TargetLoop].emplace_back(OldVal, NewStore);
+        // }
+      // }
+    }
+  }
+
+private:
+  Instruction *Store;
+  ArrayRef<BasicBlock *> ExitBlocks;
+  ArrayRef<Instruction *> InsertPts;
+  DenseMap<Loop *, SmallVector<LoadStorePair, 8>> &LoopToCandidates;
+  LoopInfo &LI;
+};
+
+
+/// A helper class to do register promotion for all channel index
+/// updates in a loop.
+///
+class ChannelIdxPromoter {
+public:
+  ChannelIdxPromoter(
+      DenseMap<Loop *, SmallVector<LoadStorePair, 8>> &LoopToCands,
+      Loop &CurLoop, LoopInfo &LI)
+      : LoopToCandidates(LoopToCands), L(CurLoop), LI(LI) {
+
+    // Skip collection of ExitBlocks and InsertPts for loops that will not be
+    // able to have counters promoted.
+    SmallVector<BasicBlock *, 8> LoopExitBlocks;
+    SmallPtrSet<BasicBlock *, 8> BlockSet;
+
+    L.getExitBlocks(LoopExitBlocks);
+    if (!isPromotionPossible(&L, LoopExitBlocks))
+      return;
+
+    for (BasicBlock *ExitBlock : LoopExitBlocks) {
+      if (BlockSet.insert(ExitBlock).second &&
+          llvm::none_of(predecessors(ExitBlock), [&](const BasicBlock *Pred) {
+            return llvm::isPresplitCoroSuspendExitEdge(*Pred, *ExitBlock);
+          })) {
+        ExitBlocks.push_back(ExitBlock);
+        InsertPts.push_back(&*ExitBlock->getFirstInsertionPt());
+      }
+    }
+  }
+
+  bool run(uint64_t *NumPromoted) {
+    // Skip 'infinite' loops:
+    if (ExitBlocks.size() == 0)
+      return false;
+
+    // dwslim: Be conservative for now.
+    // Skip if any of the ExitBlocks contains a ret instruction.
+    // This is to prevent dumping of incomplete profile -- if the
+    // the loop is a long running loop and dump is called in the middle
+    // of the loop, the result profile is incomplete.
+    // FIXME: add other heuristics to detect long running loops.
+    // if (SkipRetExitBlock) {
+    for (auto *BB : ExitBlocks)
+      if (isa<ReturnInst>(BB->getTerminator()))
+        return false;
+    // }
+
+    unsigned MaxProm = getMaxNumOfPromotionsInLoop(&L);
+    if (MaxProm == 0)
+      return false;
+
+    unsigned Promoted = 0;
+    for (auto &Cand : LoopToCandidates[&L]) {
+
+      SmallVector<PHINode *, 4> NewPHIs;
+      SSAUpdater SSA(&NewPHIs);
+      Value *InitVal = ConstantInt::get(Cand.first->getType(), 0);
+
+      // If BFI is set, we will use it to guide the promotions.
+      // if (BFI) {
+      //   auto *BB = Cand.first->getParent();
+      //   auto InstrCount = BFI->getBlockProfileCount(BB);
+      //   if (!InstrCount)
+      //     continue;
+      //   auto PreheaderCount = BFI->getBlockProfileCount(L.getLoopPreheader());
+      //   // If the average loop trip count is not greater than 1.5, we skip
+      //   // promotion.
+      //   if (PreheaderCount && (*PreheaderCount * 3) >= (*InstrCount * 2))
+      //     continue;
+      // }
+
+      IdxPromoterHelper Promoter(Cand.first, Cand.second, SSA, InitVal,
+                                        L.getLoopPreheader(), ExitBlocks,
+                                        InsertPts, LoopToCandidates, LI);
+      Promoter.run(SmallVector<Instruction *, 2>({Cand.first, Cand.second}));
+      Promoted++;
+      if (Promoted >= MaxProm)
+        break;
+
+      (*NumPromoted)++;
+      // if (MaxNumOfPromotions != -1 && *NumPromoted >= MaxNumOfPromotions)
+      //   break;
+    }
+
+    LLVM_DEBUG(dbgs() << Promoted << " idxs promoted for loop (depth="
+                      << L.getLoopDepth() << ")\n");
+    return Promoted != 0;
+  }
+
+private:
+  bool allowSpeculativeCounterPromotion(Loop *LP) {
+    SmallVector<BasicBlock *, 8> ExitingBlocks;
+    L.getExitingBlocks(ExitingBlocks);
+    // Not considierered speculative.
+    if (ExitingBlocks.size() == 1)
+      return true;
+    // dwslim: Don't do any speculative thing.
+    // if (ExitingBlocks.size() > SpeculativeCounterPromotionMaxExiting)
+    return false;
+    // return true;
+  }
+
+  // Check whether the loop satisfies the basic conditions needed to perform
+  // Counter Promotions.
+  bool
+  isPromotionPossible(Loop *LP,
+                      const SmallVectorImpl<BasicBlock *> &LoopExitBlocks) {
+    // We can't insert into a catchswitch.
+    if (llvm::any_of(LoopExitBlocks, [](BasicBlock *Exit) {
+          return isa<CatchSwitchInst>(Exit->getTerminator());
+        }))
+      return false;
+
+    if (!LP->hasDedicatedExits())
+      return false;
+
+    BasicBlock *PH = LP->getLoopPreheader();
+    if (!PH)
+      return false;
+
+    return true;
+  }
+
+  // Returns the max number of Counter Promotions for LP.
+  unsigned getMaxNumOfPromotionsInLoop(Loop *LP) {
+    SmallVector<BasicBlock *, 8> LoopExitBlocks;
+    LP->getExitBlocks(LoopExitBlocks);
+    if (!isPromotionPossible(LP, LoopExitBlocks))
+      return 0;
+
+    SmallVector<BasicBlock *, 8> ExitingBlocks;
+    LP->getExitingBlocks(ExitingBlocks);
+
+    // dwslim: Not using BFI for now.
+    // If BFI is set, we do more aggressive promotions based on BFI.
+    // if (BFI)
+    //   return (unsigned)-1;
+
+    // Not considierered speculative.
+    if (ExitingBlocks.size() == 1)
+      return 100; // MaxNumOfPromotionsPerLoop;
+
+    // dwslim: Don't do speculative thing.
+    // if (ExitingBlocks.size() > SpeculativeCounterPromotionMaxExiting)
+    return 0;
+
+    // dwslim: Don't do speculative things for now.
+    // Whether the target block is in a loop does not matter:
+    // if (SpeculativeCounterPromotionToLoop)
+    //   return MaxNumOfPromotionsPerLoop;
+
+    // dwslim: Not sure yet what is this. We early return above anyway so fix this later.
+    // Now check the target block:
+    // unsigned MaxProm = MaxNumOfPromotionsPerLoop;
+    // for (auto *TargetBlock : LoopExitBlocks) {
+    //   auto *TargetLoop = LI.getLoopFor(TargetBlock);
+    //   if (!TargetLoop)
+    //     continue;
+    //   unsigned MaxPromForTarget = getMaxNumOfPromotionsInLoop(TargetLoop);
+    //   unsigned PendingCandsInTarget = LoopToCandidates[TargetLoop].size();
+    //   MaxProm =
+    //       std::min(MaxProm, std::max(MaxPromForTarget, PendingCandsInTarget) -
+    //                             PendingCandsInTarget);
+    // }
+    // return MaxProm;
+  }
+
+  DenseMap<Loop *, SmallVector<LoadStorePair, 8>> &LoopToCandidates;
+  SmallVector<BasicBlock *, 8> ExitBlocks;
+  SmallVector<Instruction *, 8> InsertPts;
+  Loop &L;
+  LoopInfo &LI;
+  BlockFrequencyInfo *BFI;
+};
+
 /// ThreadSanitizer: instrument the code in module to find races.
 ///
 /// Instantiating ThreadSanitizer inserts the tsan runtime library API function
@@ -115,7 +377,7 @@ struct ThreadSanitizer {
     }
   }
 
-  bool sanitizeFunction(Function &F, const TargetLibraryInfo &TLI);
+  bool sanitizeFunction(Function &F, FunctionAnalysisManager &FAM, const TargetLibraryInfo &TLI);
 
 private:
   // Internal Instruction wrapper that contains more information about the
@@ -141,6 +403,16 @@ private:
   bool addrPointsToConstantData(Value *Addr);
   int getMemoryAccessFuncIndex(Type *OrigTy, Value *Addr, const DataLayout &DL);
   void InsertRuntimeIgnores(Function &F);
+  void InsertEventSend(IRBuilder<> &IRB);
+  void PromoteIdxLoadStores(Function &F);
+
+  GlobalVariable *TsanChannelPtr;
+  GlobalVariable *TsanChannelIdx;
+  Value *Channel;
+  AllocaInst *LocalIdx;
+  // vector of idx load/store pairs to be register promoted.
+  std::vector<LoadStorePair> PromotionCandidates;
+  uint64_t TotalIdxsPromoted;
 
   Type *IntptrTy;
   FunctionCallee TsanFuncEntry;
@@ -184,7 +456,7 @@ void insertModuleCtor(Module &M) {
 PreservedAnalyses ThreadSanitizerPass::run(Function &F,
                                            FunctionAnalysisManager &FAM) {
   ThreadSanitizer TSan;
-  if (TSan.sanitizeFunction(F, FAM.getResult<TargetLibraryAnalysis>(F)))
+  if (TSan.sanitizeFunction(F, FAM, FAM.getResult<TargetLibraryAnalysis>(F)))
     return PreservedAnalyses::none();
   return PreservedAnalyses::all();
 }
@@ -200,6 +472,26 @@ void ThreadSanitizer::initialize(Module &M, const TargetLibraryInfo &TLI) {
   IntptrTy = DL.getIntPtrType(Ctx);
 
   IRBuilder<> IRB(Ctx);
+  auto *ChannelPtr = M.getOrInsertGlobal("__tsan_channel_ptr", IRB.getPtrTy(), [&] {
+    auto *GV = new GlobalVariable(M, IRB.getPtrTy(), /*isConstant=*/false,
+                                  GlobalValue::ExternalLinkage, nullptr,
+                                  "__tsan_channel_ptr", nullptr,
+                                  GlobalVariable::InitialExecTLSModel);
+    appendToCompilerUsed(M, GV);
+    return GV;
+  });
+  TsanChannelPtr = cast<GlobalVariable>(ChannelPtr);
+
+  auto *ChannelIdx = M.getOrInsertGlobal("__tsan_channel_idx", IRB.getInt32Ty(), [&] {
+    auto *GV = new GlobalVariable(M, IRB.getInt32Ty(), /*isConstant=*/false,
+                                  GlobalValue::ExternalLinkage, nullptr,
+                                  "__tsan_channel_idx", nullptr,
+                                  GlobalVariable::InitialExecTLSModel);
+    appendToCompilerUsed(M, GV);
+    return GV;
+  });
+  TsanChannelIdx = cast<GlobalVariable>(ChannelIdx);
+
   AttributeList Attr;
   Attr = Attr.addFnAttribute(Ctx, Attribute::NoUnwind);
   // Initialize the callbacks.
@@ -478,15 +770,78 @@ static bool isTsanAtomic(const Instruction *I) {
 
 void ThreadSanitizer::InsertRuntimeIgnores(Function &F) {
   InstrumentationIRBuilder IRB(F.getEntryBlock().getFirstNonPHI());
-  IRB.CreateCall(TsanIgnoreBegin);
+  // IRB.CreateCall(TsanIgnoreBegin);
+  InsertEventSend(IRB);
   EscapeEnumerator EE(F, "tsan_ignore_cleanup", ClHandleCxxExceptions);
   while (IRBuilder<> *AtExit = EE.Next()) {
     InstrumentationIRBuilder::ensureDebugInfo(*AtExit, F);
-    AtExit->CreateCall(TsanIgnoreEnd);
+    // AtExit->CreateCall(TsanIgnoreEnd);
+    InsertEventSend(*AtExit);
   }
 }
 
+void ThreadSanitizer::InsertEventSend(IRBuilder<> &IRB) {
+  // if (!Channel)
+  //   Channel = IRB.CreateLoad(TsanChannelPtr->getValueType(), TsanChannelPtr);
+  auto *Idx = IRB.CreateLoad(LocalIdx->getAllocatedType(), LocalIdx);
+  auto *Trunc = IRB.CreateAnd(Idx, IRB.getInt32(0xff));     // cannot use CreateTrunc because that performs sign extend
+
+  // Perform the GEP to get the element pointer: Channel[Idx]
+  auto *Ptr = IRB.CreateGEP(
+    IRB.getInt64Ty(),           // The type of elements in the array
+    Channel,                    // The pointer to the start of the array
+    Trunc                        // The index to access
+  );
+  // auto *Ptr = IRB.CreateGEP(
+  //   IRB.getInt64Ty(),           // The type of elements in the array
+  //   Channel,                    // The pointer to the start of the array
+  //   IRB.getInt16(0)                        // The index to access
+  // );
+
+  auto *Inc = IRB.CreateAdd(Idx, IRB.getInt32(1));
+  IRB.CreateStore(Idx, Ptr);
+  IRB.CreateStore(Inc, LocalIdx);
+}
+
+// Copied from InstrProfiling.cpp PromoteCounterLoadStores
+void ThreadSanitizer::PromoteIdxLoadStores(Function &F) {
+  DominatorTree DT(F);
+  LoopInfo LI(DT);
+  DenseMap<Loop *, SmallVector<LoadStorePair, 8>> LoopPromotionCandidates;
+
+  // Allows for more aggresive promotion. But need to set up some arguments so leave it for now.
+  // std::unique_ptr<BlockFrequencyInfo> BFI;
+  // std::unique_ptr<BranchProbabilityInfo> BPI;
+  // BPI.reset(new BranchProbabilityInfo(*F, LI, &GetTLI(*F)));
+  // BFI.reset(new BlockFrequencyInfo(*F, *BPI, LI));
+
+  for (const auto &LoadStore : PromotionCandidates) {
+    auto *IdxLoad = LoadStore.first;
+    auto *IdxStore = LoadStore.second;
+    BasicBlock *BB = IdxLoad->getParent();
+    Loop *ParentLoop = LI.getLoopFor(BB);
+    if (!ParentLoop)
+      continue;
+    LoopPromotionCandidates[ParentLoop].emplace_back(IdxLoad, IdxStore);
+  }
+
+  errs() << "Number of promotion candidates: " << PromotionCandidates.size() << "\n";
+
+  SmallVector<Loop *, 4> Loops = LI.getLoopsInPreorder();
+
+  // Do a post-order traversal of the loops so that index updates can be
+  // iteratively hoisted outside the loop nest.
+  TotalIdxsPromoted = 0;
+  for (auto *Loop : llvm::reverse(Loops)) {
+    ChannelIdxPromoter Promoter(LoopPromotionCandidates, *Loop, LI);
+    Promoter.run(&TotalIdxsPromoted);
+  }
+
+  errs() << "Number of promoted: " << TotalIdxsPromoted << "\n";
+}
+
 bool ThreadSanitizer::sanitizeFunction(Function &F,
+                                       FunctionAnalysisManager &FAM,
                                        const TargetLibraryInfo &TLI) {
   // This is required to prevent instrumenting call to __tsan_init from within
   // the module constructor.
@@ -508,6 +863,7 @@ bool ThreadSanitizer::sanitizeFunction(Function &F,
   SmallVector<Instruction*, 8> LocalLoadsAndStores;
   SmallVector<Instruction*, 8> AtomicAccesses;
   SmallVector<Instruction*, 8> MemIntrinCalls;
+  SmallVector<Instruction*, 8> Calls;
   bool Res = false;
   bool HasCalls = false;
   bool SanitizeFunction = F.hasFnAttribute(Attribute::SanitizeThread);
@@ -529,6 +885,8 @@ bool ThreadSanitizer::sanitizeFunction(Function &F,
           maybeMarkSanitizerLibraryCallNoBuiltin(CI, &TLI);
         if (isa<MemIntrinsic>(Inst))
           MemIntrinCalls.push_back(&Inst);
+        // dwslim: Be conservative for now and record all calls.
+        Calls.push_back(&Inst);
         HasCalls = true;
         chooseInstructionsToInstrument(LocalLoadsAndStores, AllLoadsAndStores,
                                        DL);
@@ -540,6 +898,13 @@ bool ThreadSanitizer::sanitizeFunction(Function &F,
   // We have collected all loads and stores.
   // FIXME: many of these accesses do not need to be checked for races
   // (e.g. variables that do not escape, etc).
+
+  // Load the channel ptr just once
+  InstrumentationIRBuilder IRB(F.getEntryBlock().getFirstNonPHI());
+  Channel = IRB.CreateLoad(TsanChannelPtr->getValueType(), TsanChannelPtr);
+  auto *Idx = IRB.CreateLoad(TsanChannelIdx->getValueType(), TsanChannelIdx);
+  LocalIdx = IRB.CreateAlloca(Idx->getType());
+  IRB.CreateStore(Idx, LocalIdx);
 
   // Instrument memory accesses only if we want to report bugs in the function.
   if (ClInstrumentMemoryAccesses && SanitizeFunction)
@@ -565,21 +930,75 @@ bool ThreadSanitizer::sanitizeFunction(Function &F,
       InsertRuntimeIgnores(F);
   }
 
-  // Instrument function entry/exit points if there were instrumented accesses.
-  if ((Res || HasCalls) && ClInstrumentFuncEntryExit) {
-    InstrumentationIRBuilder IRB(F.getEntryBlock().getFirstNonPHI());
-    Value *ReturnAddress = IRB.CreateCall(
-        Intrinsic::getDeclaration(F.getParent(), Intrinsic::returnaddress),
-        IRB.getInt32(0));
-    IRB.CreateCall(TsanFuncEntry, ReturnAddress);
+  // Before each function call, we need to update the ChannelIdx global variable.
+  // After each function call we also need to load from it.
+  // If did not instrument any accesses, then LocalIdx is not used.
+  if (Res) {
+    for (const auto &CI : Calls) {
+      InstrumentationIRBuilder IRB(CI);
+      auto *Load1 = IRB.CreateLoad(LocalIdx->getAllocatedType(), LocalIdx);
+      IRB.CreateStore(Load1, TsanChannelIdx);
+
+      if (isa<CallInst>(CI) && dyn_cast<CallInst>(CI)->isTailCall())
+        continue;
+      if (isa<InvokeInst>(CI) && dyn_cast<InvokeInst>(CI)->isTailCall())
+        continue;
+
+      auto Next = std::next(CI->getIterator());
+      if (Next == CI->getParent()->end()) {
+        if (!CI->isTerminator())
+          IRB.SetInsertPoint(CI->getParent());
+        // TODO(dwslim): fix this! probably just insert to the next basic block
+        // but if it is a terminator, shouldn't it have been a tail call?
+        // IRB.SetInsertPoint(CI->getParent());
+        else
+          continue;
+      }
+      else
+        IRB.SetInsertPoint(CI->getParent(), Next);
+      auto *Load2 = IRB.CreateLoad(TsanChannelIdx->getValueType(), TsanChannelIdx);
+      IRB.CreateStore(Load2, LocalIdx);
+    }
 
     EscapeEnumerator EE(F, "tsan_cleanup", ClHandleCxxExceptions);
     while (IRBuilder<> *AtExit = EE.Next()) {
       InstrumentationIRBuilder::ensureDebugInfo(*AtExit, F);
-      AtExit->CreateCall(TsanFuncExit, {});
+      // AtExit->CreateCall(TsanFuncExit, {});
+      // dwslim: Store the global idx before exiting the function
+      auto *Load = AtExit->CreateLoad(LocalIdx->getAllocatedType(), LocalIdx);
+      AtExit->CreateStore(Load, TsanChannelIdx);
     }
+  }
+
+  // Instrument function entry/exit points if there were instrumented accesses.
+  if ((Res || HasCalls) && ClInstrumentFuncEntryExit) {
+    // // Monitor: Bye bye
+    // InstrumentationIRBuilder IRB(F.getEntryBlock().getFirstNonPHI());
+    // Value *ReturnAddress = IRB.CreateCall(
+    //     Intrinsic::getDeclaration(F.getParent(), Intrinsic::returnaddress),
+    //     IRB.getInt32(0));
+    // IRB.CreateCall(TsanFuncEntry, ReturnAddress);
+
+    // // Monitor: Bye bye
+    // EscapeEnumerator EE(F, "tsan_cleanup", ClHandleCxxExceptions);
+    // while (IRBuilder<> *AtExit = EE.Next()) {
+    //   InstrumentationIRBuilder::ensureDebugInfo(*AtExit, F);
+    //   // AtExit->CreateCall(TsanFuncExit, {});
+    // }
     Res = true;
   }
+
+  // dwslim: I had to put this check because in some cases it is not promotable.
+  // We need to find out if this is acceptable or how to circumvent this.
+  // errs() << "Is alloca promotable: " << isAllocaPromotable(LocalIdx) << "\n";
+  if (isAllocaPromotable(LocalIdx)) {
+    SmallVector<AllocaInst*, 1> Allocas;
+    Allocas.push_back(LocalIdx);
+    auto &DT = FAM.getResult<DominatorTreeAnalysis>(F);
+    auto &AC = FAM.getResult<AssumptionAnalysis>(F);
+    PromoteMemToReg(Allocas, DT, &AC);
+  }
+
   return Res;
 }
 
@@ -612,12 +1031,14 @@ bool ThreadSanitizer::instrumentLoadOrStore(const InstructionInfo &II,
     if (StoredValue->getType()->isIntegerTy())
       StoredValue = IRB.CreateIntToPtr(StoredValue, IRB.getPtrTy());
     // Call TsanVptrUpdate.
-    IRB.CreateCall(TsanVptrUpdate, {Addr, StoredValue});
+    // IRB.CreateCall(TsanVptrUpdate, {Addr, StoredValue});
+    InsertEventSend(IRB);
     NumInstrumentedVtableWrites++;
     return true;
   }
   if (!IsWrite && isVtableAccess(II.Inst)) {
-    IRB.CreateCall(TsanVptrLoad, Addr);
+    // IRB.CreateCall(TsanVptrLoad, Addr);
+    InsertEventSend(IRB);
     NumInstrumentedVtableReads++;
     return true;
   }
@@ -649,7 +1070,8 @@ bool ThreadSanitizer::instrumentLoadOrStore(const InstructionInfo &II,
     else
       OnAccessFunc = IsWrite ? TsanUnalignedWrite[Idx] : TsanUnalignedRead[Idx];
   }
-  IRB.CreateCall(OnAccessFunc, Addr);
+  // IRB.CreateCall(OnAccessFunc, Addr);
+  InsertEventSend(IRB);
   if (IsCompoundRW || IsWrite)
     NumInstrumentedWrites++;
   if (IsCompoundRW || !IsWrite)
@@ -685,21 +1107,23 @@ static ConstantInt *createOrdering(IRBuilder<> *IRB, AtomicOrdering ord) {
 bool ThreadSanitizer::instrumentMemIntrinsic(Instruction *I) {
   InstrumentationIRBuilder IRB(I);
   if (MemSetInst *M = dyn_cast<MemSetInst>(I)) {
-    Value *Cast1 = IRB.CreateIntCast(M->getArgOperand(1), IRB.getInt32Ty(), false);
-    Value *Cast2 = IRB.CreateIntCast(M->getArgOperand(2), IntptrTy, false);
-    IRB.CreateCall(
-        MemsetFn,
-        {M->getArgOperand(0),
-         Cast1,
-         Cast2});
-    I->eraseFromParent();
+    InsertEventSend(IRB);
+    // Value *Cast1 = IRB.CreateIntCast(M->getArgOperand(1), IRB.getInt32Ty(), false);
+    // Value *Cast2 = IRB.CreateIntCast(M->getArgOperand(2), IntptrTy, false);
+    // IRB.CreateCall(
+    //     MemsetFn,
+    //     {M->getArgOperand(0),
+    //      Cast1,
+    //      Cast2});
+    // I->eraseFromParent();
   } else if (MemTransferInst *M = dyn_cast<MemTransferInst>(I)) {
-    IRB.CreateCall(
-        isa<MemCpyInst>(M) ? MemcpyFn : MemmoveFn,
-        {M->getArgOperand(0),
-         M->getArgOperand(1),
-         IRB.CreateIntCast(M->getArgOperand(2), IntptrTy, false)});
-    I->eraseFromParent();
+    // IRB.CreateCall(
+    //     isa<MemCpyInst>(M) ? MemcpyFn : MemmoveFn,
+    //     {M->getArgOperand(0),
+    //      M->getArgOperand(1),
+    //      IRB.CreateIntCast(M->getArgOperand(2), IntptrTy, false)});
+    // I->eraseFromParent();
+    InsertEventSend(IRB);
   }
   return false;
 }
@@ -722,9 +1146,10 @@ bool ThreadSanitizer::instrumentAtomic(Instruction *I, const DataLayout &DL) {
       return false;
     Value *Args[] = {Addr,
                      createOrdering(&IRB, LI->getOrdering())};
-    Value *C = IRB.CreateCall(TsanAtomicLoad[Idx], Args);
-    Value *Cast = IRB.CreateBitOrPointerCast(C, OrigTy);
-    I->replaceAllUsesWith(Cast);
+    // Value *C = IRB.CreateCall(TsanAtomicLoad[Idx], Args);
+    // Value *Cast = IRB.CreateBitOrPointerCast(C, OrigTy);
+    // I->replaceAllUsesWith(Cast);
+    InsertEventSend(IRB);
   } else if (StoreInst *SI = dyn_cast<StoreInst>(I)) {
     Value *Addr = SI->getPointerOperand();
     int Idx =
@@ -737,8 +1162,9 @@ bool ThreadSanitizer::instrumentAtomic(Instruction *I, const DataLayout &DL) {
     Value *Args[] = {Addr,
                      IRB.CreateBitOrPointerCast(SI->getValueOperand(), Ty),
                      createOrdering(&IRB, SI->getOrdering())};
-    IRB.CreateCall(TsanAtomicStore[Idx], Args);
-    SI->eraseFromParent();
+    // IRB.CreateCall(TsanAtomicStore[Idx], Args);
+    // SI->eraseFromParent();
+    InsertEventSend(IRB);
   } else if (AtomicRMWInst *RMWI = dyn_cast<AtomicRMWInst>(I)) {
     Value *Addr = RMWI->getPointerOperand();
     int Idx =
@@ -754,9 +1180,10 @@ bool ThreadSanitizer::instrumentAtomic(Instruction *I, const DataLayout &DL) {
     Value *Val = RMWI->getValOperand();
     Value *Args[] = {Addr, IRB.CreateBitOrPointerCast(Val, Ty),
                      createOrdering(&IRB, RMWI->getOrdering())};
-    Value *C = IRB.CreateCall(F, Args);
-    I->replaceAllUsesWith(IRB.CreateBitOrPointerCast(C, Val->getType()));
-    I->eraseFromParent();
+    // Value *C = IRB.CreateCall(F, Args);
+    // I->replaceAllUsesWith(IRB.CreateBitOrPointerCast(C, Val->getType()));
+    // I->eraseFromParent();
+    InsertEventSend(IRB);
   } else if (AtomicCmpXchgInst *CASI = dyn_cast<AtomicCmpXchgInst>(I)) {
     Value *Addr = CASI->getPointerOperand();
     Type *OrigOldValTy = CASI->getNewValOperand()->getType();
@@ -775,27 +1202,29 @@ bool ThreadSanitizer::instrumentAtomic(Instruction *I, const DataLayout &DL) {
                      NewOperand,
                      createOrdering(&IRB, CASI->getSuccessOrdering()),
                      createOrdering(&IRB, CASI->getFailureOrdering())};
-    CallInst *C = IRB.CreateCall(TsanAtomicCAS[Idx], Args);
-    Value *Success = IRB.CreateICmpEQ(C, CmpOperand);
-    Value *OldVal = C;
-    if (Ty != OrigOldValTy) {
-      // The value is a pointer, so we need to cast the return value.
-      OldVal = IRB.CreateIntToPtr(C, OrigOldValTy);
-    }
+    // CallInst *C = IRB.CreateCall(TsanAtomicCAS[Idx], Args);
+    // Value *Success = IRB.CreateICmpEQ(C, CmpOperand);
+    // Value *OldVal = C;
+    // if (Ty != OrigOldValTy) {
+    //   // The value is a pointer, so we need to cast the return value.
+    //   OldVal = IRB.CreateIntToPtr(C, OrigOldValTy);
+    // }
 
-    Value *Res =
-      IRB.CreateInsertValue(PoisonValue::get(CASI->getType()), OldVal, 0);
-    Res = IRB.CreateInsertValue(Res, Success, 1);
+    // Value *Res =
+    //   IRB.CreateInsertValue(PoisonValue::get(CASI->getType()), OldVal, 0);
+    // Res = IRB.CreateInsertValue(Res, Success, 1);
 
-    I->replaceAllUsesWith(Res);
-    I->eraseFromParent();
+    // I->replaceAllUsesWith(Res);
+    // I->eraseFromParent();
+    InsertEventSend(IRB);
   } else if (FenceInst *FI = dyn_cast<FenceInst>(I)) {
     Value *Args[] = {createOrdering(&IRB, FI->getOrdering())};
     FunctionCallee F = FI->getSyncScopeID() == SyncScope::SingleThread
                            ? TsanAtomicSignalFence
                            : TsanAtomicThreadFence;
-    IRB.CreateCall(F, Args);
-    FI->eraseFromParent();
+    // IRB.CreateCall(F, Args);
+    // FI->eraseFromParent();
+    InsertEventSend(IRB);
   }
   return true;
 }

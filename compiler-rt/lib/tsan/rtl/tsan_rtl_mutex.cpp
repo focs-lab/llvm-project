@@ -158,6 +158,9 @@ void MutexPreLock(ThreadState *thr, uptr pc, uptr addr, u32 flagz) {
 void MutexPostLock(ThreadState *thr, uptr pc, uptr addr, u32 flagz, int rec) {
   DPrintf("#%d: MutexPostLock %zx flag=0x%x rec=%d\n",
       thr->tid, addr, flagz, rec);
+  u32 idx = __tsan_channel_idx++;
+  atomic_store_relaxed((atomic_uint64_t*)(__tsan_channel_ptr + (idx & 0xffff)), idx+1);
+  return;
   if (flagz & MutexFlagRecursiveLock)
     CHECK_GT(rec, 0);
   else
@@ -215,6 +218,9 @@ void MutexPostLock(ThreadState *thr, uptr pc, uptr addr, u32 flagz, int rec) {
 
 int MutexUnlock(ThreadState *thr, uptr pc, uptr addr, u32 flagz) {
   DPrintf("#%d: MutexUnlock %zx flagz=0x%x\n", thr->tid, addr, flagz);
+  u32 idx = __tsan_channel_idx++;
+  atomic_store_relaxed((atomic_uint64_t*)(__tsan_channel_ptr + (idx & 0xffff)), idx+1);
+  return 0;
   if (pc && IsAppMem(addr))
     MemoryAccess(thr, pc, addr, 1, kAccessRead | kAccessAtomic);
   StackID creation_stack_id;
@@ -280,6 +286,9 @@ void MutexPreReadLock(ThreadState *thr, uptr pc, uptr addr, u32 flagz) {
 
 void MutexPostReadLock(ThreadState *thr, uptr pc, uptr addr, u32 flagz) {
   DPrintf("#%d: MutexPostReadLock %zx flagz=0x%x\n", thr->tid, addr, flagz);
+  u32 idx = __tsan_channel_idx++;
+  atomic_store_relaxed((atomic_uint64_t*)(__tsan_channel_ptr + (idx & 0xffff)), idx+1);
+  return;
   if (pc && IsAppMem(addr))
     MemoryAccess(thr, pc, addr, 1, kAccessRead | kAccessAtomic);
   bool report_bad_lock = false;
@@ -323,6 +332,9 @@ void MutexPostReadLock(ThreadState *thr, uptr pc, uptr addr, u32 flagz) {
 
 void MutexReadUnlock(ThreadState *thr, uptr pc, uptr addr) {
   DPrintf("#%d: MutexReadUnlock %zx\n", thr->tid, addr);
+  u32 idx = __tsan_channel_idx++;
+  atomic_store_relaxed((atomic_uint64_t*)(__tsan_channel_ptr + (idx & 0xffff)), idx+1);
+  return;
   if (pc && IsAppMem(addr))
     MemoryAccess(thr, pc, addr, 1, kAccessRead | kAccessAtomic);
   RecordMutexUnlock(thr, addr);
@@ -364,6 +376,9 @@ void MutexReadUnlock(ThreadState *thr, uptr pc, uptr addr) {
 
 void MutexReadOrWriteUnlock(ThreadState *thr, uptr pc, uptr addr) {
   DPrintf("#%d: MutexReadOrWriteUnlock %zx\n", thr->tid, addr);
+  u32 idx = __tsan_channel_idx++;
+  atomic_store_relaxed((atomic_uint64_t*)(__tsan_channel_ptr + (idx & 0xffff)), idx+1);
+  return;
   if (pc && IsAppMem(addr))
     MemoryAccess(thr, pc, addr, 1, kAccessRead | kAccessAtomic);
   RecordMutexUnlock(thr, addr);
@@ -442,6 +457,9 @@ void Acquire(ThreadState *thr, uptr pc, uptr addr) {
   DPrintf("#%d: Acquire %zx\n", thr->tid, addr);
   if (thr->ignore_sync)
     return;
+  u32 idx = __tsan_channel_idx++;
+  atomic_store_relaxed((atomic_uint64_t*)(__tsan_channel_ptr + (idx & 0xffff)), idx+1);
+  return;
   auto s = ctx->metamap.GetSyncIfExists(addr);
   if (!s)
     return;
@@ -456,6 +474,9 @@ void AcquireGlobal(ThreadState *thr) {
   DPrintf("#%d: AcquireGlobal\n", thr->tid);
   if (thr->ignore_sync)
     return;
+  u32 idx = __tsan_channel_idx++;
+  atomic_store_relaxed((atomic_uint64_t*)(__tsan_channel_ptr + (idx & 0xffff)), idx+1);
+  return;
   SlotLocker locker(thr);
   for (auto &slot : ctx->slots) thr->clock.Set(slot.sid, slot.epoch());
 }
@@ -464,6 +485,9 @@ void Release(ThreadState *thr, uptr pc, uptr addr) {
   DPrintf("#%d: Release %zx\n", thr->tid, addr);
   if (thr->ignore_sync)
     return;
+  u32 idx = __tsan_channel_idx++;
+  atomic_store_relaxed((atomic_uint64_t*)(__tsan_channel_ptr + (idx & 0xffff)), idx+1);
+  return;
   SlotLocker locker(thr);
   {
     auto s = ctx->metamap.GetSyncOrCreate(thr, pc, addr, false);
@@ -477,6 +501,9 @@ void ReleaseStore(ThreadState *thr, uptr pc, uptr addr) {
   DPrintf("#%d: ReleaseStore %zx\n", thr->tid, addr);
   if (thr->ignore_sync)
     return;
+  u32 idx = __tsan_channel_idx++;
+  atomic_store_relaxed((atomic_uint64_t*)(__tsan_channel_ptr + (idx & 0xffff)), idx+1);
+  return;
   SlotLocker locker(thr);
   {
     auto s = ctx->metamap.GetSyncOrCreate(thr, pc, addr, false);
@@ -490,6 +517,9 @@ void ReleaseStoreAcquire(ThreadState *thr, uptr pc, uptr addr) {
   DPrintf("#%d: ReleaseStoreAcquire %zx\n", thr->tid, addr);
   if (thr->ignore_sync)
     return;
+  u32 idx = __tsan_channel_idx++;
+  atomic_store_relaxed((atomic_uint64_t*)(__tsan_channel_ptr + (idx & 0xffff)), idx+1);
+  return;
   SlotLocker locker(thr);
   {
     auto s = ctx->metamap.GetSyncOrCreate(thr, pc, addr, false);

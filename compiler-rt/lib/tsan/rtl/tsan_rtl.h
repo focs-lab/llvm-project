@@ -52,6 +52,10 @@
 # error "ThreadSanitizer is supported only on 64-bit platforms"
 #endif
 
+using namespace __sanitizer;
+extern THREADLOCAL u64* __tsan_channel_ptr;
+extern THREADLOCAL u32 __tsan_channel_idx;
+
 namespace __tsan {
 
 #if !SANITIZER_GO
@@ -139,6 +143,9 @@ struct TidEpoch {
 struct TidSlot {
   Mutex mtx;
   Sid sid;
+  RawShadow* mem;
+  u16 idx;
+  u64 cnt;
   atomic_uint32_t raw_epoch;
   ThreadState *thr;
   Vector<TidEpoch> journal;
@@ -172,6 +179,8 @@ struct ThreadState {
   // Technically `current` should be a separate THREADLOCAL variable;
   // but it is placed here in order to share cache line with previous fields.
   ThreadState* current;
+
+  u64* channel;
 
   atomic_sint32_t pending_signals;
 

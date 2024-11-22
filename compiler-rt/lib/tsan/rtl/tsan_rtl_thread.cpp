@@ -85,6 +85,21 @@ static void ThreadCheckIgnore(ThreadState *thr) {}
 
 void ThreadFinalize(ThreadState *thr) {
   ThreadCheckIgnore(thr);
+  {
+    Lock lock(&ctx->slot_mtx);
+    u64 count = 0;
+    // if (thr->slot->sid == static_cast<Sid>(0))
+    //   Printf("#%u: events count: %u\n", thr->slot->sid, thr->slot->cnt);
+
+    while (auto slot = ctx->slot_queue.PopFront()) {
+      // if (slot->sid != static_cast<Sid>(0)) continue;
+      // Printf("#%u: events count: %u\n", slot->sid, slot->cnt);
+      // if (slot->sid >= static_cast<Sid>(64)) continue;
+      count += slot->cnt;
+    }
+
+    // Printf("Events count: %u\n", count);
+  }
 #if !SANITIZER_GO
   if (!ShouldReport(thr, ReportTypeThreadLeak))
     return;
@@ -151,6 +166,11 @@ struct OnStartedArgs {
 
 void ThreadStart(ThreadState *thr, Tid tid, tid_t os_id,
                  ThreadType thread_type) {
+  if (UNLIKELY(!__tsan_channel_ptr)) {
+    __tsan_channel_ptr = reinterpret_cast<u64*>(CreateSlotFile(tid + 1000));
+    __tsan_channel_idx = 0;
+  }
+
   ctx->thread_registry.StartThread(tid, os_id, thread_type, thr);
   if (!thr->ignore_sync) {
     SlotAttachAndLock(thr);
