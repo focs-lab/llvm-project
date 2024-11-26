@@ -38,7 +38,7 @@ static cl::opt<std::string> PrintEscapeAnalysisGlobal(
     cl::desc("Print global escape analysis info for the module."));
 
 // STATISTIC(NumEscapedGPtr, "Number of escaped by assignment to global pointer");
-STATISTIC(NumEscapedCall, "Number of escaped by passing to a function");
+// STATISTIC(NumEscapedCall, "Number of escaped by passing to a function");
 // STATISTIC(NumEscapedRet, "Number of escaped by passing to a function");
 
 //===----------------------------------------------------------------------===//
@@ -110,8 +110,7 @@ void EscapeAnalysisInfo::AliasRelationTy::print(raw_ostream &OS) const {
 // EscapeState
 //===----------------------------------------------------------------------===//
 
-bool EscapeAnalysisInfo::EscapeState::operator==(
-    const llvm::EscapeAnalysisInfo::EscapeState &ES) const {
+bool EscapeAnalysisInfo::EscapeState::operator==(const EscapeState &ES) const {
   if (this == &ES) return true;
   return ((EscapedObjects == ES.EscapedObjects) &&
           (AliasRel == ES.AliasRel));
@@ -147,16 +146,17 @@ void EscapeAnalysisInfo::EscapeState::getAliasSubtreeAsList(
 // Main analysis
 //===----------------------------------------------------------------------===//
 
-EscapeAnalysisInfo::EscapeAnalysisInfo(const Function &Fn, bool ArgEsc)
-    : AnalyzedFunc(Fn), ArgumentsEscape(ArgEsc) {
+EscapeAnalysisInfo::EscapeAnalysisInfo(
+    const Function &Fn, bool ArgEsc,
+    const std::optional<ArgumentEscapesMap> &ArgsEsc)
+    : AnalyzedFunc(Fn), ArgsEscapes(ArgsEsc) {
   LLVM_DEBUG(dbgs() <<
     "\n||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||\n"
     "|||||||||||||||||||| Func " << Fn.getName() << "\t||||||||||||||||||||||\n"
     "||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||\n");
-  ArgumentsEscape = ArgEsc;
   std::deque<const BasicBlock *> WorkList;
 
-  // Try to traverse CFG in reverse post-order
+  // Traverse CFG in reverse post-order
   ReversePostOrderTraversal<const Function *> RPOT(&AnalyzedFunc);
   for (const BasicBlock *BB : RPOT) {
     WorkList.push_back(BB);
@@ -213,7 +213,6 @@ void EscapeAnalysisInfo::compBBEscapeState(const BasicBlock *BB,
       if (EscKind == EscapeKind::NO_ESCAPE)
         continue;
 
-      LLVM_DEBUG(dbgs() << "\tOpnd getUnderlyingMayEscObjects:\n");
       const auto UnderlyingObjs = getUnderlyingMayEscObjects(Opnd.get());
       if (UnderlyingObjs.empty())
         continue;
@@ -332,18 +331,31 @@ EscapeAnalysisInfo::getEscapeKindForOpnd(const Use &U) {
     if (Call->isCallee(&U))
       return {EscapeKind::NO_ESCAPE, std::nullopt};
 
+    // Check if that's the argument which can escape through this call
     // Not captured if only passed via 'nocapture' arguments.
     if (Call->isDataOperand(&U) &&
         !Call->doesNotCapture(Call->getDataOperandNo(&U)) &&
         U->getType()->isPointerTy()) {
       // If that's IPA, passing to calls is not escape
-      if (!ArgumentsEscape) {
-        if (!isLocalFunc(Call->getCalledFunction())) {
+      if (ArgsEscapes.has_value()) {
+        const Function *Callee = Call->getCalledFunction();
+        if (!isLocalFunc(Callee))
+          // If IPA, then argument escapes only in a Call of non-local function
           return {EscapeKind::MAY_ESCAPE, std::nullopt};
-        }
+
+        // If called function is local, find argument information in ArgsEscapes
+        // provided by IPA callgraph traversal
+        const auto FuncIt = ArgsEscapes->find(Callee);
+        assert(FuncIt != ArgsEscapes->end() &&
+               "ArgsEscapes must contain information about called function\n");
+
+        const auto ArgEscIt = FuncIt->second.find(Call->getDataOperandNo(&U));
+        assert(ArgEscIt != FuncIt->second.end() &&
+               "ArgEscapes must contain information about all arguments\n");
+        if (ArgEscIt->second)
+          return {EscapeKind::MAY_ESCAPE, std::nullopt};
       } else {
-        // The parameter is passed by pointer and not marked 'nocapture'.
-        ++NumEscapedCall;
+        // If not IPA, each call is the escape for each pointer-typed argument
         return {EscapeKind::MAY_ESCAPE, std::nullopt};
       }
     }
@@ -370,7 +382,6 @@ EscapeAnalysisInfo::getEscapeKindForOpnd(const Use &U) {
     if (!Src->getType()->isPointerTy())
       return {EscapeKind::NO_ESCAPE, std::nullopt};
 
-    LLVM_DEBUG(dbgs() << "\tStoreInst getUnderlyingMayEscObjects:\n");
     const auto DstObjs = getUnderlyingMayEscObjects(I->getOperand(1));
     if (DstObjs.empty())
       return {EscapeKind::NO_ESCAPE, std::nullopt};
@@ -454,8 +465,8 @@ EscapeAnalysisInfo::getEscapeKindForOpnd(const Use &U) {
   }
   default:
     LLVM_DEBUG(dbgs() << " -- Default\n");
-    // Something else - be conservative and say it is escaped.
     return {EscapeKind::NO_ESCAPE, std::nullopt};
+    // Something else - be conservative and say it is escaped.
     // return {EscapeKind::MAY_ESCAPE, std::nullopt};
   }
 }
@@ -684,9 +695,9 @@ EscapeAnalysisPrinterPass::run(Function &F, FunctionAnalysisManager &AM) const {
 // Escape analysis global (IPA)
 //===----------------------------------------------------------------------===//
 
-EscapeAnalysisGlobalInfo::EscapeAnalysisGlobalInfo(Module *M_, CallGraph &CG)
-    : M(M_) {
-  dbgs() << "Hi! Starting analysis for " << M->getName() << "\n";
+EscapeAnalysisGlobalInfo::EscapeAnalysisGlobalInfo(CallGraph &CG) {
+  // Map to store escape information for function arguments.
+  ArgumentEscapesMap ArgsEscapes;
 
   // We do a bottom-up SCC traversal of the call graph.  In other words, we
   // visit all callees before callers (leaf-first).
@@ -701,11 +712,15 @@ EscapeAnalysisGlobalInfo::EscapeAnalysisGlobalInfo(Module *M_, CallGraph &CG)
       // TODO: implement, be conservative
       continue;
     }
+    dbgs() << "IPA Func " << F->getName() << "\n";
 
     const EscapeAnalysisInfo FuncEAI(*F, false);
-    // for (auto &Arg: F->args())
-      // dbgs() << "Arg " << Arg << " ESC " << FuncEAI.isEscapedForFunc(&Arg)
-             // << "\n";
+    for (const auto &Arg : F->args()) {
+      dbgs() << "\tESC ARG " << Arg << " -- " << FuncEAI.isEscapedForFunc(&Arg)
+             << "\n";
+      unsigned ArgNo = Arg.getArgNo();
+      ArgsEscapes[F][ArgNo] = FuncEAI.isEscapedForFunc(&Arg);
+    }
   }
 }
 
@@ -715,7 +730,7 @@ AnalysisKey EscapeAnalysisGlobal::Key;
 
 EscapeAnalysisGlobal::Result
 EscapeAnalysisGlobal::run(Module &M, ModuleAnalysisManager &AM) {
-  return EscapeAnalysisGlobalInfo(&M, AM.getResult<CallGraphAnalysis>(M));
+  return EscapeAnalysisGlobalInfo(AM.getResult<CallGraphAnalysis>(M));
 }
 
 PreservedAnalyses

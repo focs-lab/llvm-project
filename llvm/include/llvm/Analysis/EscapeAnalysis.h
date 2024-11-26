@@ -22,13 +22,18 @@
 namespace llvm {
 /// This is the implementation of simple escape analysis
 
+using ArgumentEscapesMap =
+    DenseMap<const Function *, SmallDenseMap<unsigned, bool>>;
+
 /// Interface to access escape analysis results for single function.
 class EscapeAnalysisInfo {
 public:
   /// Run analysis for given function.
   /// ArgumentEscape is needed for IPA analysis (because we should ignore
   /// escaping by calls)
-  explicit EscapeAnalysisInfo(const Function &Fn, bool ArgumentsEscape = true);
+  explicit EscapeAnalysisInfo(
+      const Function &Fn, bool ArgumentsEscape = true,
+      const std::optional<ArgumentEscapesMap> &ArgsEsc = std::nullopt);
   void print(raw_ostream &OS);
 
 private:
@@ -40,7 +45,8 @@ private:
   const Function &AnalyzedFunc;
   using EscapedObjectsTy = DenseSet<const Value *>;
 
-  bool ArgumentsEscape;
+  // IPA information about arguments escapes
+  const std::optional<ArgumentEscapesMap> &ArgsEscapes;
 
   struct EscapeState;
 
@@ -128,7 +134,7 @@ private:
     if (const auto *CI = dyn_cast<CallInst>(V))
       return CI->getFunctionType()->getReturnType()->isPointerTy();
 
-    if (!ArgumentsEscape)
+    if (ArgsEscapes.has_value())
       return isa<GlobalVariable>(V);
 
     return ((isa<Argument>(V) && V->getType()->isPointerTy()) ||
@@ -185,10 +191,8 @@ public:
 
 /// Interface to access safety global (interprocedural) analysis results.
 class EscapeAnalysisGlobalInfo {
-  Module *M = nullptr;
-
 public:
-  EscapeAnalysisGlobalInfo(Module *M_, CallGraph &CG);
+  EscapeAnalysisGlobalInfo(CallGraph &CG);
   void print(raw_ostream &O) const;
 };
 
