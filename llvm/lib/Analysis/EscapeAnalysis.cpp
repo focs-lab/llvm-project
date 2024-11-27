@@ -11,11 +11,12 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/Analysis/EscapeAnalysis.h"
+
+#include "llvm/ADT/PostOrderIterator.h"
+#include "llvm/ADT/SCCIterator.h"
+#include "llvm/ADT/StringExtras.h"
 #include "llvm/Analysis/AliasAnalysis.h"
 #include "llvm/Analysis/ValueTracking.h"
-#include "llvm/ADT/PostOrderIterator.h"
-#include "llvm/ADT/Statistic.h"
-#include "llvm/ADT/SCCIterator.h"
 #include "llvm/IR/CFG.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/IntrinsicInst.h"
@@ -28,14 +29,14 @@ using namespace llvm;
 #define DEBUG_TYPE "ea"
 #define DEEP_DEBUG_TYPE "ea-deep-debug"
 
-static cl::opt<std::string> PrintEscapeAnalysis(
-  "print-escape-analysis", cl::Hidden,
-  cl::desc("Print escape analysis info for all functions "
-           "using intraprocedural analysis."));
-
-static cl::opt<std::string> PrintEscapeAnalysisGlobal(
-    "print-escape-analysis-global", cl::Hidden,
-    cl::desc("Print global escape analysis info for the module."));
+// static cl::opt<std::string> PrintEscapeAnalysis(
+//   "print-escape-analysis", cl::Hidden,
+//   cl::desc("Print escape analysis info for all functions "
+//            "using intraprocedural analysis."));
+//
+// static cl::opt<std::string> PrintEscapeAnalysisGlobal(
+//     "print-escape-analysis-global", cl::Hidden,
+//     cl::desc("Print global escape analysis info for the module."));
 
 // STATISTIC(NumEscapedGPtr, "Number of escaped by assignment to global pointer");
 // STATISTIC(NumEscapedCall, "Number of escaped by passing to a function");
@@ -52,7 +53,7 @@ void EscapeAnalysisInfo::EscapeState::addAlias(const Value *Alias,
   assert(Alias->getType()->isPointerTy() && "Alias must be a pointer\n");
 
   if ((Alias == PointeeValue) || (PointeeValue == nullptr) ||
-      (AliasRel.AliasMap[Alias].contains(PointeeValue)))
+      AliasRel.AliasMap[Alias].contains(PointeeValue))
     return;
 
   LLVM_DEBUG(dbgs() << "\taddAlias: " << *PointeeValue << " --> " << *Alias
@@ -142,13 +143,39 @@ void EscapeAnalysisInfo::EscapeState::getAliasSubtreeAsList(
       getAliasSubtreeAsList(Alias, ConcerningObjs);
 }
 
+void EscapeAnalysisInfo::EscapeState::mergeAliases(
+    const EscapeState &OtherES, const EscapeAnalysisInfo *EAI) {
+  for (const auto &[OtherKey, OtherValueSet] : OtherES.AliasRel.AliasMap)
+    for (const auto *OtherPointeeValue : OtherValueSet)
+      addAlias(OtherKey, OtherPointeeValue, EAI);
+}
+
+void EscapeAnalysisInfo::EscapeState::mergeEscapedObjects(
+    const EscapeState &OtherES) {
+  // Here we don't need to look through aliases, because if some object
+  // has been added to EscapedObjects, then all it's aliases
+  // have been added too
+  EscapedObjects.insert(OtherES.EscapedObjects.begin(),
+                        OtherES.EscapedObjects.end());
+}
+
+bool EscapeAnalysisInfo::isExternalEscapedObject(const Value *V) const {
+  if (const auto *CI = dyn_cast<CallInst>(V))
+    return CI->getFunctionType()->getReturnType()->isPointerTy();
+
+  if (ArgsEscapes.has_value())
+    return isa<GlobalVariable>(V);
+
+  return ((isa<Argument>(V) && V->getType()->isPointerTy()) ||
+          isa<GlobalVariable>(V));
+}
+
 //===----------------------------------------------------------------------===//
 // Main analysis
 //===----------------------------------------------------------------------===//
 
 EscapeAnalysisInfo::EscapeAnalysisInfo(
-    const Function &Fn, bool ArgEsc,
-    const std::optional<ArgumentEscapesMap> &ArgsEsc)
+    const Function &Fn, const std::optional<ArgumentEscapesMap> &ArgsEsc)
     : AnalyzedFunc(Fn), ArgsEscapes(ArgsEsc) {
   LLVM_DEBUG(dbgs() <<
     "\n||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||\n"
@@ -160,7 +187,6 @@ EscapeAnalysisInfo::EscapeAnalysisInfo(
   ReversePostOrderTraversal<const Function *> RPOT(&AnalyzedFunc);
   for (const BasicBlock *BB : RPOT) {
     WorkList.push_back(BB);
-    // BBEscapeStates[BB] = EscapeState(BB);
     BBEscapeStates[BB] = EscapeState();
   }
 
@@ -188,17 +214,15 @@ EscapeAnalysisInfo::EscapeAnalysisInfo(
       LLVM_DEBUG(dbgs() << "Not Changed!\n\n");
     }
 
-    LLVM_DEBUG(
-      printEscapingForBB(BB, dbgs());
-      BBEscapeStates[BB].AliasRel.print(dbgs());
-      dbgs() << "******** END of BB " <<  BB->getName() << " ******** \n\n";
-    );
+    LLVM_DEBUG(printEscapingForBB(BB, dbgs());
+      BBEscapeStates[BB].getAliases().print(dbgs());
+      dbgs() << "******** END of BB " <<  BB->getName() << " ******** \n\n";);
   }
 }
 
 /// Compute the resulting escape state for BB
 void EscapeAnalysisInfo::compBBEscapeState(const BasicBlock *BB,
-                                           EscapeState &ES) {
+                                           EscapeState &ES) const {
   for (const Instruction &I : *BB) {
     LLVM_DEBUG(dbgs() << "\nI " << I << "\n");
     for (const Use &Opnd : I.operands()) {
@@ -219,8 +243,10 @@ void EscapeAnalysisInfo::compBBEscapeState(const BasicBlock *BB,
 
       if (EscKind == EscapeKind::MAY_ESCAPE) {
         LLVM_DEBUG(dbgs() << "\t-- MAY_ESCAPE --\n");
-        for (const Value *EO : UnderlyingObjs)
+        for (const Value *EO : UnderlyingObjs) {
+          LLVM_DEBUG(dbgs() << "\t\taddEscapingObject: " << *EO << "\n");
           ES.addEscapingObject(EO);
+        }
       } else {
         assert(EscKind == EscapeKind::MAY_ALIASING);
         assert(Aliases != std::nullopt && !Aliases.value().empty() &&
@@ -240,9 +266,7 @@ void EscapeAnalysisInfo::compBBEscapeState(const BasicBlock *BB,
 
 EscapeAnalysisInfo::EscapeState EscapeAnalysisInfo::mergePredEscapeStates(
     const BasicBlock *BB) {
-  // EscapeState MergedES(BB);
   EscapeState MergedES;
-
   // Merge states of predecessors
   for (auto *PredBB : predecessors(BB)) {
     LLVM_DEBUG(dbgs() << "Merge to << " << BB->getName() << " <-- "
@@ -254,12 +278,12 @@ EscapeAnalysisInfo::EscapeState EscapeAnalysisInfo::mergePredEscapeStates(
 }
 
 /// Check whether type contains pointers
-bool EscapeAnalysisInfo::containsPointerType(const Type *Ty) {
+bool EscapeAnalysisInfo::structContainsPointerType(const Type *Ty) {
   if (Ty->isPointerTy()) return true;
   if (!Ty->isStructTy()) return false;
 
-  for (Type *EltTy : Ty->subtypes())
-    if (containsPointerType(EltTy))
+  for (const Type *EltTy : Ty->subtypes())
+    if (structContainsPointerType(EltTy))
       return true;
   return false;
 }
@@ -270,13 +294,13 @@ EscapeAnalysisInfo::getFuncEscState() const {
   const auto It = BBEscapeStates.find(&AnalyzedFunc.back());
   assert(It != BBEscapeStates.end() &&
          "Escape state for exit  block  not  found");
-  return It->second.EscapedObjects;
+  return It->second.getEscapedObjs();
 }
 
 /// Determine what kind of escape behaviour V may exhibit.
 std::pair<EscapeAnalysisInfo::EscapeKind,
           std::optional<SmallVector<Value *, 8>>>
-EscapeAnalysisInfo::getEscapeKindForOpnd(const Use &U) {
+EscapeAnalysisInfo::getEscapeKindForOpnd(const Use &U) const {
   const auto *I = dyn_cast<Instruction>(U.getUser());
   if (!I)
     return {EscapeKind::NO_ESCAPE, std::nullopt};
@@ -285,6 +309,10 @@ EscapeAnalysisInfo::getEscapeKindForOpnd(const Use &U) {
   case Instruction::Call:
   case Instruction::Invoke: {
     LLVM_DEBUG(dbgs() << " -- Call/Invoke\n");
+    // This object is already escaped since it's external
+    if (isExternalEscapedObject(U.get()))
+      return {EscapeKind::NO_ESCAPE, std::nullopt};
+
     const auto *Call = cast<CallBase>(I);
 
     // Not captured if the callee is readonly, doesn't return a copy through
@@ -315,8 +343,8 @@ EscapeAnalysisInfo::getEscapeKindForOpnd(const Use &U) {
       if ((MI->getIntrinsicID() == Intrinsic::memcpy) && (Src == U.get())) {
         // Check whether the source argument is a struct containing pointers
         if (const auto *Alloca = dyn_cast<AllocaInst>(U.get())) {
-          const Type *StructTy = Alloca->getAllocatedType();
-          if (StructTy && containsPointerType(StructTy))
+          if (const Type *StructTy = Alloca->getAllocatedType();
+              StructTy && structContainsPointerType(StructTy))
             return {EscapeKind::MAY_ALIASING, DstObjs};
         }
       }
@@ -376,10 +404,8 @@ EscapeAnalysisInfo::getEscapeKindForOpnd(const Use &U) {
     if (U.getOperandNo() != 0)
       return {EscapeKind::NO_ESCAPE, std::nullopt};
 
-    const auto *Src = I->getOperand(0);
-
     // Passing value instead of pointer is neither escape nor alias
-    if (!Src->getType()->isPointerTy())
+    if (const auto *Src = I->getOperand(0); !Src->getType()->isPointerTy())
       return {EscapeKind::NO_ESCAPE, std::nullopt};
 
     const auto DstObjs = getUnderlyingMayEscObjects(I->getOperand(1));
@@ -431,7 +457,8 @@ EscapeAnalysisInfo::getEscapeKindForOpnd(const Use &U) {
     LLVM_DEBUG(dbgs() << " -- ICmp\n");
     const unsigned Idx = U.getOperandNo();
     const unsigned OtherIdx = 1 - Idx;
-    if (auto *CPN = dyn_cast<ConstantPointerNull>(I->getOperand(OtherIdx))) {
+    if (const auto *CPN =
+            dyn_cast<ConstantPointerNull>(I->getOperand(OtherIdx))) {
       // Don't count comparisons of a no-alias return value against null as
       // captures. This allows us to ignore comparisons of malloc results
       // with null, for example.
@@ -440,12 +467,12 @@ EscapeAnalysisInfo::getEscapeKindForOpnd(const Use &U) {
           return {EscapeKind::NO_ESCAPE, std::nullopt};
 
       if (!I->getFunction()->nullPointerIsDefined()) {
-        auto *O = I->getOperand(Idx)->stripPointerCastsSameRepresentation();
+        const auto *O =
+            I->getOperand(Idx)->stripPointerCastsSameRepresentation();
         // Comparing a dereferenceable_or_null pointer against null cannot
         // lead to pointer escapes, because if it is not null it must be a
         // valid (in-bounds) pointer.
-        const DataLayout &DL = I->getModule()->getDataLayout();
-        if (isDereferenceableOrNull(O, DL))
+        if (isDereferenceableOrNull(O, I->getModule()->getDataLayout()))
           return {EscapeKind::NO_ESCAPE, std::nullopt};
       }
     }
@@ -458,7 +485,6 @@ EscapeAnalysisInfo::getEscapeKindForOpnd(const Use &U) {
 
   case Instruction::Ret: {
     LLVM_DEBUG(dbgs() << " -- Ret\n");
-
     if (!U->getType()->isPointerTy())
       return {EscapeKind::NO_ESCAPE, std::nullopt};
     return {EscapeKind::MAY_ESCAPE, std::nullopt};
@@ -494,7 +520,7 @@ bool EscapeAnalysisInfo::isDereferenceableOrNull(const Value *O,
 /// Wrapper around getUnderlyingObject to look through loads
 const Value *
 EscapeAnalysisInfo::getUnderlyingObjectThroughLoads(const Value *&P,
-                                                    unsigned MaxLookup) {
+                                                    const unsigned MaxLookup) {
   while (true) {
     P = getUnderlyingObject(P, MaxLookup);
     if (const auto *Load = dyn_cast<LoadInst>(P))
@@ -512,7 +538,7 @@ EscapeAnalysisInfo::getUnderlyingObjectThroughLoads(const Value *&P,
 /// 2. Ignore phi invariant check.
 void EscapeAnalysisInfo::getUnderlyingObjectsWithoutPHIInvCheck(
     const Value *V, SmallVectorImpl<const Value *> &Objects,
-    unsigned MaxLookup) {
+    const unsigned MaxLookup) {
   SmallPtrSet<const Value *, 4> Visited;
   SmallVector<const Value *, 4> Worklist;
   Worklist.push_back(V);
@@ -573,7 +599,8 @@ const Value *EscapeAnalysisInfo::getUnderlyingObjectFromInt(const Value *V) {
 /// ptrtoint+arithmetic+inttoptr sequences.
 /// It returns false if unidentified object is found in getUnderlyingObjects.
 bool EscapeAnalysisInfo::getUnderlyingObjectsForCodeGenWithoutPHIInvCheck(
-    const Value *V, SmallVectorImpl<Value *> &Objects, unsigned MaxLookup) {
+    const Value *V, SmallVectorImpl<Value *> &Objects,
+    const unsigned MaxLookup) {
   SmallPtrSet<const Value *, 16> Visited;
   SmallVector<const Value *, 4> Working(1, V);
   do {
@@ -614,16 +641,14 @@ bool EscapeAnalysisInfo::getUnderlyingObjectsForCodeGenWithoutPHIInvCheck(
 /// may escape
 SmallVector<Value *, 8>
 EscapeAnalysisInfo::getUnderlyingMayEscObjects(const Value *V,
-                                               unsigned MaxLookup) {
-  SmallVector<Value *, 8> UnderlyinglObjects;
-  getUnderlyingObjectsForCodeGenWithoutPHIInvCheck(V, UnderlyinglObjects,
-                                                   MaxLookup);
-  LLVM_DEBUG(if (!UnderlyinglObjects.empty()) {
+                                               const unsigned MaxLookup) {
+  SmallVector<Value *, 8> UnderlObjs;
+  getUnderlyingObjectsForCodeGenWithoutPHIInvCheck(V, UnderlObjs, MaxLookup);
+  LLVM_DEBUG(if (!UnderlObjs.empty()) {
     dbgs() << "\tgetUnderlyingMayEscObjects:";
-    for (const auto *Obj : UnderlyinglObjects)
-      dbgs() << "\t\t" << *Obj << "\n";
-  });
-  return UnderlyinglObjects;
+    for (const auto *Obj : UnderlObjs)
+      dbgs() << "\t\t" << *Obj << "\n"; });
+  return UnderlObjs;
 }
 
 /// Is Value V is escaping in some path from Entry to BB?
@@ -636,30 +661,35 @@ bool EscapeAnalysisInfo::isEscapedForBB(const BasicBlock *BB,
   assert((FoundIt != BBEscapeStates.end()) &&
          "BBEscapeState must exist for each BB\n");
   LLVM_DEBUG(dbgs() << "isEscapedForBB: BB: " << BB->getName() << " V: " << *V
-                    << " -- " << FoundIt->second.EscapedObjects.contains(V)
+                    << " -- " << FoundIt->second.getEscapedObjs().contains(V)
                     << "\n");
-  return FoundIt->second.EscapedObjects.contains(V);
+  return FoundIt->second.getEscapedObjs().contains(V);
 }
 
 void EscapeAnalysisInfo::printEscapingForBB(const BasicBlock *BB,
-                                            raw_ostream &OS) {
+                                            raw_ostream &OS) const {
   const auto It = BBEscapeStates.find(BB);
-  if ((It == BBEscapeStates.end()) || (It->second.EscapedObjects.empty()))
+  if ((It == BBEscapeStates.end()) || (It->second.getEscapedObjs().empty()))
     return;
 
-  OS << "Escaping objects for BB " << BB->getName() << ":\n";
-  for (const auto *V : It->second.EscapedObjects) {
+  bool NonExternalEscaped = false;
+  for (const auto *V : It->second.getEscapedObjs()) {
     if (isExternalEscapedObject(V))
       // I'm not sure, we should not print objects escaping by definition
       // (such as global variables or pointer arguments),
       // but let's omit them for now
       continue;
+
+    if (!NonExternalEscaped) {
+      NonExternalEscaped = true;
+      OS << "Escaping objects for BB " << BB->getName() << ":\n";
+    }
     OS << *V << "\n";
   }
   OS << "\n";
 }
 
-void EscapeAnalysisInfo::print(raw_ostream &OS) {
+void EscapeAnalysisInfo::print(raw_ostream &OS) const {
   ////
   // This is function-wise output
   //
@@ -705,26 +735,37 @@ EscapeAnalysisGlobalInfo::EscapeAnalysisGlobalInfo(CallGraph &CG) {
     const std::vector<CallGraphNode *> &SCC = *I;
     assert(!SCC.empty() && "SCC with no functions?");
 
-    Function *F = SCC[0]->getFunction();
+    const Function *F = SCC[0]->getFunction();
 
-    if (!EscapeAnalysisInfo::isLocalFunc(F)) {
+    if (!EscapeAnalysisInfo::isLocalFunc(F))
       // Calls externally or not exact - can't say anything useful.
-      // TODO: implement, be conservative
+      // Just skip, because all all externals calls will be treated as escaped
+      // during local escape analysis
       continue;
-    }
-    dbgs() << "IPA Func " << F->getName() << "\n";
 
-    const EscapeAnalysisInfo FuncEAI(*F, false);
+    const auto [Iter, Inserted] = FuncEscapeInfo.try_emplace(F, *F, ArgsEscapes);
+    assert(Inserted && "One function - one insert\n");
     for (const auto &Arg : F->args()) {
-      dbgs() << "\tESC ARG " << Arg << " -- " << FuncEAI.isEscapedForFunc(&Arg)
-             << "\n";
+      LLVM_DEBUG(dbgs() << "\t@@@@@@@@@ ESC ARG " << Arg << " -- "
+                        << Iter->second.isEscapedForFunc(&Arg) << "\n";);
       unsigned ArgNo = Arg.getArgNo();
-      ArgsEscapes[F][ArgNo] = FuncEAI.isEscapedForFunc(&Arg);
+      ArgsEscapes[F][ArgNo] = Iter->second.isEscapedForFunc(&Arg);
     }
   }
 }
 
-void EscapeAnalysisGlobalInfo::print(raw_ostream &O) const {  }
+void EscapeAnalysisGlobalInfo::print(Module &M, raw_ostream &O) const {
+  for (const Function &F: M) {
+    if (!EscapeAnalysisInfo::isLocalFunc(&F))
+      continue;
+
+    const auto It = FuncEscapeInfo.find(&F);
+    assert(It != FuncEscapeInfo.end() && "Function EA results must exist\n");
+    O << "Printing analysis 'Escape Analysis' for function '" << F.getName()
+      << "':\n";
+    It->second.print(O);
+  }
+}
 
 AnalysisKey EscapeAnalysisGlobal::Key;
 
@@ -736,7 +777,8 @@ EscapeAnalysisGlobal::run(Module &M, ModuleAnalysisManager &AM) {
 PreservedAnalyses
 EscapeAnalysisGlobalPrinterPass::run(Module &M,
                                      ModuleAnalysisManager &AM) const {
-  OS << "'Escape Analysis' for module '" << M.getName() << "'\n";
-  AM.getResult<EscapeAnalysisGlobal>(M).print(OS);
+  OS << "Printing analysis 'Escape Analysis' for module '" << M.getName()
+     << "':\n";
+  AM.getResult<EscapeAnalysisGlobal>(M).print(M, OS);
   return PreservedAnalyses::all();
 }

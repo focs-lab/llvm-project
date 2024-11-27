@@ -13,8 +13,8 @@
 #ifndef LLVM_ANALYSIS_ESCAPEANALYSIS_H
 #define LLVM_ANALYSIS_ESCAPEANALYSIS_H
 
-#include "llvm/Analysis/CallGraph.h"
 #include "ValueTracking.h"
+#include "llvm/Analysis/CallGraph.h"
 
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/PassManager.h"
@@ -32,14 +32,14 @@ public:
   /// ArgumentEscape is needed for IPA analysis (because we should ignore
   /// escaping by calls)
   explicit EscapeAnalysisInfo(
-      const Function &Fn, bool ArgumentsEscape = true,
+      const Function &Fn,
       const std::optional<ArgumentEscapesMap> &ArgsEsc = std::nullopt);
-  void print(raw_ostream &OS);
+  void print(raw_ostream &OS) const;
 
 private:
   /// Types of object escaping states
   enum class EscapeKind { NO_ESCAPE, MAY_ESCAPE, MAY_ALIASING };
-  static const unsigned GetUndrlObjMaxLookup = 20;
+  static constexpr unsigned GetUndrlObjMaxLookup = 20;
 
   // Reference to the function being analyzed.
   const Function &AnalyzedFunc;
@@ -57,9 +57,6 @@ private:
     DenseMap<const Value *, AliasListTy> AliasMap;
 
   public:
-    /// Merge two relations into one (Other), save results into current (this)
-    // void merge(const AliasRelationTy &Other);
-
     /// Get list of aliases for the object a
     std::optional<AliasListTy> getAliases(const Value *V) const;
 
@@ -71,17 +68,6 @@ private:
   };
 
   struct EscapeState {
-    // const BasicBlock *BB = nullptr;
-
-    // Set of allocations that escape in this block.
-    EscapedObjectsTy EscapedObjects;
-
-    // map from Alloca aliases to the original Allocas
-    // Note that a Value may be the alias of multiple Allocas
-    AliasRelationTy AliasRel;
-
-    // EscapeState(const BasicBlock *BB_) : BB(BB_) {}
-
     /// Compare EscapeStates (need in data flow analysis)
     bool operator==(const EscapeState &ES) const;
     bool operator!=(const EscapeState &ES) const { return !(*this == ES); }
@@ -98,62 +84,53 @@ private:
       mergeEscapedObjects(OtherES);
     }
 
+    const EscapedObjectsTy &getEscapedObjs() const { return EscapedObjects; };
+    const AliasRelationTy &getAliases() const { return AliasRel; }
+
   private:
+    // Set of allocations that escape in this block.
+    EscapedObjectsTy EscapedObjects;
+
+    // map from Alloca aliases to the original Allocas
+    // Note that a Value may be the alias of multiple Allocas
+    AliasRelationTy AliasRel;
+
     void getAliasSubtreeAsList(const Value *Obj,
                                 SmallPtrSetImpl<const Value *> &ConcerningObjs);
 
     /// Merge two Alias relations into one
     void mergeAliases(const EscapeState &OtherES,
-                      const EscapeAnalysisInfo *EAI) {
-      for (const auto &[OtherKey, OtherValueSet] : OtherES.AliasRel.AliasMap)
-        for (const auto *OtherPointeeValue : OtherValueSet)
-          addAlias(OtherKey, OtherPointeeValue, EAI);
-    }
+                      const EscapeAnalysisInfo *EAI);
 
-    void mergeEscapedObjects(const EscapeState &OtherES) {
-      // Here we don't need to look through aliases, because if some object
-      // has been added to EscapedObjects, then all it's aliases
-      // have been added too
-      EscapedObjects.insert(OtherES.EscapedObjects.begin(),
-                            OtherES.EscapedObjects.end());
-    }
+    /// Merge lists of escaped objects for two escape states (BBs)
+    void mergeEscapedObjects(const EscapeState &OtherES);
   };
 
   /// Map of basic blocks to their escape analysis states.
   DenseMap<const BasicBlock *, EscapeState> BBEscapeStates;
 
   /// Compute the resulting escape state for BB
-  void compBBEscapeState(const BasicBlock *BB, EscapeState &ES);
+  void compBBEscapeState(const BasicBlock *BB, EscapeState &ES) const;
 
   /// Merges the escape analysis states from multiple incoming blocks.
   EscapeState mergePredEscapeStates(const BasicBlock *BB);
 
   /// Check if that's the object is "already escaped":
   /// e.g. pointer function argument or global variable.
-  bool isExternalEscapedObject(const Value *V) const {
-    if (const auto *CI = dyn_cast<CallInst>(V))
-      return CI->getFunctionType()->getReturnType()->isPointerTy();
-
-    if (ArgsEscapes.has_value())
-      return isa<GlobalVariable>(V);
-
-    return ((isa<Argument>(V) && V->getType()->isPointerTy()) ||
-            (isa<GlobalVariable>(V)));
-  }
+  bool isExternalEscapedObject(const Value *V) const;
 
   /// Determine what kind of escape behaviour V may exhibit.
-  std::pair<EscapeAnalysisInfo::EscapeKind,
-                   std::optional<SmallVector<Value *, 8>>>
-  getEscapeKindForOpnd(const Use &U);
+  std::pair<EscapeKind, std::optional<SmallVector<Value *, 8>>>
+  getEscapeKindForOpnd(const Use &U) const;
 
   /// Print escaped objects in some path from Entry to BB
-  void printEscapingForBB(const BasicBlock *BB, raw_ostream &OS);
+  void printEscapingForBB(const BasicBlock *BB, raw_ostream &OS) const;
 
   /// Taken from CaptureTracker
   static bool isDereferenceableOrNull(const Value *O, const DataLayout &DL);
 
   /// Check whether type contains pointers
-  static bool containsPointerType(const Type *Ty);
+  static bool structContainsPointerType(const Type *Ty);
 
   /// Escaping state for the function is the escape state for Exit BB
   const EscapedObjectsTy &getFuncEscState() const;
@@ -191,9 +168,10 @@ public:
 
 /// Interface to access safety global (interprocedural) analysis results.
 class EscapeAnalysisGlobalInfo {
+  DenseMap<const Function *, EscapeAnalysisInfo> FuncEscapeInfo;
 public:
-  EscapeAnalysisGlobalInfo(CallGraph &CG);
-  void print(raw_ostream &O) const;
+  explicit EscapeAnalysisGlobalInfo(CallGraph &CG);
+  void print(Module &M, raw_ostream &O) const;
 };
 
 /// EscapeAnalysisInfo wrapper for the new pass manager.
