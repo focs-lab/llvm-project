@@ -169,6 +169,14 @@ public:
 /// Interface to access safety global (interprocedural) analysis results.
 class EscapeAnalysisGlobalInfo {
   DenseMap<const Function *, EscapeAnalysisInfo> FuncEscapeInfo;
+
+  static void setAllPtrArgsEscaped(ArgumentEscapesMap &ArgsEscapes,
+                                   const Function *F);
+
+  /// Check if call graph node is the recursive call
+  /// (relevant for SCC with 1 node)
+  static bool isRecursiveCallGraphNode(const Function *F, CallGraphNode *CGN);
+
 public:
   explicit EscapeAnalysisGlobalInfo(CallGraph &CG);
   void print(Module &M, raw_ostream &O) const;

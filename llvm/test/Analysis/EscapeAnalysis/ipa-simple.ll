@@ -1,5 +1,42 @@
 ; RUN: opt < %s -passes='print<escape-analysis-global>' -disable-output 2>&1 | FileCheck %s
 
+; C code:
+; void level2_func1(int *x) {
+; 	GPtr = x;											// Escape through GPtr
+; }
+;
+; void level2_func2(int *x) {
+; 	*x = 333;
+; }
+;
+; void level1_func1(int *x) {
+; 	level2_func1(x);
+; }
+;
+; void level1_func2(int *x) {
+; 	*x = 333;
+; 	int *p = x;
+; 	printf("%p\n", &p);			// Escape through external func call
+; }
+;
+; void level1_func3(int *x, int *p) {
+; 	*x = 42;
+; 	level2_func2(x);
+; 	level2_func1(p);
+; }
+;
+; void external_func(int *x);
+;
+; void parent_func1() {
+; 	int x;
+; 	level1_func1(&x);
+; 	level1_func2(&x);
+; 	int y;
+; 	external_func(&y);
+; 	int z, p;
+; 	level1_func3(&z, &p);
+; }
+
 ; ModuleID = 'ipa-simple.ll'
 
 ; CHECK: Printing analysis 'Escape Analysis' for module '<stdin>':
@@ -25,7 +62,9 @@ entry:
 
 define dso_local void @level1_func1(ptr noundef %x) #0 {
 ; CHECK: Printing analysis 'Escape Analysis' for function 'level1_func1':
-; CHECK-NOT: Escaping objects for BB entry:
+; CHECK-NEXT: Escaping objects for BB entry:
+; CHECK-DAG: ptr %x
+; CHECK-DAG:  %p = alloca ptr, align 8
 entry:
   call void @level2_func1(ptr noundef %x)
   ret void
@@ -34,7 +73,8 @@ entry:
 define dso_local void @level1_func2(ptr noundef %x) {
 ; CHECK: Printing analysis 'Escape Analysis' for function 'level1_func2':
 ; CHECK-NEXT: Escaping objects for BB entry:
-; CHECK-DAG:   %p = alloca ptr, align 8
+; CHECK-DAG:  %p = alloca ptr, align 8
+; CHECK-DAG: ptr %x
 entry:
   %p = alloca ptr, align 8
   store i32 333, ptr %x, align 4
@@ -47,7 +87,8 @@ declare i32 @printf(ptr noundef, ...)
 
 define dso_local void @level1_func3(ptr noundef %x, ptr noundef %p) {
 ; CHECK: Printing analysis 'Escape Analysis' for function 'level1_func3':
-; CHECK-NOT: Escaping objects for BB entry:
+; CHECK-NEXT: Escaping objects for BB entry:
+; CHECK-DAG: ptr %x
 entry:
   store i32 42, ptr %x, align 4
   call void @level2_func2(ptr noundef %x)

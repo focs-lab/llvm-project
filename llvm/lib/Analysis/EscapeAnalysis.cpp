@@ -375,11 +375,11 @@ EscapeAnalysisInfo::getEscapeKindForOpnd(const Use &U) const {
         // provided by IPA callgraph traversal
         const auto FuncIt = ArgsEscapes->find(Callee);
         assert(FuncIt != ArgsEscapes->end() &&
-               "ArgsEscapes must contain information about called function\n");
+               "ArgsEscapes must contain information about called function");
 
         const auto ArgEscIt = FuncIt->second.find(Call->getDataOperandNo(&U));
         assert(ArgEscIt != FuncIt->second.end() &&
-               "ArgEscapes must contain information about all arguments\n");
+               "ArgEscapes must contain information about all arguments");
         if (ArgEscIt->second)
           return {EscapeKind::MAY_ESCAPE, std::nullopt};
       } else {
@@ -672,7 +672,7 @@ void EscapeAnalysisInfo::printEscapingForBB(const BasicBlock *BB,
   if ((It == BBEscapeStates.end()) || (It->second.getEscapedObjs().empty()))
     return;
 
-  bool NonExternalEscaped = false;
+  OS << "Escaping objects for BB " << BB->getName() << ":\n";
   for (const auto *V : It->second.getEscapedObjs()) {
     if (isExternalEscapedObject(V))
       // I'm not sure, we should not print objects escaping by definition
@@ -680,27 +680,12 @@ void EscapeAnalysisInfo::printEscapingForBB(const BasicBlock *BB,
       // but let's omit them for now
       continue;
 
-    if (!NonExternalEscaped) {
-      NonExternalEscaped = true;
-      OS << "Escaping objects for BB " << BB->getName() << ":\n";
-    }
     OS << *V << "\n";
   }
   OS << "\n";
 }
 
 void EscapeAnalysisInfo::print(raw_ostream &OS) const {
-  ////
-  // This is function-wise output
-  //
-  // const auto FuncEscapingAllocas = BBEscapeStates[&F.back()].EscapedObjects;
-  // if (FuncEscapingAllocas.empty())
-  //   return;
-  // OS << "Escaping variables:\n";
-  // for (const auto *V : FuncEscapingAllocas)
-  //   OS << *V << "\n";
-  // OS << "\n";
-
   for (const auto &BB: AnalyzedFunc)
     printEscapingForBB(&BB, OS);
 }
@@ -725,31 +710,91 @@ EscapeAnalysisPrinterPass::run(Function &F, FunctionAnalysisManager &AM) const {
 // Escape analysis global (IPA)
 //===----------------------------------------------------------------------===//
 
+void EscapeAnalysisGlobalInfo::setAllPtrArgsEscaped(
+    ArgumentEscapesMap &ArgsEscapes, const Function *F) {
+  for (const auto &Arg : F->args())
+    if (Arg.getType()->isPointerTy())
+      ArgsEscapes[F][Arg.getArgNo()] = true;
+}
+
+bool EscapeAnalysisGlobalInfo::isRecursiveCallGraphNode(const Function *F,
+                                                        CallGraphNode *CGN) {
+  for (auto CI = CGN->begin(), CE = CGN->end(); CI != CE; ++CI) {
+    CallGraphNode *Callee = CI->second;
+    if (Callee && Callee->getFunction() == F)
+      return true;
+  }
+  return false;
+}
+
 EscapeAnalysisGlobalInfo::EscapeAnalysisGlobalInfo(CallGraph &CG) {
   // Map to store escape information for function arguments.
   ArgumentEscapesMap ArgsEscapes;
 
   // We do a bottom-up SCC traversal of the call graph.  In other words, we
   // visit all callees before callers (leaf-first).
-  for (scc_iterator<CallGraph *> I = scc_begin(&CG); !I.isAtEnd(); ++I) {
-    const std::vector<CallGraphNode *> &SCC = *I;
+
+  // This is needed to (conservatively) consider recursive calls and SCCs.
+  // First, find all SCCs and set all pointer argument as escaped
+  for (scc_iterator<CallGraph *> It = scc_begin(&CG); !It.isAtEnd(); ++It) {
+    const std::vector<CallGraphNode *> &SCC = *It;
     assert(!SCC.empty() && "SCC with no functions?");
 
-    const Function *F = SCC[0]->getFunction();
+    LLVM_DEBUG(dbgs() << "SCC: " << SCC.size() << "\n";
+    for (const CallGraphNode *CGN: SCC) {
+      if (CGN->getFunction())
+        dbgs() << "\t" << CGN->getFunction()->getName() << "\n";
+    });
 
-    if (!EscapeAnalysisInfo::isLocalFunc(F))
-      // Calls externally or not exact - can't say anything useful.
-      // Just skip, because all all externals calls will be treated as escaped
-      // during local escape analysis
-      continue;
+    if (SCC.size() == 1) {
+      // Check if it's recursive call or not
+      const auto *F = SCC[0]->getFunction();
+      if (!EscapeAnalysisInfo::isLocalFunc(F))
+        continue;
 
-    const auto [Iter, Inserted] = FuncEscapeInfo.try_emplace(F, *F, ArgsEscapes);
-    assert(Inserted && "One function - one insert\n");
-    for (const auto &Arg : F->args()) {
-      LLVM_DEBUG(dbgs() << "\t@@@@@@@@@ ESC ARG " << Arg << " -- "
-                        << Iter->second.isEscapedForFunc(&Arg) << "\n";);
-      unsigned ArgNo = Arg.getArgNo();
-      ArgsEscapes[F][ArgNo] = Iter->second.isEscapedForFunc(&Arg);
+      if (isRecursiveCallGraphNode(F, SCC[0])) {
+        LLVM_DEBUG(dbgs() << "\t" << F->getName().str() << " is recursive.\n");
+        setAllPtrArgsEscaped(ArgsEscapes, F);
+      } else {
+        LLVM_DEBUG(dbgs() << "\t" << F->getName().str() << " is not recursive.\n");
+      }
+    } else { // SCC.size() > 1
+      for (const CallGraphNode *CGN: SCC) {
+        const auto F = CGN->getFunction();
+        if (!EscapeAnalysisInfo::isLocalFunc(F))
+          continue;
+        setAllPtrArgsEscaped(ArgsEscapes, F);
+      }
+    }
+  }
+
+  // Main callgraph traversal
+  for (scc_iterator<CallGraph *> It = scc_begin(&CG); !It.isAtEnd(); ++It) {
+    const std::vector<CallGraphNode *> &SCC = *It;
+    assert(!SCC.empty() && "SCC with no functions?");
+
+    for (const CallGraphNode *CGN : SCC) {
+      const auto *F = CGN->getFunction();
+      if (!EscapeAnalysisInfo::isLocalFunc(F))
+        // Just skip, because all externals calls will be treated as escaped
+        // during local escape analysis
+        continue;
+
+      const auto [Iter, Inserted] =
+          FuncEscapeInfo.try_emplace(F, *F, ArgsEscapes);
+      assert(Inserted && "One function - one insert\n");
+
+      // If we didn't consider argument escape status during previous stage
+      // add arguments escape info
+      if (!ArgsEscapes.count(F)) {
+        LLVM_DEBUG(dbgs() << "update arg info\n");
+        for (const auto &Arg : F->args()) {
+          LLVM_DEBUG(dbgs() << "\t@@@@@@@@@ ESC ARG " << Arg << " -- "
+                            << Iter->second.isEscapedForFunc(&Arg) << "\n";);
+          unsigned ArgNo = Arg.getArgNo();
+          ArgsEscapes[F][ArgNo] = Iter->second.isEscapedForFunc(&Arg);
+        }
+      }
     }
   }
 }
