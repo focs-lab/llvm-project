@@ -86,7 +86,12 @@ static cl::opt<bool> ClCompoundReadBeforeWrite(
     cl::Hidden);
 static cl::opt<bool> ClUseEscapeAnalysis(
     "tsan-use-escape-analysis", cl::init(false),
-    cl::desc("Use better escape analysis to eliminate extra instrumentatio"),
+    cl::desc("Use better escape analysis to eliminate extra instrumentation"),
+    cl::Hidden);
+static cl::opt<bool> ClUseEscapeAnalysisGlobal(
+    "tsan-use-escape-analysis-global", cl::init(false),
+    cl::desc(
+        "Use global (IPA) escape analysis to eliminate extra instrumentation"),
     cl::Hidden);
 
 STATISTIC(NumInstrumentedReads, "Number of instrumented reads");
@@ -123,11 +128,19 @@ struct ThreadSanitizer {
           << "warning: Option -tsan-compound-read-before-write has no effect "
              "when -tsan-instrument-read-before-write is set.\n";
     }
+
+    if (ClUseEscapeAnalysisGlobal && ClUseEscapeAnalysis) {
+      errs() << "error: Must be chosen only one option from "
+                "-tsan-escape-analysis or -tsan-escape-analysis-global\n";
+      llvm_shutdown();
+    }
   }
 
   bool sanitizeFunction(
-    Function &F, const TargetLibraryInfo &TLI,
-    const std::optional<EscapeAnalysisInfo> &EAI = std::nullopt);
+      Function &F, const TargetLibraryInfo &TLI,
+      const std::optional<EscapeAnalysisInfo> &EAI = std::nullopt,
+      std::optional<std::reference_wrapper<EscapeAnalysisGlobalInfo>>
+          EAIGlobal = std::nullopt);
 
 private:
   // Internal Instruction wrapper that contains more information about the
@@ -195,8 +208,21 @@ void insertModuleCtor(Module &M) {
 }  // namespace
 
 PreservedAnalyses ThreadSanitizerPass::run(Function &F,
-                                           FunctionAnalysisManager &FAM) {
+                                           FunctionAnalysisManager &FAM,
+                                           ModuleAnalysisManager &MAM) {
   ThreadSanitizer TSan;
+
+  if (ClUseEscapeAnalysisGlobal) {
+    TSan.sanitizeFunction(F, FAM.getResult<TargetLibraryAnalysis>(F),
+                          std::nullopt,
+                          MAM.getResult<EscapeAnalysisGlobal>(*F.getParent()));
+  } else if (ClUseEscapeAnalysis) {
+    TSan.sanitizeFunction(F, FAM.getResult<TargetLibraryAnalysis>(F),
+                          FAM.getResult<EscapeAnalysis>(F));
+  } else {
+    TSan.sanitizeFunction(F, FAM.getResult<TargetLibraryAnalysis>(F));
+  }
+
 
   if (TSan.sanitizeFunction(F, FAM.getResult<TargetLibraryAnalysis>(F),
                             ClUseEscapeAnalysis
@@ -542,7 +568,8 @@ void ThreadSanitizer::InsertRuntimeIgnores(Function &F) {
 
 bool ThreadSanitizer::sanitizeFunction(
     Function &F, const TargetLibraryInfo &TLI,
-    const std::optional<EscapeAnalysisInfo> &EAI) {
+    const std::optional<EscapeAnalysisInfo> &EAI,
+    std::optional<std::reference_wrapper<EscapeAnalysisGlobalInfo>> EAIGlobal) {
   // This is required to prevent instrumenting call to __tsan_init from within
   // the module constructor.
   if (F.getName() == kTsanModuleCtorName)
