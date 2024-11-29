@@ -33,20 +33,21 @@ public:
   /// escaping by calls)
   explicit EscapeAnalysisInfo(
       const Function &Fn,
-      const std::optional<ArgumentEscapesMap> &ArgsEsc = std::nullopt);
+      std::optional<std::reference_wrapper<ArgumentEscapesMap>> ArgsEsc =
+          std::nullopt);
   void print(raw_ostream &OS) const;
 
 private:
   /// Types of object escaping states
   enum class EscapeKind { NO_ESCAPE, MAY_ESCAPE, MAY_ALIASING };
-  static constexpr unsigned GetUndrlObjMaxLookup = 20;
+  static constexpr unsigned GetUnderlObjMaxLookup = 20;
 
   // Reference to the function being analyzed.
   const Function &AnalyzedFunc;
   using EscapedObjectsTy = DenseSet<const Value *>;
 
   // IPA information about arguments escapes
-  const std::optional<ArgumentEscapesMap> &ArgsEscapes;
+  const std::optional<std::reference_wrapper<ArgumentEscapesMap>> ArgsEscapes;
 
   struct EscapeState;
 
@@ -151,7 +152,7 @@ public:
   /// may escape
   static SmallVector<Value *, 8>
   getUnderlyingMayEscObjects(const Value *V,
-                             unsigned MaxLookup = GetUndrlObjMaxLookup);
+                             unsigned MaxLookup = GetUnderlObjMaxLookup);
 
   /// Is Value V is escaping somewhere in the function
   bool isEscapedForFunc(const Value *V) const {
@@ -176,6 +177,9 @@ class EscapeAnalysisGlobalInfo {
   /// Check if call graph node is the recursive call
   /// (relevant for SCC with 1 node)
   static bool isRecursiveCallGraphNode(const Function *F, CallGraphNode *CGN);
+
+  /// Map to store escape information for function arguments.
+  ArgumentEscapesMap ArgsEscapes;
 
 public:
   explicit EscapeAnalysisGlobalInfo(CallGraph &CG);

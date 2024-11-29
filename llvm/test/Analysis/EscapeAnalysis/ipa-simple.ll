@@ -37,8 +37,6 @@
 ; 	level1_func3(&z, &p);
 ; }
 
-; ModuleID = 'ipa-simple.ll'
-
 ; CHECK: Printing analysis 'Escape Analysis' for module '<stdin>':
 
 @GPtr = dso_local global ptr null, align 8
@@ -46,7 +44,8 @@
 
 define dso_local void @level2_func1(ptr noundef %x) #0 {
 ; CHECK: Printing analysis 'Escape Analysis' for function 'level2_func1':
-; CHECK-NOT: Escaping objects for BB entry:
+; CHECK-NEXT: Escaping objects for BB entry:
+; CHECK-DAG: ptr %x
 entry:
   store ptr %x, ptr @GPtr, align 8
   ret void
@@ -64,7 +63,6 @@ define dso_local void @level1_func1(ptr noundef %x) #0 {
 ; CHECK: Printing analysis 'Escape Analysis' for function 'level1_func1':
 ; CHECK-NEXT: Escaping objects for BB entry:
 ; CHECK-DAG: ptr %x
-; CHECK-DAG:  %p = alloca ptr, align 8
 entry:
   call void @level2_func1(ptr noundef %x)
   ret void
@@ -88,7 +86,7 @@ declare i32 @printf(ptr noundef, ...)
 define dso_local void @level1_func3(ptr noundef %x, ptr noundef %p) {
 ; CHECK: Printing analysis 'Escape Analysis' for function 'level1_func3':
 ; CHECK-NEXT: Escaping objects for BB entry:
-; CHECK-DAG: ptr %x
+; CHECK-DAG: ptr %p
 entry:
   store i32 42, ptr %x, align 4
   call void @level2_func2(ptr noundef %x)

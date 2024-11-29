@@ -175,7 +175,8 @@ bool EscapeAnalysisInfo::isExternalEscapedObject(const Value *V) const {
 //===----------------------------------------------------------------------===//
 
 EscapeAnalysisInfo::EscapeAnalysisInfo(
-    const Function &Fn, const std::optional<ArgumentEscapesMap> &ArgsEsc)
+    const Function &Fn,
+    std::optional<std::reference_wrapper<ArgumentEscapesMap>> ArgsEsc)
     : AnalyzedFunc(Fn), ArgsEscapes(ArgsEsc) {
   LLVM_DEBUG(dbgs() <<
     "\n||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||\n"
@@ -373,8 +374,8 @@ EscapeAnalysisInfo::getEscapeKindForOpnd(const Use &U) const {
 
         // If called function is local, find argument information in ArgsEscapes
         // provided by IPA callgraph traversal
-        const auto FuncIt = ArgsEscapes->find(Callee);
-        assert(FuncIt != ArgsEscapes->end() &&
+        const auto FuncIt = ArgsEscapes->get().find(Callee);
+        assert(FuncIt != ArgsEscapes->get().end() &&
                "ArgsEscapes must contain information about called function");
 
         const auto ArgEscIt = FuncIt->second.find(Call->getDataOperandNo(&U));
@@ -728,9 +729,6 @@ bool EscapeAnalysisGlobalInfo::isRecursiveCallGraphNode(const Function *F,
 }
 
 EscapeAnalysisGlobalInfo::EscapeAnalysisGlobalInfo(CallGraph &CG) {
-  // Map to store escape information for function arguments.
-  ArgumentEscapesMap ArgsEscapes;
-
   // We do a bottom-up SCC traversal of the call graph.  In other words, we
   // visit all callees before callers (leaf-first).
 
@@ -781,13 +779,12 @@ EscapeAnalysisGlobalInfo::EscapeAnalysisGlobalInfo(CallGraph &CG) {
         continue;
 
       const auto [Iter, Inserted] =
-          FuncEscapeInfo.try_emplace(F, *F, ArgsEscapes);
+          FuncEscapeInfo.try_emplace(F, EscapeAnalysisInfo(*F, ArgsEscapes));
       assert(Inserted && "One function - one insert\n");
 
       // If we didn't consider argument escape status during previous stage
-      // add arguments escape info
+      // then add arguments escape info
       if (!ArgsEscapes.count(F)) {
-        LLVM_DEBUG(dbgs() << "update arg info\n");
         for (const auto &Arg : F->args()) {
           LLVM_DEBUG(dbgs() << "\t@@@@@@@@@ ESC ARG " << Arg << " -- "
                             << Iter->second.isEscapedForFunc(&Arg) << "\n";);
