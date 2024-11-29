@@ -781,6 +781,7 @@ void ThreadSanitizer::InsertRuntimeIgnores(Function &F) {
 }
 
 void ThreadSanitizer::InsertEventSend(IRBuilder<> &IRB) {
+  return;
   // if (!Channel)
   //   Channel = IRB.CreateLoad(TsanChannelPtr->getValueType(), TsanChannelPtr);
   auto *Idx = IRB.CreateLoad(LocalIdx->getAllocatedType(), LocalIdx);
@@ -933,7 +934,7 @@ bool ThreadSanitizer::sanitizeFunction(Function &F,
   // Before each function call, we need to update the ChannelIdx global variable.
   // After each function call we also need to load from it.
   // If did not instrument any accesses, then LocalIdx is not used.
-  if (Res) {
+  if (false && Res) {
     for (const auto &CI : Calls) {
       InstrumentationIRBuilder IRB(CI);
       auto *Load1 = IRB.CreateLoad(LocalIdx->getAllocatedType(), LocalIdx);

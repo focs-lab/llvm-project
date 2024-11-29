@@ -174,17 +174,17 @@ void __tsan_ignore_thread_begin() { ThreadIgnoreBegin(cur_thread(), CALLERPC); }
 void __tsan_ignore_thread_end() { ThreadIgnoreEnd(cur_thread()); }
 
 void __tsan_read_range(void *addr, uptr size) {
-  MemoryAccessRange(cur_thread(), CALLERPC, (uptr)addr, size, false);
+  // MemoryAccessRange(cur_thread(), CALLERPC, (uptr)addr, size, false);
 }
 
 void __tsan_write_range(void *addr, uptr size) {
-  MemoryAccessRange(cur_thread(), CALLERPC, (uptr)addr, size, true);
+  // MemoryAccessRange(cur_thread(), CALLERPC, (uptr)addr, size, true);
 }
 
 void __tsan_read_range_pc(void *addr, uptr size, void *pc) {
-  MemoryAccessRange(cur_thread(), STRIP_PAC_PC(pc), (uptr)addr, size, false);
+  // MemoryAccessRange(cur_thread(), STRIP_PAC_PC(pc), (uptr)addr, size, false);
 }
 
 void __tsan_write_range_pc(void *addr, uptr size, void *pc) {
-  MemoryAccessRange(cur_thread(), STRIP_PAC_PC(pc), (uptr)addr, size, true);
+  // MemoryAccessRange(cur_thread(), STRIP_PAC_PC(pc), (uptr)addr, size, true);
 }

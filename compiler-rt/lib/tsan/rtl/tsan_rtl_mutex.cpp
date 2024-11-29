@@ -454,6 +454,7 @@ void MutexInvalidAccess(ThreadState *thr, uptr pc, uptr addr) {
 }
 
 void Acquire(ThreadState *thr, uptr pc, uptr addr) {
+  return;
   DPrintf("#%d: Acquire %zx\n", thr->tid, addr);
   if (thr->ignore_sync)
     return;
@@ -471,6 +472,7 @@ void Acquire(ThreadState *thr, uptr pc, uptr addr) {
 }
 
 void AcquireGlobal(ThreadState *thr) {
+  return;
   DPrintf("#%d: AcquireGlobal\n", thr->tid);
   if (thr->ignore_sync)
     return;
@@ -482,6 +484,7 @@ void AcquireGlobal(ThreadState *thr) {
 }
 
 void Release(ThreadState *thr, uptr pc, uptr addr) {
+  return;
   DPrintf("#%d: Release %zx\n", thr->tid, addr);
   if (thr->ignore_sync)
     return;
@@ -498,6 +501,7 @@ void Release(ThreadState *thr, uptr pc, uptr addr) {
 }
 
 void ReleaseStore(ThreadState *thr, uptr pc, uptr addr) {
+  return;
   DPrintf("#%d: ReleaseStore %zx\n", thr->tid, addr);
   if (thr->ignore_sync)
     return;
@@ -514,6 +518,7 @@ void ReleaseStore(ThreadState *thr, uptr pc, uptr addr) {
 }
 
 void ReleaseStoreAcquire(ThreadState *thr, uptr pc, uptr addr) {
+  return;
   DPrintf("#%d: ReleaseStoreAcquire %zx\n", thr->tid, addr);
   if (thr->ignore_sync)
     return;
@@ -530,6 +535,7 @@ void ReleaseStoreAcquire(ThreadState *thr, uptr pc, uptr addr) {
 }
 
 void IncrementEpoch(ThreadState *thr) {
+  return;
   DCHECK(!thr->ignore_sync);
   DCHECK(thr->slot_locked);
   Epoch epoch = EpochInc(thr->fast_state.epoch());

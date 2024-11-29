@@ -544,6 +544,7 @@ void MemoryAccessRangeT(ThreadState *thr, uptr pc, uptr addr, uptr size);
 ALWAYS_INLINE
 void MemoryAccessRange(ThreadState *thr, uptr pc, uptr addr, uptr size,
                        bool is_write) {
+  return;
   if (size == 0)
     return;
   if (is_write)

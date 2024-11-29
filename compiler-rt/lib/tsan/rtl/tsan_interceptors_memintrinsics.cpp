@@ -19,6 +19,10 @@ using namespace __tsan;
 
 #include "sanitizer_common/sanitizer_common_interceptors_memintrinsics.inc"
 
+DECLARE_REAL(void *, memcpy, void *to, const void *from, SIZE_T size)
+DECLARE_REAL(void *, memmove, void *to, const void *from, SIZE_T size)
+DECLARE_REAL(void *, memset, void *block, int c, SIZE_T size)
+
 extern "C" {
 
 void *__tsan_memcpy(void *dst, const void *src, uptr size) {
@@ -28,16 +32,19 @@ void *__tsan_memcpy(void *dst, const void *src, uptr size) {
 #else
   COMMON_INTERCEPTOR_MEMMOVE_IMPL(ctx, dst, src, size);
 #endif
+  REAL(memcpy)(dst, src, size);
 }
 
 void *__tsan_memset(void *dst, int c, uptr size) {
   void *ctx;
-  COMMON_INTERCEPTOR_MEMSET_IMPL(ctx, dst, c, size);
+  // COMMON_INTERCEPTOR_MEMSET_IMPL(ctx, dst, c, size);
+  REAL(memset)(dst, c, size);
 }
 
 void *__tsan_memmove(void *dst, const void *src, uptr size) {
   void *ctx;
-  COMMON_INTERCEPTOR_MEMMOVE_IMPL(ctx, dst, src, size);
+  // COMMON_INTERCEPTOR_MEMMOVE_IMPL(ctx, dst, src, size);
+  REAL(memmove)(dst, src, size);
 }
 
 }  // extern "C"
