@@ -184,6 +184,20 @@ class EscapeAnalysisGlobalInfo {
 public:
   explicit EscapeAnalysisGlobalInfo(CallGraph &CG);
   void print(Module &M, raw_ostream &O) const;
+
+  /// Is Value V is escaping in some path from Entry to BB in the function F
+  bool isEscapedForBBInFunc(const Function *F, const BasicBlock *BB,
+                            const Value *V) const {
+    if (const auto It = FuncEscapeInfo.find(F); It != FuncEscapeInfo.end())
+      return It->second.isEscapedForBB(BB, V);
+    return true;
+  }
+
+  /// This is needed for using with OuterAnalysisManagerProxy
+  bool invalidate(Module &, const PreservedAnalyses &,
+                  ModuleAnalysisManager::Invalidator &) {
+    return false;
+  }
 };
 
 /// EscapeAnalysisInfo wrapper for the new pass manager.

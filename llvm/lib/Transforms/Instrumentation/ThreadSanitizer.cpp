@@ -139,8 +139,7 @@ struct ThreadSanitizer {
   bool sanitizeFunction(
       Function &F, const TargetLibraryInfo &TLI,
       const std::optional<EscapeAnalysisInfo> &EAI = std::nullopt,
-      std::optional<std::reference_wrapper<EscapeAnalysisGlobalInfo>>
-          EAIGlobal = std::nullopt);
+      std::optional<EscapeAnalysisGlobalInfo*> EAIGlobal = std::nullopt);
 
 private:
   // Internal Instruction wrapper that contains more information about the
@@ -163,7 +162,8 @@ private:
   void chooseInstructionsToInstrument(
       SmallVectorImpl<Instruction *> &Local,
       SmallVectorImpl<InstructionInfo> &All, const DataLayout &DL,
-      const std::optional<EscapeAnalysisInfo> &EAI = std::nullopt);
+      const std::optional<EscapeAnalysisInfo> &EAI = std::nullopt,
+      std::optional<EscapeAnalysisGlobalInfo*> EAIGlobal = std::nullopt);
   bool addrPointsToConstantData(Value *Addr);
   int getMemoryAccessFuncIndex(Type *OrigTy, Value *Addr, const DataLayout &DL);
   void InsertRuntimeIgnores(Function &F);
@@ -208,42 +208,50 @@ void insertModuleCtor(Module &M) {
 }  // namespace
 
 PreservedAnalyses ThreadSanitizerPass::run(Function &F,
-                                           FunctionAnalysisManager &FAM,
-                                           ModuleAnalysisManager &MAM) {
+                                           FunctionAnalysisManager &FAM) {
   ThreadSanitizer TSan;
 
   if (ClUseEscapeAnalysisGlobal) {
-    TSan.sanitizeFunction(F, FAM.getResult<TargetLibraryAnalysis>(F),
+    auto &MAMProxy = FAM.getResult<ModuleAnalysisManagerFunctionProxy>(F);
+    auto *EAGI = MAMProxy.getCachedResult<EscapeAnalysisGlobal>(*F.getParent());
+    if (TSan.sanitizeFunction(F, FAM.getResult<TargetLibraryAnalysis>(F),
                           std::nullopt,
-                          MAM.getResult<EscapeAnalysisGlobal>(*F.getParent()));
+                          std::optional<EscapeAnalysisGlobalInfo*>(EAGI)))
+      return PreservedAnalyses::none();
   } else if (ClUseEscapeAnalysis) {
-    TSan.sanitizeFunction(F, FAM.getResult<TargetLibraryAnalysis>(F),
-                          FAM.getResult<EscapeAnalysis>(F));
+    if (TSan.sanitizeFunction(F, FAM.getResult<TargetLibraryAnalysis>(F),
+                          FAM.getResult<EscapeAnalysis>(F)))
+      return PreservedAnalyses::none();
   } else {
-    TSan.sanitizeFunction(F, FAM.getResult<TargetLibraryAnalysis>(F));
+    if (TSan.sanitizeFunction(F, FAM.getResult<TargetLibraryAnalysis>(F)))
+      return PreservedAnalyses::none();
   }
 
-
-  if (TSan.sanitizeFunction(F, FAM.getResult<TargetLibraryAnalysis>(F),
-                            ClUseEscapeAnalysis
-                                ? std::optional<EscapeAnalysisInfo>(
-                                      FAM.getResult<EscapeAnalysis>(F))
-                                : std::nullopt))
-    return PreservedAnalyses::none();
+  // if (TSan.sanitizeFunction(F, FAM.getResult<TargetLibraryAnalysis>(F),
+  //                           ClUseEscapeAnalysis
+  //                               ? std::optional<EscapeAnalysisInfo>(
+  //                                     FAM.getResult<EscapeAnalysis>(F))
+  //                               : std::nullopt))
+  //   return PreservedAnalyses::none();
   return PreservedAnalyses::all();
 }
 
 PreservedAnalyses ModuleThreadSanitizerPass::run(Module &M,
                                                  ModuleAnalysisManager &MAM) {
   if (ClUseEscapeAnalysis)
-    dbgs() << "-- Using new Escape Analysis for Module " << M.getName()
-           << " --\n";
+    dbgs() << "-- Using Escape Analysis for Module " << M.getName() << " --\n";
+  else if (ClUseEscapeAnalysisGlobal)
+    dbgs() << "-- Using Global Escape Analysis for Module " << M.getName() << " --\n";
   else
     dbgs() << "-- Using Capture Tracker for Module " << M.getName() << " --\n";
+
+  if (ClUseEscapeAnalysisGlobal)
+    MAM.getResult<EscapeAnalysisGlobal>(M);
 
   insertModuleCtor(M);
   return PreservedAnalyses::none();
 }
+
 void ThreadSanitizer::initialize(Module &M, const TargetLibraryInfo &TLI) {
   const DataLayout &DL = M.getDataLayout();
   LLVMContext &Ctx = M.getContext();
@@ -447,6 +455,18 @@ bool ThreadSanitizer::addrPointsToConstantData(Value *Addr) {
   return false;
 }
 
+static void compareCaptureAndEA(Instruction *I, Value *Addr, bool IsEscaped) {
+  dbgs() << "Instr: " << *I << "\n";
+  bool IsCaptured = true;
+  if (isa<AllocaInst>(getUnderlyingObject(Addr)))
+    IsCaptured = PointerMayBeCaptured(Addr, true, true);
+
+  if ((IsCaptured) && (!IsEscaped)) {
+    dbgs() << "EscapeAnalysis outperforms CaptureTracking!\n";
+    NumEscapeAnalysisOutperformsCaptureTracking++;
+  }
+}
+
 // Instrumenting some of the accesses may be proven redundant.
 // Currently handled:
 //  - read-before-write (within same BB, no calls between)
@@ -462,7 +482,8 @@ bool ThreadSanitizer::addrPointsToConstantData(Value *Addr) {
 void ThreadSanitizer::chooseInstructionsToInstrument(
     SmallVectorImpl<Instruction *> &Local,
     SmallVectorImpl<InstructionInfo> &All, const DataLayout &DL,
-    const std::optional<EscapeAnalysisInfo> &EAI) {
+    const std::optional<EscapeAnalysisInfo> &EAI,
+    std::optional<EscapeAnalysisGlobalInfo*> EAIGlobal) {
   DenseMap<Value *, size_t> WriteTargets; // Map of addresses to index in All
   // Iterate from the end.
   for (Instruction *I : reverse(Local)) {
@@ -502,25 +523,21 @@ void ThreadSanitizer::chooseInstructionsToInstrument(
     if (EAI.has_value()) {
       const auto EscObjs = EscapeAnalysisInfo::getUnderlyingMayEscObjects(Addr);
       for (const auto *Obj : EscObjs) {
-        ////
-        // Debug
-        auto CompareCaptureAndEA = [=] {
-          LLVM_DEBUG(dbgs() << "Instr: " << *I << "\n");
-          bool IsCaptured = true;
-          if (isa<AllocaInst>(getUnderlyingObject(Addr)))
-            IsCaptured = PointerMayBeCaptured(Addr, true, true);
-
-          const auto IsEscaped = EAI.value().isEscapedForBB(I->getParent(), Obj);
-          if ((IsCaptured == true) && (IsEscaped == false)) {
-            LLVM_DEBUG(dbgs()
-                       << "EscapeAnalysis outperforms CaptureTracking!\n");
-            NumEscapeAnalysisOutperformsCaptureTracking++;
-          }
-        };
-
-        DEBUG_WITH_TYPE("tsan-ea", CompareCaptureAndEA());
-
+        const bool IsEscaped = EAI.value().isEscapedForBB(I->getParent(), Obj);
+        DEBUG_WITH_TYPE("tsan-ea", compareCaptureAndEA(I, Addr, IsEscaped));
         if (!EAI.value().isEscapedForBB(I->getParent(), Obj)) {
+          LLVM_DEBUG(dbgs() << "Omit\n");
+          NumOmittedNonEscaped++;
+          continue;
+        }
+      }
+    } else if (EAIGlobal.has_value()) {
+      const auto EscObjs = EscapeAnalysisInfo::getUnderlyingMayEscObjects(Addr);
+      for (const auto *Obj : EscObjs) {
+        bool IsEscaped = EAIGlobal.value()->isEscapedForBBInFunc(
+          I->getFunction(), I->getParent(), Obj);
+        DEBUG_WITH_TYPE("tsan-ea", compareCaptureAndEA(I, Addr, IsEscaped));
+        if (!IsEscaped) {
           LLVM_DEBUG(dbgs() << "Omit\n");
           NumOmittedNonEscaped++;
           continue;
@@ -569,7 +586,7 @@ void ThreadSanitizer::InsertRuntimeIgnores(Function &F) {
 bool ThreadSanitizer::sanitizeFunction(
     Function &F, const TargetLibraryInfo &TLI,
     const std::optional<EscapeAnalysisInfo> &EAI,
-    std::optional<std::reference_wrapper<EscapeAnalysisGlobalInfo>> EAIGlobal) {
+    std::optional<EscapeAnalysisGlobalInfo*> EAIGlobal) {
   // This is required to prevent instrumenting call to __tsan_init from within
   // the module constructor.
   if (F.getName() == kTsanModuleCtorName)
@@ -616,11 +633,11 @@ bool ThreadSanitizer::sanitizeFunction(
           MemIntrinCalls.push_back(&Inst);
         HasCalls = true;
         chooseInstructionsToInstrument(LocalLoadsAndStores, AllLoadsAndStores,
-                                       DL, EAI);
+                                       DL, EAI, EAIGlobal);
       }
     }
     chooseInstructionsToInstrument(LocalLoadsAndStores, AllLoadsAndStores, DL,
-                                   EAI);
+                                   EAI, EAIGlobal);
   }
 
   // We have collected all loads and stores.

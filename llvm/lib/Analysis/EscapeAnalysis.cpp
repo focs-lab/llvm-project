@@ -813,6 +813,7 @@ AnalysisKey EscapeAnalysisGlobal::Key;
 
 EscapeAnalysisGlobal::Result
 EscapeAnalysisGlobal::run(Module &M, ModuleAnalysisManager &AM) {
+  dbgs() << "Running EscapeAnalysisGlobal::run()\n";
   return EscapeAnalysisGlobalInfo(AM.getResult<CallGraphAnalysis>(M));
 }
 
