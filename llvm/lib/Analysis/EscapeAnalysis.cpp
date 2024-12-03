@@ -163,9 +163,6 @@ bool EscapeAnalysisInfo::isExternalEscapedObject(const Value *V) const {
   if (const auto *CI = dyn_cast<CallInst>(V))
     return CI->getFunctionType()->getReturnType()->isPointerTy();
 
-  if (ArgsEscapes.has_value())
-    return isa<GlobalVariable>(V);
-
   return ((isa<Argument>(V) && V->getType()->isPointerTy()) ||
           isa<GlobalVariable>(V));
 }
@@ -377,6 +374,11 @@ EscapeAnalysisInfo::getEscapeKindForOpnd(const Use &U) const {
         const auto FuncIt = ArgsEscapes->get().find(Callee);
         assert(FuncIt != ArgsEscapes->get().end() &&
                "ArgsEscapes must contain information about called function");
+
+        // If it's variadic function, all arguments after fixed are escaped
+        if (Callee->isVarArg() && (Call->getDataOperandNo(&U) >=
+                                   Callee->getFunctionType()->getNumParams()))
+          return {EscapeKind::MAY_ESCAPE, std::nullopt};
 
         const auto ArgEscIt = FuncIt->second.find(Call->getDataOperandNo(&U));
         assert(ArgEscIt != FuncIt->second.end() &&
@@ -644,11 +646,14 @@ SmallVector<Value *, 8>
 EscapeAnalysisInfo::getUnderlyingMayEscObjects(const Value *V,
                                                const unsigned MaxLookup) {
   SmallVector<Value *, 8> UnderlObjs;
+  LLVM_DEBUG(dbgs() << "getUnderlyingMayEscObjects for " << *V << "\n");
   getUnderlyingObjectsForCodeGenWithoutPHIInvCheck(V, UnderlObjs, MaxLookup);
   LLVM_DEBUG(if (!UnderlObjs.empty()) {
     dbgs() << "\tgetUnderlyingMayEscObjects:";
     for (const auto *Obj : UnderlObjs)
-      dbgs() << "\t\t" << *Obj << "\n"; });
+      dbgs() << "\t\t" << *Obj << "\n"; }
+      else
+      dbgs() << "\tgetUnderlyingMayEscObjects -- empty\n"; );
   return UnderlObjs;
 }
 
@@ -675,7 +680,7 @@ void EscapeAnalysisInfo::printEscapingForBB(const BasicBlock *BB,
 
   OS << "Escaping objects for BB " << BB->getName() << ":\n";
   for (const auto *V : It->second.getEscapedObjs()) {
-    if (isExternalEscapedObject(V))
+    if (isExternalEscapedObject(V) || isa<Argument>(V))
       // I'm not sure, we should not print objects escaping by definition
       // (such as global variables or pointer arguments),
       // but let's omit them for now

@@ -487,7 +487,7 @@ void ThreadSanitizer::chooseInstructionsToInstrument(
   DenseMap<Value *, size_t> WriteTargets; // Map of addresses to index in All
   // Iterate from the end.
   for (Instruction *I : reverse(Local)) {
-    LLVM_DEBUG(dbgs() << "\nchoose I: " << *I << "\n");
+    LLVM_DEBUG(dbgs() << "\nchooseInstructionsToInstrument I: " << *I << "\n");
 
     const bool IsWrite = isa<StoreInst>(*I);
     Value *Addr = IsWrite ? cast<StoreInst>(I)->getPointerOperand()
@@ -521,27 +521,43 @@ void ThreadSanitizer::chooseInstructionsToInstrument(
     }
 
     if (EAI.has_value()) {
-      const auto EscObjs = EscapeAnalysisInfo::getUnderlyingMayEscObjects(Addr);
-      for (const auto *Obj : EscObjs) {
+      bool InstrOmitted = false;
+      for (const auto *Obj :
+           EscapeAnalysisInfo::getUnderlyingMayEscObjects(Addr)) {
+        dbgs() << "check Obj " << *Obj << "\n";
         const bool IsEscaped = EAI.value().isEscapedForBB(I->getParent(), Obj);
         DEBUG_WITH_TYPE("tsan-ea", compareCaptureAndEA(I, Addr, IsEscaped));
-        if (!EAI.value().isEscapedForBB(I->getParent(), Obj)) {
-          LLVM_DEBUG(dbgs() << "Omit\n");
-          NumOmittedNonEscaped++;
-          continue;
+        if (IsEscaped) {
+          InstrOmitted = false;
+          break;
         }
+        InstrOmitted = true;
+      }
+      if (InstrOmitted) {
+        LLVM_DEBUG(dbgs() << "Instruction omitted\n");
+        NumOmittedNonEscaped++;
+        continue;
       }
     } else if (EAIGlobal.has_value()) {
-      const auto EscObjs = EscapeAnalysisInfo::getUnderlyingMayEscObjects(Addr);
-      for (const auto *Obj : EscObjs) {
-        bool IsEscaped = EAIGlobal.value()->isEscapedForBBInFunc(
+      bool InstrOmitted = false;
+      for (const auto *Obj :
+           EscapeAnalysisInfo::getUnderlyingMayEscObjects(Addr)) {
+        LLVM_DEBUG(dbgs() << "EscapeAnalysisInfo " << *Obj << " -- ");
+        const bool IsEscaped = EAIGlobal.value()->isEscapedForBBInFunc(
           I->getFunction(), I->getParent(), Obj);
         DEBUG_WITH_TYPE("tsan-ea", compareCaptureAndEA(I, Addr, IsEscaped));
-        if (!IsEscaped) {
-          LLVM_DEBUG(dbgs() << "Omit\n");
-          NumOmittedNonEscaped++;
-          continue;
+        if (IsEscaped) {
+          LLVM_DEBUG(dbgs() << "escaped\n");
+          InstrOmitted = false;
+          break;
         }
+        LLVM_DEBUG(dbgs() << "not escaped\n");
+        InstrOmitted = true;
+      }
+      if (InstrOmitted) {
+        LLVM_DEBUG(dbgs() << "Instruction omitted\n");
+        NumOmittedNonEscaped++;
+        continue;
       }
     } else {
       if (isa<AllocaInst>(getUnderlyingObject(Addr))) {
@@ -587,6 +603,12 @@ bool ThreadSanitizer::sanitizeFunction(
     Function &F, const TargetLibraryInfo &TLI,
     const std::optional<EscapeAnalysisInfo> &EAI,
     std::optional<EscapeAnalysisGlobalInfo*> EAIGlobal) {
+
+  LLVM_DEBUG(dbgs() <<
+    "\n%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%\n"
+    "%%%%%%%%%%%%%%%%%%%% Func " << F.getName() << "\t%%%%%%%%%%%%%%%%%%%%%%\n"
+    "%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%\n");
+
   // This is required to prevent instrumenting call to __tsan_init from within
   // the module constructor.
   if (F.getName() == kTsanModuleCtorName)
