@@ -220,7 +220,7 @@ EscapeAnalysisInfo::EscapeAnalysisInfo(
 
 /// Compute the resulting escape state for BB
 void EscapeAnalysisInfo::compBBEscapeState(const BasicBlock *BB,
-                                           EscapeState &ES) const {
+                                           EscapeState &ES) {
   for (const Instruction &I : *BB) {
     LLVM_DEBUG(dbgs() << "\nI " << I << "\n");
     for (const Use &Opnd : I.operands()) {
@@ -241,6 +241,13 @@ void EscapeAnalysisInfo::compBBEscapeState(const BasicBlock *BB,
 
       if (EscKind == EscapeKind::MAY_ESCAPE) {
         LLVM_DEBUG(dbgs() << "\t-- MAY_ESCAPE --\n");
+        if ((I.getOpcode() == Instruction::Ret) && (!IsRetEscape)) {
+          for (const Value *EO : UnderlyingObjs) {
+            if (isEscapedForFunc(EO))
+              IsRetEscape = true;
+          }
+        }
+
         for (const Value *EO : UnderlyingObjs) {
           LLVM_DEBUG(dbgs() << "\t\taddEscapingObject: " << *EO << "\n");
           ES.addEscapingObject(EO);
@@ -375,7 +382,7 @@ EscapeAnalysisInfo::getEscapeKindForOpnd(const Use &U) const {
         assert(FuncIt != ArgsEscapes->get().end() &&
                "ArgsEscapes must contain information about called function");
 
-        // If it's variadic function, all arguments after fixed are escaped
+        // If it's variadic function, all arguments after fixed ones are escaped
         if (Callee->isVarArg() && (Call->getDataOperandNo(&U) >=
                                    Callee->getFunctionType()->getNumParams()))
           return {EscapeKind::MAY_ESCAPE, std::nullopt};
@@ -488,14 +495,21 @@ EscapeAnalysisInfo::getEscapeKindForOpnd(const Use &U) const {
 
   case Instruction::Ret: {
     LLVM_DEBUG(dbgs() << " -- Ret\n");
+    // If not return pointer, means that's not escape
     if (!U->getType()->isPointerTy())
       return {EscapeKind::NO_ESCAPE, std::nullopt};
+
+    // Returning null pointer is not escape
+    const Value *RetVal = U.get();
+    if (isa<ConstantPointerNull>(RetVal))
+      return {EscapeKind::NO_ESCAPE, std::nullopt};
+
     return {EscapeKind::MAY_ESCAPE, std::nullopt};
   }
   default:
     LLVM_DEBUG(dbgs() << " -- Default\n");
     return {EscapeKind::NO_ESCAPE, std::nullopt};
-    // Something else - be conservative and say it is escaped.
+    // Think, maybe we behave too aggressive, because previous logic was
     // return {EscapeKind::MAY_ESCAPE, std::nullopt};
   }
 }

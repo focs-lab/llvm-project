@@ -38,16 +38,21 @@ public:
   void print(raw_ostream &OS) const;
 
 private:
-  /// Types of object escaping states
+  // Types of object escaping states
   enum class EscapeKind { NO_ESCAPE, MAY_ESCAPE, MAY_ALIASING };
   static constexpr unsigned GetUnderlObjMaxLookup = 20;
 
   // Reference to the function being analyzed.
   const Function &AnalyzedFunc;
+
+  // Resulting type: list of escaping objects
   using EscapedObjectsTy = DenseSet<const Value *>;
 
   // IPA information about arguments escapes
   const std::optional<std::reference_wrapper<ArgumentEscapesMap>> ArgsEscapes;
+
+  // Whether return value is escaping or not (need it in IPA)
+  bool IsRetEscape = false;
 
   struct EscapeState;
 
@@ -97,7 +102,7 @@ private:
     AliasRelationTy AliasRel;
 
     void getAliasSubtreeAsList(const Value *Obj,
-                                SmallPtrSetImpl<const Value *> &ConcerningObjs);
+                               SmallPtrSetImpl<const Value *> &ConcerningObjs);
 
     /// Merge two Alias relations into one
     void mergeAliases(const EscapeState &OtherES,
@@ -111,7 +116,7 @@ private:
   DenseMap<const BasicBlock *, EscapeState> BBEscapeStates;
 
   /// Compute the resulting escape state for BB
-  void compBBEscapeState(const BasicBlock *BB, EscapeState &ES) const;
+  void compBBEscapeState(const BasicBlock *BB, EscapeState &ES);
 
   /// Merges the escape analysis states from multiple incoming blocks.
   EscapeState mergePredEscapeStates(const BasicBlock *BB);
@@ -163,7 +168,7 @@ public:
   bool isEscapedForBB(const BasicBlock *BB, const Value *V) const;
 
   static bool isLocalFunc(const Function *F) {
-   return F && !F->isDeclaration() && F->isDefinitionExact();
+    return F && !F->isDeclaration() && F->isDefinitionExact();
   }
 };
 
