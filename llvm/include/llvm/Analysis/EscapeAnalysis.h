@@ -139,6 +139,7 @@ private:
   static bool structContainsPointerType(const Type *Ty);
 
   /// Escaping state for the function is the escape state for Exit BB
+  /// TODO: remove
   const EscapedObjectsTy &getFuncEscState() const;
 
   /// Custom implementation of getUnderlyingObject infrastracture (taken and
@@ -161,7 +162,11 @@ public:
 
   /// Is Value V is escaping somewhere in the function
   bool isEscapedForFunc(const Value *V) const {
-    return getFuncEscState().contains(V);
+    for (const auto &BB: AnalyzedFunc)
+      if (isEscapedForBB(&BB, V))
+        return true;
+    return false;
+    // return getFuncEscState().contains(V);
   }
 
   /// Is Value V is escaping in some path from Entry to BB?

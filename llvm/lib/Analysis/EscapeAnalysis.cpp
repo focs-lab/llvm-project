@@ -163,6 +163,9 @@ bool EscapeAnalysisInfo::isExternalEscapedObject(const Value *V) const {
   if (const auto *CI = dyn_cast<CallInst>(V))
     return CI->getFunctionType()->getReturnType()->isPointerTy();
 
+  if (ArgsEscapes.has_value())
+    return isa<GlobalVariable>(V);
+
   return ((isa<Argument>(V) && V->getType()->isPointerTy()) ||
           isa<GlobalVariable>(V));
 }
@@ -241,12 +244,12 @@ void EscapeAnalysisInfo::compBBEscapeState(const BasicBlock *BB,
 
       if (EscKind == EscapeKind::MAY_ESCAPE) {
         LLVM_DEBUG(dbgs() << "\t-- MAY_ESCAPE --\n");
-        if ((I.getOpcode() == Instruction::Ret) && (!IsRetEscape)) {
-          for (const Value *EO : UnderlyingObjs) {
+        // If that's return instruction, we should check if it can return
+        // a pointer to some external object
+        if ((I.getOpcode() == Instruction::Ret) && (!IsRetEscape))
+          for (const Value *EO: UnderlyingObjs)
             if (isEscapedForFunc(EO))
               IsRetEscape = true;
-          }
-        }
 
         for (const Value *EO : UnderlyingObjs) {
           LLVM_DEBUG(dbgs() << "\t\taddEscapingObject: " << *EO << "\n");
@@ -500,8 +503,7 @@ EscapeAnalysisInfo::getEscapeKindForOpnd(const Use &U) const {
       return {EscapeKind::NO_ESCAPE, std::nullopt};
 
     // Returning null pointer is not escape
-    const Value *RetVal = U.get();
-    if (isa<ConstantPointerNull>(RetVal))
+    if (isa<ConstantPointerNull>(U.get()))
       return {EscapeKind::NO_ESCAPE, std::nullopt};
 
     return {EscapeKind::MAY_ESCAPE, std::nullopt};
@@ -673,7 +675,7 @@ EscapeAnalysisInfo::getUnderlyingMayEscObjects(const Value *V,
 
 /// Is Value V is escaping in some path from Entry to BB?
 bool EscapeAnalysisInfo::isEscapedForBB(const BasicBlock *BB,
-                                         const Value *V) const {
+                                        const Value *V) const {
   if (isExternalEscapedObject(V))
     return true;
 
@@ -694,7 +696,8 @@ void EscapeAnalysisInfo::printEscapingForBB(const BasicBlock *BB,
 
   OS << "Escaping objects for BB " << BB->getName() << ":\n";
   for (const auto *V : It->second.getEscapedObjs()) {
-    if (isExternalEscapedObject(V) || isa<Argument>(V))
+    // if (isExternalEscapedObject(V) || isa<Argument>(V))
+    if (isExternalEscapedObject(V))
       // I'm not sure, we should not print objects escaping by definition
       // (such as global variables or pointer arguments),
       // but let's omit them for now
@@ -805,7 +808,7 @@ EscapeAnalysisGlobalInfo::EscapeAnalysisGlobalInfo(CallGraph &CG) {
       // then add arguments escape info
       if (!ArgsEscapes.count(F)) {
         for (const auto &Arg : F->args()) {
-          LLVM_DEBUG(dbgs() << "\t@@@@@@@@@ ESC ARG " << Arg << " -- "
+          LLVM_DEBUG(dbgs() << "@@@@@@@@@ ESC ARG " << Arg << " -- "
                             << Iter->second.isEscapedForFunc(&Arg) << "\n";);
           unsigned ArgNo = Arg.getArgNo();
           ArgsEscapes[F][ArgNo] = Iter->second.isEscapedForFunc(&Arg);
