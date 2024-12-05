@@ -63,9 +63,13 @@ void EscapeAnalysisInfo::EscapeState::addAlias(const Value *Alias,
   // If instruction creates an alias to the object which has escaped before
   // or escapes "by definition" (e.g. pointer function argument,
   // global pointer), then that's not just aliasing, but escaping as well
-  if (EAI->isExternalEscapedObject(PointeeValue) ||
-      EscapedObjects.contains(PointeeValue))
-    addEscapingObject(Alias);
+  const auto EscReason = EAI->isExternalEscapedObject(PointeeValue);
+  if (EscReason.any())
+    addEscapingObject(PointeeValue, EscReason);
+
+  if (const auto It = EscapedObjects.find(PointeeValue);
+    It != EscapedObjects.end())
+    addEscapingObject(Alias, It->second);
 
   // Considering transitivity: recursively add new alias to all existing aliases
   // of PointeeValue
@@ -118,30 +122,55 @@ bool EscapeAnalysisInfo::EscapeState::operator==(const EscapeState &ES) const {
 }
 
 void EscapeAnalysisInfo::EscapeState::addEscapingObject(
-    const Value *EscapingObject) {
-  SmallPtrSet<const Value *, 8> EscObjList;
-  getAliasSubtreeAsList(EscapingObject, EscObjList);
+    const Value *EscapingObject, const EscReasonTy EscReason) {
+  SmallPtrSet<const Value *, 8> EscObjAliases;
+  getAliasSubtreeAsList(EscapingObject, EscObjAliases);
   DEBUG_WITH_TYPE(DEEP_DEBUG_TYPE,
-    for (auto *V: EscObjList)
+    for (auto *V: EscObjAliases)
       dbgs() << "Add escaping object: " << *V << "\n";
     dbgs() << "%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%\n";);
 
-  EscapedObjects.insert(EscObjList.begin(), EscObjList.end());
+  // EscapedObjects.insert(EscObjList.begin(), EscObjList.end());
+  for (auto It = EscObjAliases.begin(); It != EscObjAliases.end(); ++It)
+    EscapedObjects.insert({*It, EscReason});
 }
 
 void EscapeAnalysisInfo::EscapeState::getAliasSubtreeAsList(
-    const Value *Obj, SmallPtrSetImpl<const Value *> &ConcerningObjs) {
-  if (ConcerningObjs.contains(Obj))
+    const Value *Obj, SmallPtrSetImpl<const Value *> &AliasList) {
+  if (AliasList.contains(Obj))
     return;
 
-  ConcerningObjs.insert(Obj);
+  AliasList.insert(Obj);
 
   // Suppose we add as escaping an object which is alias of some other objects.
   // Then all these aliases also escape!
   if (const auto Aliases = AliasRel.getAliases(Obj); Aliases.has_value())
     for (const Value *Alias : Aliases.value())
-      getAliasSubtreeAsList(Alias, ConcerningObjs);
+      getAliasSubtreeAsList(Alias, AliasList);
 }
+
+// Try refactored version:
+// SmallPtrSetImpl<const Value *> EscapeAnalysisInfo::EscapeState::getAliasSubtree(const Value *Obj) {
+//   SmallPtrSetImpl<const Value *> ConcerningObjs;
+//   std::stack<const Value *> toProcess;
+//
+//   toProcess.push(Obj);
+//
+//   while (!toProcess.empty()) {
+//     const Value *current = toProcess.top();
+//     toProcess.pop();
+//
+//     if (ConcerningObjs.insert(current).second) { // insert returns a pair, second is true if insertion took place
+//       if (const auto Aliases = AliasRel.getAliases(current); Aliases.has_value()) {
+//         for (const Value *Alias : Aliases.value()) {
+//           toProcess.push(Alias);
+//         }
+//       }
+//     }
+//   }
+//
+//   return ConcerningObjs;
+// }
 
 void EscapeAnalysisInfo::EscapeState::mergeAliases(
     const EscapeState &OtherES, const EscapeAnalysisInfo *EAI) {
@@ -159,15 +188,21 @@ void EscapeAnalysisInfo::EscapeState::mergeEscapedObjects(
                         OtherES.EscapedObjects.end());
 }
 
-bool EscapeAnalysisInfo::isExternalEscapedObject(const Value *V) const {
-  if (const auto *CI = dyn_cast<CallInst>(V))
-    return CI->getFunctionType()->getReturnType()->isPointerTy();
+EscapeAnalysisInfo::EscReasonTy EscapeAnalysisInfo::isExternalEscapedObject(
+    const Value *V) const {
+  if (const auto *CI = dyn_cast<CallInst>(V);
+    CI && CI->getFunctionType()->getReturnType()->isPointerTy()) {
+    return EscReasonBits::PASSING_TO_CALL;
+  }
+
+  if (isa<GlobalVariable>(V))
+    return EscReasonBits::GPTR_ALIASING;
 
   if (ArgsEscapes.has_value())
-    return isa<GlobalVariable>(V);
+    return 0;
 
-  return ((isa<Argument>(V) && V->getType()->isPointerTy()) ||
-          isa<GlobalVariable>(V));
+  return isa<Argument>(V) && V->getType()->isPointerTy()
+             ? EscReasonBits::PTR_ARG_ALIASING : 0;
 }
 
 //===----------------------------------------------------------------------===//
@@ -233,23 +268,22 @@ void EscapeAnalysisInfo::compBBEscapeState(const BasicBlock *BB,
         else
           dbgs() << *Opnd.get() << "\t";);
 
-      const auto EscInfo = getEscapeKindForOpnd(Opnd);
+      const auto [EscKind, EscDetails] = getEscapeKindForOpnd(Opnd);
 
-      if (EscInfo.EscKind == EscKindTy::NO_ESCAPE)
+      if (EscKind == EscKindTy::NO_ESCAPE)
         continue;
 
-      assert(EscInfo.EscDetails.has_value() && "EscDetails must be set");
-      const auto &EscDetails = EscInfo.EscDetails.value();
+      assert(EscDetails.has_value() && "EscDetails must be set");
 
       const auto UnderlyingObjs = getUnderlyingMayEscObjects(Opnd.get());
       if (UnderlyingObjs.empty())
         continue;
 
-      if (EscInfo.EscKind == EscKindTy::MAY_ESCAPE) {
+      if (EscKind == EscKindTy::MAY_ESCAPE) {
         LLVM_DEBUG(dbgs() << "\t-- MAY_ESCAPE --\n");
-        assert(std::holds_alternative<EscReasonTy>(EscDetails) &&
+        assert(std::holds_alternative<EscReasonTy>(EscDetails.value()) &&
           "getEscapeKindForOpnd must return escape reason");
-        // const auto EscReason = std::get<EscReasonTy>(EscDetails);
+        const auto EscReason = std::get<EscReasonTy>(EscDetails.value());
 
         // If that's return instruction, we should check if it can return
         // a pointer to some external object
@@ -260,13 +294,15 @@ void EscapeAnalysisInfo::compBBEscapeState(const BasicBlock *BB,
 
         for (const Value *EO : UnderlyingObjs) {
           LLVM_DEBUG(dbgs() << "\t\taddEscapingObject: " << *EO << "\n");
-          ES.addEscapingObject(EO);
+          ES.addEscapingObject(EO, EscReason);
         }
       } else {
-        assert(EscInfo.EscKind == EscKindTy::MAY_ALIASING);
-        assert((std::holds_alternative<SmallVector<Value *, 8>>(EscDetails) &&
-               "getEscapeKindForOpnd must return alias list"));
-        const auto AliasList = std::get<SmallVector<Value *, 8>>(EscDetails);
+        assert(EscKind == EscKindTy::MAY_ALIASING);
+        assert((std::holds_alternative<SmallVector<Value *, 8>>(
+          EscDetails.value()) &&
+          "getEscapeKindForOpnd must return alias list"));
+        const auto AliasList = std::get<SmallVector<Value *, 8> >(
+            EscDetails.value());
 
         LLVM_DEBUG(dbgs() << "\t-- ALIASING --\n";
                    for (const auto *A : AliasList)
@@ -325,7 +361,7 @@ EscapeAnalysisInfo::getEscapeKindForOpnd(const Use &U) const {
   case Instruction::Invoke: {
     LLVM_DEBUG(dbgs() << " -- Call/Invoke\n");
     // This object is already escaped since it's external
-    if (isExternalEscapedObject(U.get()))
+    if (isExternalEscapedObject(U.get()).any())
       return {EscKindTy::NO_ESCAPE, std::nullopt};
 
     const auto *Call = cast<CallBase>(I);
@@ -349,18 +385,20 @@ EscapeAnalysisInfo::getEscapeKindForOpnd(const Use &U) const {
     // load and store to.
     if (const auto *MI = dyn_cast<MemIntrinsic>(Call)) {
       if (MI->isVolatile())
-        return {EscKindTy::MAY_ESCAPE, std::nullopt};
+        return {EscKindTy::MAY_ESCAPE, EscReasonTy(EscReasonBits::VOLATILE)};
 
       const auto *Src = MI->getArgOperand(1);
-      const auto DstObjs = getUnderlyingMayEscObjects(MI->getArgOperand(0));
 
       // Considering llvm.memcpy intrinsic
       if ((MI->getIntrinsicID() == Intrinsic::memcpy) && (Src == U.get())) {
         // Check whether the source argument is a struct containing pointers
         if (const auto *Alloca = dyn_cast<AllocaInst>(U.get())) {
           if (const Type *StructTy = Alloca->getAllocatedType();
-              StructTy && structContainsPointerType(StructTy))
+              StructTy && structContainsPointerType(StructTy)) {
+            const auto DstObjs = getUnderlyingMayEscObjects(
+                MI->getArgOperand(0));
             return {EscKindTy::MAY_ALIASING, DstObjs};
+          }
         }
       }
     }
@@ -382,9 +420,10 @@ EscapeAnalysisInfo::getEscapeKindForOpnd(const Use &U) const {
       // If that's IPA, passing to calls is not escape
       if (ArgsEscapes.has_value()) {
         const Function *Callee = Call->getCalledFunction();
-        if (!isLocalFunc(Callee))
+        if (!isLocalFunc(Callee)) {
           // If IPA, then argument escapes only in a Call of non-local function
-          return {EscKindTy::MAY_ESCAPE, std::nullopt};
+          return {EscKindTy::MAY_ESCAPE, EscReasonBits::PTR_ARG_ALIASING};
+        }
 
         // If called function is local, find argument information in ArgsEscapes
         // provided by IPA callgraph traversal
@@ -401,10 +440,10 @@ EscapeAnalysisInfo::getEscapeKindForOpnd(const Use &U) const {
         assert(ArgEscIt != FuncIt->second.end() &&
                "ArgEscapes must contain information about all arguments");
         if (ArgEscIt->second)
-          return {EscKindTy::MAY_ESCAPE, std::nullopt};
+          return {EscKindTy::MAY_ESCAPE, EscReasonBits::PTR_ARG_ALIASING};
       } else {
         // If not IPA, each call is the escape for each pointer-typed argument
-        return {EscKindTy::MAY_ESCAPE, std::nullopt};
+        return {EscKindTy::MAY_ESCAPE, EscReasonBits::PTR_ARG_ALIASING};
       }
     }
     return {EscKindTy::NO_ESCAPE, std::nullopt};
@@ -413,13 +452,13 @@ EscapeAnalysisInfo::getEscapeKindForOpnd(const Use &U) const {
     LLVM_DEBUG(dbgs() << " -- Load\n");
     // Volatile loads make the address observable.
     if (cast<LoadInst>(I)->isVolatile())
-      return {EscKindTy::MAY_ESCAPE, std::nullopt};
+      return {EscKindTy::MAY_ESCAPE, EscReasonBits::VOLATILE};
     return {EscKindTy::NO_ESCAPE, std::nullopt};
   case Instruction::Store: {
     LLVM_DEBUG(dbgs() << " -- Store\n");
     // Volatile stores make the address observable.
     if (cast<StoreInst>(I)->isVolatile())
-      return {EscKindTy::MAY_ESCAPE, std::nullopt};
+      return {EscKindTy::MAY_ESCAPE, EscReasonBits::VOLATILE};
 
     if (U.getOperandNo() != 0)
       return {EscKindTy::NO_ESCAPE, std::nullopt};
@@ -435,7 +474,7 @@ EscapeAnalysisInfo::getEscapeKindForOpnd(const Use &U) const {
     // Store to GV - escape
     for (const auto *Obj : DstObjs)
       if (isa<GlobalVariable>(Obj))
-        return {EscKindTy::MAY_ESCAPE, std::nullopt};
+        return {EscKindTy::MAY_ESCAPE, EscReasonBits::GPTR_ALIASING};
 
     return {EscKindTy::MAY_ALIASING, DstObjs};
   }
@@ -448,7 +487,7 @@ EscapeAnalysisInfo::getEscapeKindForOpnd(const Use &U) const {
     // Volatile stores make the address observable.
     const auto *ARMWI = cast<AtomicRMWInst>(I);
     if (U.getOperandNo() == 1 || ARMWI->isVolatile())
-      return {EscKindTy::MAY_ESCAPE, std::nullopt};
+      return {EscKindTy::MAY_ESCAPE, EscReasonBits::VOLATILE};
     return {EscKindTy::NO_ESCAPE, std::nullopt};
   }
   case Instruction::AtomicCmpXchg: {
@@ -460,7 +499,7 @@ EscapeAnalysisInfo::getEscapeKindForOpnd(const Use &U) const {
     // Volatile stores make the address observable.
     if (const auto *ACXI = cast<AtomicCmpXchgInst>(I);
         U.getOperandNo() == 1 || U.getOperandNo() == 2 || ACXI->isVolatile())
-      return {EscKindTy::MAY_ESCAPE, std::nullopt};
+      return {EscKindTy::MAY_ESCAPE, EscReasonBits::OTHER};
     return {EscKindTy::NO_ESCAPE, std::nullopt};
   }
   case Instruction::GetElementPtr: {
@@ -468,7 +507,7 @@ EscapeAnalysisInfo::getEscapeKindForOpnd(const Use &U) const {
     // AA does not support pointers of vectors, so GEP vector splats need to
     // be considered as captures.
     if (I->getType()->isVectorTy())
-      return {EscKindTy::MAY_ESCAPE, std::nullopt};
+      return {EscKindTy::MAY_ESCAPE, EscReasonBits::OTHER};
 
     // GEP itself is not escape or alias
     return {EscKindTy::NO_ESCAPE, std::nullopt};
@@ -478,7 +517,7 @@ EscapeAnalysisInfo::getEscapeKindForOpnd(const Use &U) const {
     const unsigned Idx = U.getOperandNo();
     const unsigned OtherIdx = 1 - Idx;
     if (const auto *CPN =
-            dyn_cast<ConstantPointerNull>(I->getOperand(OtherIdx))) {
+        dyn_cast<ConstantPointerNull>(I->getOperand(OtherIdx))) {
       // Don't count comparisons of a no-alias return value against null as
       // captures. This allows us to ignore comparisons of malloc results
       // with null, for example.
@@ -513,7 +552,7 @@ EscapeAnalysisInfo::getEscapeKindForOpnd(const Use &U) const {
     if (isa<ConstantPointerNull>(U.get()))
       return {EscKindTy::NO_ESCAPE, std::nullopt};
 
-    return {EscKindTy::MAY_ESCAPE, std::nullopt};
+    return {EscKindTy::MAY_ESCAPE, EscReasonBits::RET_PTR};
   }
   default:
     LLVM_DEBUG(dbgs() << " -- Default\n");
@@ -683,7 +722,7 @@ EscapeAnalysisInfo::getUnderlyingMayEscObjects(const Value *V,
 /// Is Value V is escaping in some path from Entry to BB?
 bool EscapeAnalysisInfo::isEscapedForBB(const BasicBlock *BB,
                                         const Value *V) const {
-  if (isExternalEscapedObject(V))
+  if (isExternalEscapedObject(V).any())
     return true;
 
   const auto FoundIt = BBEscapeStates.find(BB);
@@ -704,7 +743,7 @@ void EscapeAnalysisInfo::printEscapingForBB(const BasicBlock *BB,
   OS << "Escaping objects for BB " << BB->getName() << ":\n";
   for (const auto &V : It->second.getEscapedObjs()) {
     // if (isExternalEscapedObject(V) || isa<Argument>(V))
-    if (isExternalEscapedObject(V.first))
+    if (isExternalEscapedObject(V.first).any())
       // I'm not sure, we should not print objects escaping by definition
       // (such as global variables or pointer arguments),
       // but let's omit them for now

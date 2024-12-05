@@ -49,17 +49,17 @@ private:
   const Function &AnalyzedFunc;
 
   // Reasons of escaping
-  enum class EscReasonBits {
-    GLOBAL_PTR = 1,
+  enum EscReasonBits {
+    GPTR_ALIASING = 1,
     PTR_ARG_ALIASING = 1 << 1,
     PASSING_TO_CALL = 1 << 2,
     RET_PTR = 1 << 3,
-    OTHER = 1 << 4,
-    INVALID = 1 << 5
+    VOLATILE = 1 << 4,
+    OTHER = 1 << 5,
+    INVALID = 1 << 6
   };
 
   using EscReasonTy = std::bitset<6>;
-  using EscapeTy = std::pair<const Value *, EscReasonTy>;
 
   // Resulting type: list of escaping objects
   using EscapedObjectsTy = DenseMap<const Value *, EscReasonTy>;
@@ -82,7 +82,7 @@ private:
     DenseMap<const Value *, AliasListTy> AliasMap;
 
   public:
-    /// Get list of aliases for the object a
+    /// Traverse the (implicit) tree of aliases and get the list of aliases
     std::optional<AliasListTy> getAliases(const Value *V) const;
 
     /// We need it to check if something changed in the data-flow analysis
@@ -99,7 +99,7 @@ private:
 
     /// Make list of escaping object + its aliases, and add them to the list
     /// of escaping object
-    void addEscapingObject(const Value *EscapingObject);
+    void addEscapingObject(const Value *EscapingObject, EscReasonTy EscReason);
 
     void addAlias(const Value *Alias, const Value *PointeeValue,
                   const EscapeAnalysisInfo *EAI);
@@ -121,7 +121,7 @@ private:
     AliasRelationTy AliasRel;
 
     void getAliasSubtreeAsList(const Value *Obj,
-                               SmallPtrSetImpl<const Value *> &ConcerningObjs);
+                               SmallPtrSetImpl<const Value *> &AliasList);
 
     /// Merge two Alias relations into one
     void mergeAliases(const EscapeState &OtherES,
@@ -131,14 +131,6 @@ private:
     void mergeEscapedObjects(const EscapeState &OtherES);
   };
 
-  bool hasEscapeReason(EscReasonTy Reasons, EscReasonBits Reason) {
-    return Reasons.test(static_cast<size_t>(Reason));
-  }
-
-  void setEscapeReason(EscReasonTy &Reasons, EscReasonBits Reason) {
-    Reasons.set(static_cast<size_t>(Reason));
-  }
-
   /// Compute the resulting escape state for BB
   void compBBEscapeState(const BasicBlock *BB, EscapeState &ES);
 
@@ -147,13 +139,13 @@ private:
 
   /// Check if that's the object is "already escaped":
   /// e.g. pointer function argument or global variable.
-  bool isExternalEscapedObject(const Value *V) const;
+  EscReasonTy isExternalEscapedObject(const Value *V) const;
 
   /// Determine what kind of escape behaviour V may exhibit.
   struct EscInfoTy {
     EscKindTy EscKind;
     std::optional<std::variant<EscReasonTy, SmallVector<Value *, 8>>>
-        EscDetails;
+        EscDetails = std::nullopt;
   };
 
   EscInfoTy getEscapeKindForOpnd(const Use &U) const;
