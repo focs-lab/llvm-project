@@ -60,6 +60,15 @@ private:
   };
 
   using EscReasonTy = std::bitset<6>;
+  void printEscReason(EscReasonTy EscReason) {
+    if (EscReason[0]) dbgs() << "GPTR_ALIASING ";
+    if (EscReason[1]) dbgs() << "PTR_ARG_ALIASING ";
+    if (EscReason[2]) dbgs() << "PASSING_TO_CALL ";
+    if (EscReason[3]) dbgs() << "RET_PTR ";
+    if (EscReason[4]) dbgs() << "VOLATILE ";
+    if (EscReason[5]) dbgs() << "OTHER ";
+    dbgs() << "\n";
+  }
 
   // Resulting type: list of escaping objects
   using EscapedObjectsTy = DenseMap<const Value *, EscReasonTy>;
@@ -148,6 +157,8 @@ private:
         EscDetails = std::nullopt;
   };
 
+  /// Determine what kind of escape behaviour V may exhibit, return
+  /// escape reason and list of aliases if applicable.
   EscInfoTy getEscapeKindForOpnd(const Use &U) const;
 
   /// Print escaped objects in some path from Entry to BB

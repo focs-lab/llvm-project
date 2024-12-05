@@ -63,10 +63,11 @@ void EscapeAnalysisInfo::EscapeState::addAlias(const Value *Alias,
   // If instruction creates an alias to the object which has escaped before
   // or escapes "by definition" (e.g. pointer function argument,
   // global pointer), then that's not just aliasing, but escaping as well
-  const auto EscReason = EAI->isExternalEscapedObject(PointeeValue);
-  if (EscReason.any())
+  if (const auto EscReason = EAI->isExternalEscapedObject(PointeeValue);
+      EscReason.any())
     addEscapingObject(PointeeValue, EscReason);
 
+  // If pointee object is escaped (as observed from previous analysis)
   if (const auto It = EscapedObjects.find(PointeeValue);
     It != EscapedObjects.end())
     addEscapingObject(Alias, It->second);
@@ -77,7 +78,8 @@ void EscapeAnalysisInfo::EscapeState::addAlias(const Value *Alias,
     for (const Value *ExistingAlias : ExistAliases.value())
       addAlias(Alias, ExistingAlias, EAI);
 
-  // FIXME: check condition
+  // This is alias symmetry part: if Alias --> Pointee, then Pointee --> Alias
+  // Need to recheck it.
   if (isa<AllocaInst>(Alias) ||
       (isa<Argument>(Alias) && !Alias->getType()->isPointerTy()))
     addAlias(PointeeValue, Alias, EAI);
@@ -130,9 +132,15 @@ void EscapeAnalysisInfo::EscapeState::addEscapingObject(
       dbgs() << "Add escaping object: " << *V << "\n";
     dbgs() << "%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%\n";);
 
-  // EscapedObjects.insert(EscObjList.begin(), EscObjList.end());
-  for (auto It = EscObjAliases.begin(); It != EscObjAliases.end(); ++It)
-    EscapedObjects.insert({*It, EscReason});
+  for (auto AliasIt = EscObjAliases.begin(); AliasIt != EscObjAliases.end(); ++AliasIt) {
+    if (const auto EscObjIt = EscapedObjects.find(*AliasIt);
+      EscObjIt != EscapedObjects.end()) {
+      // Object is already escaped - add the escape reason
+      EscObjIt->second |= EscReason;
+    } else { // Object is not escaped before - add it
+      EscapedObjects.insert({*AliasIt, EscReason});
+    }
+  }
 }
 
 void EscapeAnalysisInfo::EscapeState::getAliasSubtreeAsList(
@@ -349,7 +357,8 @@ EscapeAnalysisInfo::getFuncEscState() const {
   return It->second.getEscapedObjs();
 }
 
-/// Determine what kind of escape behaviour V may exhibit.
+/// Determine what kind of escape behaviour V may exhibit, return
+/// escape reason and list of aliases if applicable.
 EscapeAnalysisInfo::EscInfoTy
 EscapeAnalysisInfo::getEscapeKindForOpnd(const Use &U) const {
   const auto *I = dyn_cast<Instruction>(U.getUser());
