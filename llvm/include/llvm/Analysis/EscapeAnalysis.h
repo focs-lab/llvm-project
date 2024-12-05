@@ -19,6 +19,9 @@
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/PassManager.h"
 
+#include <bitset>
+#include <variant>
+
 namespace llvm {
 /// This is the implementation of simple escape analysis
 
@@ -39,14 +42,27 @@ public:
 
 private:
   // Types of object escaping states
-  enum class EscapeKind { NO_ESCAPE, MAY_ESCAPE, MAY_ALIASING };
+  enum class EscKindTy { NO_ESCAPE, MAY_ESCAPE, MAY_ALIASING };
   static constexpr unsigned GetUnderlObjMaxLookup = 20;
 
   // Reference to the function being analyzed.
   const Function &AnalyzedFunc;
 
+  // Reasons of escaping
+  enum class EscReasonBits {
+    GLOBAL_PTR = 1,
+    PTR_ARG_ALIASING = 1 << 1,
+    PASSING_TO_CALL = 1 << 2,
+    RET_PTR = 1 << 3,
+    OTHER = 1 << 4,
+    INVALID = 1 << 5
+  };
+
+  using EscReasonTy = std::bitset<6>;
+  using EscapeTy = std::pair<const Value *, EscReasonTy>;
+
   // Resulting type: list of escaping objects
-  using EscapedObjectsTy = DenseSet<const Value *>;
+  using EscapedObjectsTy = DenseMap<const Value *, EscReasonTy>;
 
   // IPA information about arguments escapes
   const std::optional<std::reference_wrapper<ArgumentEscapesMap>> ArgsEscapes;
@@ -55,6 +71,9 @@ private:
   bool IsRetEscape = false;
 
   struct EscapeState;
+
+  /// Map of basic blocks to their escape analysis states.
+  DenseMap<const BasicBlock *, EscapeState> BBEscapeStates;
 
   class AliasRelationTy {
     friend struct EscapeState;
@@ -112,8 +131,13 @@ private:
     void mergeEscapedObjects(const EscapeState &OtherES);
   };
 
-  /// Map of basic blocks to their escape analysis states.
-  DenseMap<const BasicBlock *, EscapeState> BBEscapeStates;
+  bool hasEscapeReason(EscReasonTy Reasons, EscReasonBits Reason) {
+    return Reasons.test(static_cast<size_t>(Reason));
+  }
+
+  void setEscapeReason(EscReasonTy &Reasons, EscReasonBits Reason) {
+    Reasons.set(static_cast<size_t>(Reason));
+  }
 
   /// Compute the resulting escape state for BB
   void compBBEscapeState(const BasicBlock *BB, EscapeState &ES);
@@ -126,8 +150,13 @@ private:
   bool isExternalEscapedObject(const Value *V) const;
 
   /// Determine what kind of escape behaviour V may exhibit.
-  std::pair<EscapeKind, std::optional<SmallVector<Value *, 8>>>
-  getEscapeKindForOpnd(const Use &U) const;
+  struct EscInfoTy {
+    EscKindTy EscKind;
+    std::optional<std::variant<EscReasonTy, SmallVector<Value *, 8>>>
+        EscDetails;
+  };
+
+  EscInfoTy getEscapeKindForOpnd(const Use &U) const;
 
   /// Print escaped objects in some path from Entry to BB
   void printEscapingForBB(const BasicBlock *BB, raw_ostream &OS) const;
