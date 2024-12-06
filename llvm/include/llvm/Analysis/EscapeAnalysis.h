@@ -31,6 +31,27 @@ using ArgumentEscapesMap =
 /// Interface to access escape analysis results for single function.
 class EscapeAnalysisInfo {
 public:
+  // Reasons of escaping
+  enum EscReasonBits {
+    GPTR_ALIASING = 1,
+    PTR_ARG_ALIASING = 1 << 1,
+    PASSING_TO_CALL = 1 << 2,
+    RET_PTR = 1 << 3,
+    VOLATILE = 1 << 4,
+    OTHER = 1 << 5,
+    INVALID = 1 << 6
+  };
+  using EscReasonTy = std::bitset<6>;
+  static void printEscReason(EscReasonTy EscReason) {
+    if (EscReason[0]) dbgs() << "GPTR_ALIASING ";
+    if (EscReason[1]) dbgs() << "PTR_ARG_ALIASING ";
+    if (EscReason[2]) dbgs() << "PASSING_TO_CALL ";
+    if (EscReason[3]) dbgs() << "RET_PTR ";
+    if (EscReason[4]) dbgs() << "VOLATILE ";
+    if (EscReason[5]) dbgs() << "OTHER ";
+    dbgs() << "\n";
+  }
+
   /// Run analysis for given function.
   /// ArgumentEscape is needed for IPA analysis (because we should ignore
   /// escaping by calls)
@@ -47,28 +68,6 @@ private:
 
   // Reference to the function being analyzed.
   const Function &AnalyzedFunc;
-
-  // Reasons of escaping
-  enum EscReasonBits {
-    GPTR_ALIASING = 1,
-    PTR_ARG_ALIASING = 1 << 1,
-    PASSING_TO_CALL = 1 << 2,
-    RET_PTR = 1 << 3,
-    VOLATILE = 1 << 4,
-    OTHER = 1 << 5,
-    INVALID = 1 << 6
-  };
-
-  using EscReasonTy = std::bitset<6>;
-  void printEscReason(EscReasonTy EscReason) {
-    if (EscReason[0]) dbgs() << "GPTR_ALIASING ";
-    if (EscReason[1]) dbgs() << "PTR_ARG_ALIASING ";
-    if (EscReason[2]) dbgs() << "PASSING_TO_CALL ";
-    if (EscReason[3]) dbgs() << "RET_PTR ";
-    if (EscReason[4]) dbgs() << "VOLATILE ";
-    if (EscReason[5]) dbgs() << "OTHER ";
-    dbgs() << "\n";
-  }
 
   // Resulting type: list of escaping objects
   using EscapedObjectsTy = DenseMap<const Value *, EscReasonTy>;
@@ -110,6 +109,14 @@ private:
     /// of escaping object
     void addEscapingObject(const Value *EscapingObject, EscReasonTy EscReason);
 
+    /// Adds an object to the list of escaped objects with a specified escape
+    /// reason. If the object is already in the list, update escape reason.
+    void addEscapeObjOrReason(const Value *EscObj, const EscReasonTy EscReason);
+
+    /// Adds an alias relationship between a given alias and a pointee value
+    /// in the escape analysis information. If the pointee value has previously
+    /// escaped or if the alias itself is an escaping pointer, the alias is
+    /// also marked as escaping.
     void addAlias(const Value *Alias, const Value *PointeeValue,
                   const EscapeAnalysisInfo *EAI);
 
@@ -193,16 +200,14 @@ public:
                              unsigned MaxLookup = GetUnderlObjMaxLookup);
 
   /// Is Value V is escaping somewhere in the function
-  bool isEscapedForFunc(const Value *V) const {
-    for (const auto &BB: AnalyzedFunc)
-      if (isEscapedForBB(&BB, V))
-        return true;
-    return false;
-    // return getFuncEscState().contains(V);
-  }
+  bool isEscapedForFunc(const Value *V,
+                        std::optional<std::reference_wrapper<EscReasonTy>>
+                            EscReason = std::nullopt) const;
 
   /// Is Value V is escaping in some path from Entry to BB?
-  bool isEscapedForBB(const BasicBlock *BB, const Value *V) const;
+  bool
+  isEscapedForBB(const BasicBlock *BB, const Value *V,
+                 std::optional<std::reference_wrapper<EscReasonTy>> EscReason = std::nullopt) const;
 
   static bool isLocalFunc(const Function *F) {
     return F && !F->isDeclaration() && F->isDefinitionExact();
