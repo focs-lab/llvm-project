@@ -73,7 +73,7 @@ private:
   using EscapedObjectsTy = DenseMap<const Value *, EscReasonTy>;
 
   // IPA information about arguments escapes
-  const std::optional<std::reference_wrapper<ArgumentEscapesMap>> ArgsEscapes;
+  std::optional<std::reference_wrapper<ArgumentEscapesMap>> ArgsEscapes;
 
   // Whether return value is escaping or not (need it in IPA)
   bool IsRetEscape = false;
@@ -145,8 +145,8 @@ private:
     // Note that a Value may be the alias of multiple Allocas
     AliasRelationTy AliasRel;
 
-    void getAliasSubtreeAsList(const Value *Obj,
-                               SmallPtrSetImpl<const Value *> &AliasList);
+    // void getAliasSubtreeAsList(const Value *Obj,
+                               // SmallPtrSetImpl<const Value *> &AliasList);
 
     /// Merge two Alias relations into one
     void mergeAliases(const EscapeState &OtherES,
@@ -202,6 +202,28 @@ private:
       const Value *V, SmallVectorImpl<Value *> &Objects, unsigned MaxLookup);
 
 public:
+  /*
+  EscapeAnalysisInfo(EscapeAnalysisInfo &&other) noexcept
+      : AnalyzedFunc(other.AnalyzedFunc),
+        ArgsEscapes(std::exchange(other.ArgsEscapes, std::nullopt)),
+        IsRetEscape(other.IsRetEscape),
+        BBEscapeStates(std::move(other.BBEscapeStates)) {
+  }
+
+  EscapeAnalysisInfo &operator=(EscapeAnalysisInfo &&Other) noexcept {
+    if (this != &Other) {
+      assert(&AnalyzedFunc == &Other.AnalyzedFunc);
+      ArgsEscapes = std::exchange(Other.ArgsEscapes, std::nullopt);
+      IsRetEscape = Other.IsRetEscape;
+      BBEscapeStates = std::move(Other.BBEscapeStates);
+    }
+    return *this;
+  }
+
+  EscapeAnalysisInfo(const EscapeAnalysisInfo&) = delete;
+  EscapeAnalysisInfo& operator=(const EscapeAnalysisInfo&) = delete;
+  */
+
   /// Recuresively search in the instruction for the underlying objects which
   /// may escape
   static SmallVector<Value *, 8>
@@ -229,10 +251,13 @@ class EscapeAnalysisGlobalInfo {
 
   static void setAllPtrArgsEscaped(ArgumentEscapesMap &ArgsEscapes,
                                    const Function *F);
+  static void setAllPtrArgsNotEscaped(ArgumentEscapesMap &ArgsEscapes,
+                                      const Function *F);
 
   /// Check if call graph node is the recursive call
   /// (relevant for SCC with 1 node)
   static bool isRecursiveCallGraphNode(const Function *F, CallGraphNode *CGN);
+  void updFuncArgsEscapes(const Function *F, const EscapeAnalysisInfo &EAI);
 
   /// Map to store escape information for function arguments.
   ArgumentEscapesMap ArgsEscapes;
