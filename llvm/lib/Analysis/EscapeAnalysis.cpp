@@ -203,8 +203,14 @@ void EscapeAnalysisInfo::EscapeState::mergeEscapedObjects(
   // Here we don't need to look through aliases, because if some object
   // has been added to EscapedObjects, then all it's aliases
   // have been added too
-  EscapedObjects.insert(OtherES.EscapedObjects.begin(),
-                        OtherES.EscapedObjects.end());
+  for (const auto &[Obj, EscReason] : OtherES.EscapedObjects) {
+    if (auto It = EscapedObjects.find(Obj); It != EscapedObjects.end())
+      // Object exists, merge EscReason masks
+      It->second |= EscReason;
+    else
+      // Object not exists, add it to the list with a reason
+      EscapedObjects.insert({Obj, EscReason});
+  }
 }
 
 EscapeAnalysisInfo::EscReasonTy EscapeAnalysisInfo::isExternalEscapedObject(
@@ -382,7 +388,8 @@ EscapeAnalysisInfo::getEscapeKindForOpnd(const Use &U) const {
   case Instruction::Invoke: {
     LLVM_DEBUG(dbgs() << " -- Call/Invoke\n");
     // This object is already escaped since it's external
-    if (isExternalEscapedObject(U.get()).any())
+    const auto EscReason = isExternalEscapedObject(U.get());
+    if (EscReason.any() && EscReason != PTR_ARG_ALIASING)
       return {EscKindTy::NO_ESCAPE, std::nullopt};
 
     const auto *Call = cast<CallBase>(I);
@@ -443,7 +450,7 @@ EscapeAnalysisInfo::getEscapeKindForOpnd(const Use &U) const {
         const Function *Callee = Call->getCalledFunction();
         if (!isLocalFunc(Callee))
           // If IPA, then argument escapes only in a Call of non-local function
-          return {EscKindTy::MAY_ESCAPE, EscReasonBits::PTR_ARG_ALIASING};
+          return {EscKindTy::MAY_ESCAPE, EscReasonBits::PASSING_TO_CALL};
 
         // If called function is local, find argument information in ArgsEscapes
         // provided by IPA callgraph traversal
@@ -793,8 +800,15 @@ void EscapeAnalysisInfo::printEscapingForBB(const BasicBlock *BB,
   for (const auto &V : It->second.getEscapedObjs()) {
     // if (isExternalEscapedObject(V) || isa<Argument>(V))
     if (ArgsEscapes.has_value()) {
-      // dbgs() << "compare\n";
+      // dbgs() << "\nprintEscReason 1: ";
       // printEscReason(V.second);
+      auto IsExtEscReason = isExternalEscapedObject(V.first);
+      // dbgs() << "printEscReason 2: ";
+      // printEscReason(EscReason);
+
+      if (IsExtEscReason == GPTR_ALIASING)
+        continue;
+
       // printEscReason(PTR_ARG_ALIASING);
       if (V.second == PTR_ARG_ALIASING)
         continue;
@@ -916,19 +930,22 @@ EscapeAnalysisGlobalInfo::EscapeAnalysisGlobalInfo(CallGraph &CG) {
           LLVM_DEBUG(dbgs() << "@@@@@@@@@ ESC ARG " << Arg << " -- "
                             << Iter->second.isEscapedForFunc(&Arg) << "\n";);
 
+          // Argument doesn't escape
           if (!Iter->second.isEscapedForFunc(&Arg, std::ref(ArgEscReason))) {
             ArgsEscapes[F][Arg.getArgNo()] = false;
             continue;
           }
 
+          // Arguments escapes only by being the pointer argument
           if (ArgEscReason == EscapeAnalysisInfo::PTR_ARG_ALIASING) {
             ArgsEscapes[F][Arg.getArgNo()] = false;
             continue;
           }
 
-          EscapeAnalysisInfo::printEscReason(ArgEscReason);
+          LLVM_DEBUG(EscapeAnalysisInfo::printEscReason(ArgEscReason));
           ArgsEscapes[F][Arg.getArgNo()] = true;
         }
+        LLVM_DEBUG(dbgs() << "\n";);
       }
     }
   }

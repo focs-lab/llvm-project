@@ -128,6 +128,15 @@ private:
     const EscapedObjectsTy &getEscapedObjs() const { return EscapedObjects; };
     const AliasRelationTy &getAliases() const { return AliasRel; }
 
+    void print(raw_ostream &OS) const {
+      OS << "Escaped objects:\n";
+      for (auto &Obj : EscapedObjects) {
+        OS << "  " << *Obj.first << " : ";
+        printEscReason(Obj.second);
+        OS << "\n";
+      }
+    }
+
   private:
     // Set of allocations that escape in this block.
     EscapedObjectsTy EscapedObjects;
