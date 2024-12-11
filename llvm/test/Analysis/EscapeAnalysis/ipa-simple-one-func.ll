@@ -56,4 +56,52 @@ entry:
   ret void
 }
 
+; void *func_with_ptr_arg(int *x, int *y) {
+; 	int *Alias = x;
+; 	*Alias = 333;
+; 	if (rand())
+; 		GPtr = x;
+; 	GPtr = y;
+; 	return NULL;
+; }
+
+define dso_local ptr @func_with_ptr_arg(ptr noundef %x, ptr noundef %y) {
+; CHECK: Printing analysis 'Escape Analysis' for function 'func_with_ptr_arg':
+; CHECK-NOT: Escaping objects for BB entry:
+entry:
+  %x.addr = alloca ptr, align 8
+  %y.addr = alloca ptr, align 8
+  %Alias = alloca ptr, align 8
+  store ptr %x, ptr %x.addr, align 8
+  store ptr %y, ptr %y.addr, align 8
+  %0 = load ptr, ptr %x.addr, align 8
+  store ptr %0, ptr %Alias, align 8
+  %1 = load ptr, ptr %Alias, align 8
+  store i32 333, ptr %1, align 4
+  %call = call i32 @rand() #2
+  %tobool = icmp ne i32 %call, 0
+  br i1 %tobool, label %if.then, label %if.end
+
+; CHECK: Escaping objects for BB if.then:
+; CHECK-DAG:   %Alias = alloca ptr, align 8
+; CHECK-DAG: ptr %x
+; CHECK-DAG:   %x.addr = alloca ptr, align 8
+if.then:                                          ; preds = %entry
+  %2 = load ptr, ptr %x.addr, align 8
+  store ptr %2, ptr @GPtr, align 8
+  br label %if.end
+
+; CHECK: Escaping objects for BB if.end:
+; CHECK-DAG:   %Alias = alloca ptr, align 8
+; CHECK-DAG: ptr %x
+; CHECK-DAG:   %y.addr = alloca ptr, align 8
+; CHECK-DAG:   %x.addr = alloca ptr, align 8
+; CHECK-DAG: ptr %y
+if.end:                                           ; preds = %if.then, %entry
+  %3 = load ptr, ptr %y.addr, align 8
+  store ptr %3, ptr @GPtr, align 8
+  ret ptr null
+}
+
 declare i32 @printf(ptr noundef, ...)
+declare i32 @rand() #1

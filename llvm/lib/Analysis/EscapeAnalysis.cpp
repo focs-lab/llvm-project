@@ -56,7 +56,7 @@ void EscapeAnalysisInfo::EscapeState::addAlias(const Value *Alias,
       AliasRel.AliasMap[Alias].contains(PointeeValue))
     return;
 
-  LLVM_DEBUG(dbgs() << "\taddAlias: " << *PointeeValue << " --> " << *Alias
+  LLVM_DEBUG(dbgs() << "\taddAlias: " << *Alias << " --> " << *PointeeValue
                     << "\n");
   AliasRel.AliasMap[Alias].insert(PointeeValue);
 
@@ -65,14 +65,12 @@ void EscapeAnalysisInfo::EscapeState::addAlias(const Value *Alias,
   // global pointer), then that's not just aliasing, but escaping as well
   if (const auto EscReason = EAI->isExternalEscapedObject(PointeeValue);
       EscReason.any())
-    // addEscapingObject(Alias, EscReason);
     addEscapeObjOrReason(Alias, EscReason);
 
   // If pointee object is escaped (as observed from previous analysis)
   if (const auto It = EscapedObjects.find(PointeeValue);
       It != EscapedObjects.end())
-    // addEscapingObject(Alias, It->second);
-      addEscapeObjOrReason(Alias, It->second);
+    addEscapeObjOrReason(Alias, It->second);
 
   // Considering transitivity: recursively add new alias to all existing aliases
   // of PointeeValue
@@ -127,6 +125,7 @@ bool EscapeAnalysisInfo::EscapeState::operator==(const EscapeState &ES) const {
 
 void EscapeAnalysisInfo::EscapeState::addEscapeObjOrReason(
     const Value *EscObj, const EscReasonTy EscReason) {
+  LLVM_DEBUG(dbgs() << "\t\t\taddEscapeObjOrReason: " << *EscObj << "\n");
   if (const auto EscObjIt = EscapedObjects.find(EscObj);
       EscObjIt != EscapedObjects.end()) {
     // Object is already escaped - add the escape reason
@@ -136,19 +135,6 @@ void EscapeAnalysisInfo::EscapeState::addEscapeObjOrReason(
     EscapedObjects.insert({EscObj, EscReason});
   }
 }
-
-// void EscapeAnalysisInfo::EscapeState::addEscapingObject(
-    // const Value *EscapingObject, const EscReasonTy EscReason) {
-  // SmallPtrSet<const Value *, 8> Aliases;
-  // getAliasSubtreeAsList(EscapingObject, Aliases);
-  // DEBUG_WITH_TYPE(DEEP_DEBUG_TYPE,
-    // for (auto *V: Aliases)
-      // dbgs() << "Add escaping object: " << *V << "\n";
-    // dbgs() << "%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%\n";);
-
-  // for (auto It = Aliases.begin(); It != Aliases.end(); ++It)
-    // addEscapeObjOrReason(*It, EscReason);
-// }
 
 void EscapeAnalysisInfo::EscapeState::addEscapingObject(
     const Value *EscapingObject, const EscReasonTy EscReason) {
@@ -172,47 +158,6 @@ void EscapeAnalysisInfo::EscapeState::addEscapingObject(
           WorkList.push_back(Alias);
   }
 }
-
-
-// void EscapeAnalysisInfo::EscapeState::getAliasSubtreeAsList(
-//     const Value *Obj, SmallPtrSetImpl<const Value *> &AliasList) {
-//   if (AliasList.contains(Obj))
-//     return;
-//
-//   AliasList.insert(Obj);
-//
-//   // Suppose we add as escaping an object which is alias of some other objects.
-//   // Then all these aliases also escape!
-//   if (const auto Aliases = AliasRel.getAliases(Obj); Aliases.has_value())
-//     for (const Value *Alias : Aliases.value())
-//       getAliasSubtreeAsList(Alias, AliasList);
-// }
-
-// Try refactored version:
-// SmallPtrSetImpl<const Value *> EscapeAnalysisInfo::EscapeState::getAliasSubtreeAsList(const Value *Obj) {
-//   SmallPtrSet<const Value *, 8> AliasList;
-//   SmallVector<const Value *, 8> WorkList;
-//
-//   WorkList.push_back(Obj);
-//
-//   while (!WorkList.empty()) {
-//     const Value *Current = WorkList.pop_back_val();
-//
-//     if (!AliasList.insert(Current).second) {
-//       continue;
-//     }
-//
-//     if (const auto Aliases = AliasRel.getAliases(Current); Aliases.has_value()) {
-//       for (const Value *Alias : Aliases.value()) {
-//         if (!AliasList.contains(Alias)) {
-//           WorkList.push_back(Alias);
-//         }
-//       }
-//     }
-//   }
-//
-//   return AliasList;
-// }
 
 void EscapeAnalysisInfo::EscapeState::mergeAliases(
     const EscapeState &OtherES, const EscapeAnalysisInfo *EAI) {
@@ -246,9 +191,24 @@ EscapeAnalysisInfo::isExternalEscapedObject(const Value *V) const {
   if (isa<GlobalVariable>(V))
     return EscReasonBits::GPTR_ALIASING;
 
-  return isa<Argument>(V) && V->getType()->isPointerTy()
-             ? EscReasonBits::PTR_ARG_ALIASING
-             : 0;
+  if (isa<Argument>(V) && V->getType()->isPointerTy()) {
+    if (ArgsEscapes) {
+      const auto *Arg = cast<Argument>(V);
+      // dbgs() << "Printing ArgsEscapes\n";
+      // for (const auto &F : *ArgsEscapes)
+      //   dbgs() << F.first->getName() << " FUNC\n";
+
+      const auto FuncIt = ArgsEscapes->find(Arg->getParent());
+      if (FuncIt != ArgsEscapes->end()) {
+        const auto ArgEscIt = FuncIt->second.find(Arg->getArgNo());
+        if (ArgEscIt != FuncIt->second.end())
+          return ArgEscIt->second;
+      }
+    }
+    return EscReasonBits::PTR_ARG_ALIASING;
+  }
+
+  return 0;
 }
 
 //===----------------------------------------------------------------------===//
@@ -257,7 +217,7 @@ EscapeAnalysisInfo::isExternalEscapedObject(const Value *V) const {
 
 EscapeAnalysisInfo::EscapeAnalysisInfo(
     const Function &Fn,
-    std::optional<std::reference_wrapper<ArgumentEscapesMap>> ArgsEsc)
+    std::shared_ptr<ArgumentEscapesMap> ArgsEsc)
     : AnalyzedFunc(Fn), ArgsEscapes(ArgsEsc) {
   LLVM_DEBUG(dbgs() <<
     "\n||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||\n"
@@ -409,8 +369,10 @@ EscapeAnalysisInfo::getEscapeKindForOpnd(const Use &U) const {
     LLVM_DEBUG(dbgs() << " -- Call/Invoke\n");
     // This object is already escaped since it's external
     const auto EscReason = isExternalEscapedObject(U.get());
+    LLVM_DEBUG(dbgs() << "\tEscReason:"; printEscReason(EscReason));
     if (EscReason.any() && EscReason != PTR_ARG_ALIASING)
-      return {EscKindTy::NO_ESCAPE, std::nullopt};
+      return {EscKindTy::MAY_ESCAPE,
+              EscReason | EscReasonTy(EscReasonBits::PASSING_TO_CALL)};
 
     const auto *Call = cast<CallBase>(I);
 
@@ -465,8 +427,8 @@ EscapeAnalysisInfo::getEscapeKindForOpnd(const Use &U) const {
     if (Call->isDataOperand(&U) &&
         !Call->doesNotCapture(Call->getDataOperandNo(&U)) &&
         U->getType()->isPointerTy()) {
-      // If that's IPA, passing to calls is not escape
-      if (ArgsEscapes.has_value()) {
+      // If that's IPA, need to check whether passing to calls is escape or not
+      if (ArgsEscapes) {
         const Function *Callee = Call->getCalledFunction();
         if (!isLocalFunc(Callee))
           // If IPA, then argument escapes only in a Call of non-local function
@@ -474,8 +436,8 @@ EscapeAnalysisInfo::getEscapeKindForOpnd(const Use &U) const {
 
         // If called function is local, find argument information in ArgsEscapes
         // provided by IPA callgraph traversal
-        const auto FuncIt = ArgsEscapes->get().find(Callee);
-        assert(FuncIt != ArgsEscapes->get().end() &&
+        const auto FuncIt = ArgsEscapes->find(Callee);
+        assert(FuncIt != ArgsEscapes->end() &&
                "ArgsEscapes must contain information about called function");
 
         // If it's variadic function, all arguments after fixed ones are escaped
@@ -486,7 +448,8 @@ EscapeAnalysisInfo::getEscapeKindForOpnd(const Use &U) const {
         const auto ArgEscIt = FuncIt->second.find(Call->getDataOperandNo(&U));
         assert(ArgEscIt != FuncIt->second.end() &&
                "ArgEscapes must contain information about all arguments");
-        if (ArgEscIt->second)
+        if (ArgEscIt->second.any() &&
+            (ArgEscIt->second != EscReasonBits::PTR_ARG_ALIASING))
           return {EscKindTy::MAY_ESCAPE, EscReasonBits::PASSING_TO_CALL};
       } else {
         // If not IPA, each call is the escape for each pointer-typed argument
@@ -518,10 +481,14 @@ EscapeAnalysisInfo::getEscapeKindForOpnd(const Use &U) const {
     if (DstObjs.empty())
       return {EscKindTy::NO_ESCAPE, std::nullopt};
 
+    // TODO Do we need it?
     // Store to GV - escape
-    for (const auto *Obj : DstObjs)
+    for (const auto *Obj : DstObjs) {
       if (isa<GlobalVariable>(Obj))
         return {EscKindTy::MAY_ESCAPE, EscReasonBits::GPTR_ALIASING};
+      // if (isa<Argument>(Obj) && Obj->getType()->isPointerTy())
+        // return {EscKindTy::MAY_ESCAPE, EscReasonBits::PTR_ARG_ALIASING};
+    }
 
     return {EscKindTy::MAY_ALIASING, DstObjs};
   }
@@ -626,7 +593,7 @@ bool EscapeAnalysisInfo::isDereferenceableOrNull(const Value *O,
 }
 
 //===----------------------------------------------------------------------===//
-// getUnderlyingObject infrastracture (taken and modified from ValueTracker.cpp)
+// getUnderlyingObject infrastructure (taken and modified from ValueTracker.cpp)
 //===----------------------------------------------------------------------===//
 
 /// Wrapper around getUnderlyingObject to look through loads
@@ -816,20 +783,9 @@ void EscapeAnalysisInfo::printEscapingForBB(const BasicBlock *BB,
   if ((It == BBEscapeStates.end()) || (It->second.getEscapedObjs().empty()))
     return;
 
-  OS << "Escaping objects for BB " << BB->getName() << ":\n";
+  bool PrintedEscapeHeader = false;
   for (const auto &V : It->second.getEscapedObjs()) {
-    // if (isExternalEscapedObject(V) || isa<Argument>(V))
-    if (ArgsEscapes.has_value()) {
-      // dbgs() << "\nprintEscReason 1: ";
-      // printEscReason(V.second);
-      auto IsExtEscReason = isExternalEscapedObject(V.first);
-      // dbgs() << "printEscReason 2: ";
-      // printEscReason(EscReason);
-
-      if (IsExtEscReason == GPTR_ALIASING)
-        continue;
-
-      // printEscReason(PTR_ARG_ALIASING);
+    if (ArgsEscapes) {
       if (V.second == PTR_ARG_ALIASING)
         continue;
     } else {
@@ -840,8 +796,12 @@ void EscapeAnalysisInfo::printEscapingForBB(const BasicBlock *BB,
         continue;
     }
 
+    if (!PrintedEscapeHeader) {
+      OS << "Escaping objects for BB " << BB->getName() << ":\n";
+      PrintedEscapeHeader = true;
+    }
+
     OS << *V.first << "\n";
-    // printEscReason(V.second);
   }
   OS << "\n";
 }
@@ -871,22 +831,15 @@ EscapeAnalysisPrinterPass::run(Function &F, FunctionAnalysisManager &AM) const {
 // Escape analysis global (IPA)
 //===----------------------------------------------------------------------===//
 
-void EscapeAnalysisGlobalInfo::setAllPtrArgsEscaped(
-    ArgumentEscapesMap &ArgsEscapes, const Function *F) {
-  for (const auto &Arg : F->args())
-    if (Arg.getType()->isPointerTy())
-      ArgsEscapes[F][Arg.getArgNo()] = true;
-}
-
 void EscapeAnalysisGlobalInfo::setAllPtrArgsNotEscaped(
-    ArgumentEscapesMap &ArgsEscapes, const Function *F) {
+    EscapeAnalysisInfo::ArgumentEscapesMap &ArgsEscapes, const Function *F) {
   for (const auto &Arg : F->args())
     if (Arg.getType()->isPointerTy())
       ArgsEscapes[F][Arg.getArgNo()] = false;
 }
 
-bool EscapeAnalysisGlobalInfo::isRecursiveCallGraphNode(const Function *F,
-                                                        CallGraphNode *CGN) {
+bool EscapeAnalysisGlobalInfo::isRecursiveCallGraphNode(
+    const Function *F, const CallGraphNode *CGN) {
   for (auto CI = CGN->begin(), CE = CGN->end(); CI != CE; ++CI) {
     CallGraphNode *Callee = CI->second;
     if (Callee && Callee->getFunction() == F)
@@ -901,7 +854,10 @@ void EscapeAnalysisGlobalInfo::updFuncArgsEscapes(
     EscapeAnalysisInfo::EscReasonTy ArgEscReason;
     LLVM_DEBUG(dbgs() << "@@@@@@@@@ ESC ARG " << Arg << " -- "
                       << EAI.isEscapedForFunc(&Arg) << "\n";);
+    EAI.isEscapedForFunc(&Arg, std::ref(ArgEscReason));
+    (*ArgsEscapes)[F][Arg.getArgNo()] = ArgEscReason;
 
+    /*
     // Argument doesn't escape
     if (!EAI.isEscapedForFunc(&Arg, std::ref(ArgEscReason))) {
       ArgsEscapes[F][Arg.getArgNo()] = false;
@@ -916,6 +872,7 @@ void EscapeAnalysisGlobalInfo::updFuncArgsEscapes(
 
     LLVM_DEBUG(EscapeAnalysisInfo::printEscReason(ArgEscReason));
     ArgsEscapes[F][Arg.getArgNo()] = true;
+    */
   }
 }
 EscapeAnalysisGlobalInfo::EscapeAnalysisGlobalInfo(CallGraph &CG) {
@@ -924,15 +881,15 @@ EscapeAnalysisGlobalInfo::EscapeAnalysisGlobalInfo(CallGraph &CG) {
 
   // This is needed to (conservatively) consider recursive calls and SCCs.
   // First, find all SCCs and set all pointer argument as escaped
+  SmallPtrSet<const Function *, 8> RecursiveFuncs;
   for (scc_iterator<CallGraph *> It = scc_begin(&CG); !It.isAtEnd(); ++It) {
     const std::vector<CallGraphNode *> &SCC = *It;
     assert(!SCC.empty() && "SCC with no functions?");
 
     LLVM_DEBUG(dbgs() << "SCC: " << SCC.size() << "\n";
-    for (const CallGraphNode *CGN: SCC) {
-      if (CGN->getFunction())
-        dbgs() << "\t" << CGN->getFunction()->getName() << "\n";
-    });
+      for (const CallGraphNode *CGN: SCC) {
+        if (CGN->getFunction())
+          dbgs() << "\t" << CGN->getFunction()->getName() << "\n";});
 
     if (SCC.size() == 1) {
       // Check if it's recursive call or not
@@ -941,22 +898,22 @@ EscapeAnalysisGlobalInfo::EscapeAnalysisGlobalInfo(CallGraph &CG) {
         continue;
 
       if (isRecursiveCallGraphNode(F, SCC[0])) {
-        LLVM_DEBUG(dbgs() << "\t" << F->getName().str() << " is recursive.\n");
-        // setAllPtrArgsEscaped(ArgsEscapes, F);
-        setAllPtrArgsNotEscaped(ArgsEscapes, F);
-      } else {
-        LLVM_DEBUG(dbgs() << "\t" << F->getName().str() << " is not recursive.\n");
+        setAllPtrArgsNotEscaped(*ArgsEscapes, F);
+        RecursiveFuncs.insert(F);
       }
     } else { // SCC.size() > 1
       for (const CallGraphNode *CGN: SCC) {
         const auto F = CGN->getFunction();
         if (!EscapeAnalysisInfo::isLocalFunc(F))
           continue;
-        // setAllPtrArgsEscaped(ArgsEscapes, F);
-        setAllPtrArgsNotEscaped(ArgsEscapes, F);
+        setAllPtrArgsNotEscaped(*ArgsEscapes, F);
       }
     }
   }
+
+  LLVM_DEBUG(dbgs() << "Printing ArgsEscapes\n";
+  for (const auto &F: *ArgsEscapes)
+    dbgs() << F.first->getName() << "\n";);
 
   // Main callgraph traversal
   for (scc_iterator<CallGraph *> It = scc_begin(&CG); !It.isAtEnd(); ++It) {
@@ -973,39 +930,32 @@ EscapeAnalysisGlobalInfo::EscapeAnalysisGlobalInfo(CallGraph &CG) {
           // during local escape analysis
           continue;
 
-        // const auto [Iter, Inserted] =
-        //     FuncEscapeInfo.try_emplace(F, EscapeAnalysisInfo(*F, ArgsEscapes));
-        // assert(Inserted && "One function - one insert\n");
-        // FuncEscapeInfo[F] = EscapeAnalysisInfo(*F, ArgsEscapes);
-
-        // auto Iter = FuncEscapeInfo.find(F);
-        // if (Iter == FuncEscapeInfo.end()) {
-          // Iter->second = EscapeAnalysisInfo(*F, ArgsEscapes);
-        // } else {
-          // const auto [It, Inserted] = FuncEscapeInfo.try_emplace(
-              // F, EscapeAnalysisInfo(*F, ArgsEscapes));
-          // Iter = It;
-          // assert(Inserted && "One function - one insert\n");
-        // }
-
-        auto Iter = FuncEscapeInfo.find(F);
-        if (Iter != FuncEscapeInfo.end())
+        if (auto Iter = FuncEscapeInfo.find(F); Iter != FuncEscapeInfo.end())
           FuncEscapeInfo.erase(Iter);
         const auto [NewIter, Inserted] =
             FuncEscapeInfo.try_emplace(F, EscapeAnalysisInfo(*F, ArgsEscapes));
+
         assert(Inserted && "One function - one insert\n");
+
         const auto &EAI = NewIter->second;
+        // For non-recursive, no need to iterate until convergence
+        if ((SCC.size() == 1) && !RecursiveFuncs.contains(F)) {
+          updFuncArgsEscapes(F, EAI);
+          break;
+        }
 
-        const auto PrevArgsEscapes = ArgsEscapes[F];
+        const auto PrevArgsEscapes = (*ArgsEscapes)[F];
         updFuncArgsEscapes(F, EAI);
-        if (PrevArgsEscapes != ArgsEscapes[F])
-          Converged = false;
-        else
-          LLVM_DEBUG(dbgs() << "++++++ Func " << F->getName()
-                            << " -- Converging ++++++\n";);
 
-        LLVM_DEBUG(dbgs() << "\n";);
-        // }
+        if (PrevArgsEscapes != (*ArgsEscapes)[F]) {
+          Converged = false;
+          LLVM_DEBUG(dbgs() << "++++++ Func " << F->getName()
+                            << " -- NOT Converging ++++++\n\n";
+          NewIter->second.print(dbgs()););
+        } else {
+          LLVM_DEBUG(dbgs() << "++++++ Func " << F->getName()
+                            << " -- Converging ++++++\n\n";);
+        }
       }
     }
   }
@@ -1028,7 +978,6 @@ AnalysisKey EscapeAnalysisGlobal::Key;
 
 EscapeAnalysisGlobal::Result
 EscapeAnalysisGlobal::run(Module &M, ModuleAnalysisManager &AM) {
-  dbgs() << "Running EscapeAnalysisGlobal::run()\n";
   return EscapeAnalysisGlobalInfo(AM.getResult<CallGraphAnalysis>(M));
 }
 

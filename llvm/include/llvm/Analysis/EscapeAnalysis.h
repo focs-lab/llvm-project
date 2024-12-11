@@ -25,9 +25,6 @@
 namespace llvm {
 /// This is the implementation of simple escape analysis
 
-using ArgumentEscapesMap =
-    DenseMap<const Function *, SmallDenseMap<unsigned, bool>>;
-
 /// Interface to access escape analysis results for single function.
 class EscapeAnalysisInfo {
 public:
@@ -42,6 +39,10 @@ public:
     INVALID = 1 << 6
   };
   using EscReasonTy = std::bitset<6>;
+
+  using ArgumentEscapesMap =
+      DenseMap<const Function *, SmallDenseMap<unsigned, EscReasonTy>>;
+
   static void printEscReason(EscReasonTy EscReason) {
     if (EscReason[0]) dbgs() << "GPTR_ALIASING ";
     if (EscReason[1]) dbgs() << "PTR_ARG_ALIASING ";
@@ -57,8 +58,7 @@ public:
   /// escaping by calls)
   explicit EscapeAnalysisInfo(
       const Function &Fn,
-      std::optional<std::reference_wrapper<ArgumentEscapesMap>> ArgsEsc =
-          std::nullopt);
+      std::shared_ptr<ArgumentEscapesMap> ArgsEsc = nullptr);
   void print(raw_ostream &OS) const;
 
 private:
@@ -73,7 +73,7 @@ private:
   using EscapedObjectsTy = DenseMap<const Value *, EscReasonTy>;
 
   // IPA information about arguments escapes
-  std::optional<std::reference_wrapper<ArgumentEscapesMap>> ArgsEscapes;
+  std::shared_ptr<ArgumentEscapesMap> ArgsEscapes;
 
   // Whether return value is escaping or not (need it in IPA)
   bool IsRetEscape = false;
@@ -202,29 +202,7 @@ private:
       const Value *V, SmallVectorImpl<Value *> &Objects, unsigned MaxLookup);
 
 public:
-  /*
-  EscapeAnalysisInfo(EscapeAnalysisInfo &&other) noexcept
-      : AnalyzedFunc(other.AnalyzedFunc),
-        ArgsEscapes(std::exchange(other.ArgsEscapes, std::nullopt)),
-        IsRetEscape(other.IsRetEscape),
-        BBEscapeStates(std::move(other.BBEscapeStates)) {
-  }
-
-  EscapeAnalysisInfo &operator=(EscapeAnalysisInfo &&Other) noexcept {
-    if (this != &Other) {
-      assert(&AnalyzedFunc == &Other.AnalyzedFunc);
-      ArgsEscapes = std::exchange(Other.ArgsEscapes, std::nullopt);
-      IsRetEscape = Other.IsRetEscape;
-      BBEscapeStates = std::move(Other.BBEscapeStates);
-    }
-    return *this;
-  }
-
-  EscapeAnalysisInfo(const EscapeAnalysisInfo&) = delete;
-  EscapeAnalysisInfo& operator=(const EscapeAnalysisInfo&) = delete;
-  */
-
-  /// Recuresively search in the instruction for the underlying objects which
+  /// Recursively search in the instruction for the underlying objects which
   /// may escape
   static SmallVector<Value *, 8>
   getUnderlyingMayEscObjects(const Value *V,
@@ -249,18 +227,19 @@ public:
 class EscapeAnalysisGlobalInfo {
   DenseMap<const Function *, EscapeAnalysisInfo> FuncEscapeInfo;
 
-  static void setAllPtrArgsEscaped(ArgumentEscapesMap &ArgsEscapes,
-                                   const Function *F);
-  static void setAllPtrArgsNotEscaped(ArgumentEscapesMap &ArgsEscapes,
-                                      const Function *F);
+  /// Map to store escape information for function arguments.
+  std::shared_ptr<EscapeAnalysisInfo::ArgumentEscapesMap> ArgsEscapes =
+      std::make_shared<EscapeAnalysisInfo::ArgumentEscapesMap>();
+
+  static void
+  setAllPtrArgsNotEscaped(EscapeAnalysisInfo::ArgumentEscapesMap &ArgsEscapes,
+                          const Function *F);
 
   /// Check if call graph node is the recursive call
   /// (relevant for SCC with 1 node)
-  static bool isRecursiveCallGraphNode(const Function *F, CallGraphNode *CGN);
+  static bool isRecursiveCallGraphNode(const Function *F,
+                                       const CallGraphNode *CGN);
   void updFuncArgsEscapes(const Function *F, const EscapeAnalysisInfo &EAI);
-
-  /// Map to store escape information for function arguments.
-  ArgumentEscapesMap ArgsEscapes;
 
 public:
   explicit EscapeAnalysisGlobalInfo(CallGraph &CG);
@@ -276,9 +255,7 @@ public:
 
   /// This is needed for using with OuterAnalysisManagerProxy
   bool invalidate(Module &, const PreservedAnalyses &,
-                  ModuleAnalysisManager::Invalidator &) {
-    return false;
-  }
+                  ModuleAnalysisManager::Invalidator &) { return false; }
 };
 
 /// EscapeAnalysisInfo wrapper for the new pass manager.

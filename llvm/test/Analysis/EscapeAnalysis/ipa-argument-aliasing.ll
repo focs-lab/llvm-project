@@ -39,7 +39,7 @@ entry:
 ; }
 define void @alias_of_ptr_arg_2(ptr noundef %PtrArg1, ptr noundef %PtrArg2) {
 ; CHECK: Printing analysis 'Escape Analysis' for function 'alias_of_ptr_arg_2':
-; CHECK-NEXT: Escaping objects for BB entry:
+; CHECK-NOT: Escaping objects for BB entry:
 entry:
   %PtrArg1.addr = alloca ptr, align 8
   %PtrArg2.addr = alloca ptr, align 8
