@@ -80,6 +80,8 @@ void EscapeAnalysisInfo::EscapeState::addAlias(const Value *Alias,
 
   // This is alias symmetry part: if Alias --> Pointee, then Pointee --> Alias
   // Need to recheck it.
+  // NOTE: previous version was (not clear, why):
+  // (isa<Argument>(Alias) && !Alias->getType()->isPointerTy()))
   if (isa<AllocaInst>(Alias) ||
       (isa<Argument>(Alias) && !Alias->getType()->isPointerTy()))
     addAlias(PointeeValue, Alias, EAI);
@@ -182,6 +184,34 @@ void EscapeAnalysisInfo::EscapeState::mergeEscapedObjects(
 }
 
 EscapeAnalysisInfo::EscReasonTy
+EscapeAnalysisInfo::getArgEscStatus(unsigned ArgNo,
+                                    const Function *Func) const {
+  if (const auto FuncIt = ArgsEscapes->find(Func);
+      FuncIt != ArgsEscapes->end()) {
+    if (const auto ArgEscIt = FuncIt->second.find(ArgNo);
+        ArgEscIt != FuncIt->second.end())
+      return ArgEscIt->second & EscReasonTy(~EscReasonBits::PTR_ARG_ALIASING);
+  }
+  return EscReasonBits::PTR_ARG_ALIASING;
+}
+
+EscapeAnalysisInfo::EscReasonTy
+EscapeAnalysisInfo::isExternalEscapedObjectSimple(const Value *V) const {
+  if (const auto *CI = dyn_cast<CallInst>(V);
+    CI && CI->getFunctionType()->getReturnType()->isPointerTy()) {
+    return EscReasonBits::PASSING_TO_CALL;
+  }
+
+  if (isa<GlobalVariable>(V))
+    return EscReasonBits::GPTR_ALIASING;
+
+  if (isa<Argument>(V) && V->getType()->isPointerTy())
+    return EscReasonBits::PTR_ARG_ALIASING;
+
+  return 0;
+}
+
+EscapeAnalysisInfo::EscReasonTy
 EscapeAnalysisInfo::isExternalEscapedObject(const Value *V) const {
   if (const auto *CI = dyn_cast<CallInst>(V);
     CI && CI->getFunctionType()->getReturnType()->isPointerTy()) {
@@ -194,16 +224,18 @@ EscapeAnalysisInfo::isExternalEscapedObject(const Value *V) const {
   if (isa<Argument>(V) && V->getType()->isPointerTy()) {
     if (ArgsEscapes) {
       const auto *Arg = cast<Argument>(V);
+      return getArgEscStatus(Arg->getArgNo(), Arg->getParent());
+
       // dbgs() << "Printing ArgsEscapes\n";
       // for (const auto &F : *ArgsEscapes)
       //   dbgs() << F.first->getName() << " FUNC\n";
 
-      const auto FuncIt = ArgsEscapes->find(Arg->getParent());
-      if (FuncIt != ArgsEscapes->end()) {
-        const auto ArgEscIt = FuncIt->second.find(Arg->getArgNo());
-        if (ArgEscIt != FuncIt->second.end())
-          return ArgEscIt->second;
-      }
+      // const auto FuncIt = ArgsEscapes->find(Arg->getParent());
+      // if (FuncIt != ArgsEscapes->end()) {
+      //   const auto ArgEscIt = FuncIt->second.find(Arg->getArgNo());
+      //   if (ArgEscIt != FuncIt->second.end())
+      //     return ArgEscIt->second;
+      // }
     }
     return EscReasonBits::PTR_ARG_ALIASING;
   }
@@ -298,9 +330,11 @@ void EscapeAnalysisInfo::compBBEscapeState(const BasicBlock *BB,
             if (isEscapedForFunc(EO))
               IsRetEscape = true;
 
-        for (const Value *EO : UnderlyingObjs) {
-          LLVM_DEBUG(dbgs() << "\t\taddEscapingObject: " << *EO << "\n");
-          ES.addEscapingObject(EO, EscReason);
+        for (const Value *EscObj : UnderlyingObjs) {
+          LLVM_DEBUG(dbgs() << "\t\taddEscapingObject: " << *EscObj << "\n");
+          // const auto EscReason = isExternalEscapedObject(EscObj);
+          // if (EscReason.none() || (EscReason == EscReasonTy(EscReasonBits::PTR_ARG_ALIASING)))
+              ES.addEscapingObject(EscObj, EscReason);
         }
       } else {
         assert(EscKind == EscKindTy::MAY_ALIASING);
@@ -335,6 +369,10 @@ EscapeAnalysisInfo::EscapeState EscapeAnalysisInfo::mergePredEscapeStates(
   return MergedES;
 }
 
+//===----------------------------------------------------------------------===//
+// Get escape info functions
+//===----------------------------------------------------------------------===//
+
 /// Check whether type contains pointers
 bool EscapeAnalysisInfo::structContainsPointerType(const Type *Ty) {
   if (Ty->isPointerTy()) return true;
@@ -355,6 +393,218 @@ EscapeAnalysisInfo::getFuncEscState() const {
   return It->second.getEscapedObjs();
 }
 
+EscapeAnalysisInfo::EscInfoTy
+EscapeAnalysisInfo::getEscInfoCall(const Use &U, const Instruction *I) const {
+  LLVM_DEBUG(dbgs() << " -- Call/Invoke\n");
+  // This object is already escaped since it's external
+  // const auto EscReason = isExternalEscapedObject(U.get());
+  // LLVM_DEBUG(dbgs() << "\tEscReason: "; printEscReason(EscReason));
+  // if (EscReason.any() && EscReason != PTR_ARG_ALIASING)
+    // return {EscKindTy::MAY_ESCAPE,
+            // EscReason | EscReasonTy(EscReasonBits::PASSING_TO_CALL)};
+
+  const auto *Call = cast<CallBase>(I);
+
+  // Not captured if the callee is readonly, doesn't return a copy through
+  // its return value and doesn't unwind (a readonly function can leak bits
+  // by throwing an exception or not depending on the input value).
+  if (Call->onlyReadsMemory() && Call->doesNotThrow() &&
+      Call->getType()->isVoidTy())
+    return {EscKindTy::NO_ESCAPE, std::nullopt};
+
+  // The pointer is not captured if returned pointer is not captured.
+  // NOTE: CaptureTracking users should not assume that only functions
+  // marked with nocapture do not capture. This means that places like
+  // getUnderlyingObject in ValueTracking or DecomposeGEPExpression
+  // in BasicAA also need to know about this property.
+  if (isIntrinsicReturningPointerAliasingArgumentWithoutCapturing(Call, true))
+    return {EscKindTy::MAY_ALIASING, getUnderlyingMayEscObjects(I)};
+
+  // Volatile operations effectively capture the memory location that they
+  // load and store to.
+  if (const auto *MI = dyn_cast<MemIntrinsic>(Call)) {
+    if (MI->isVolatile())
+      return {EscKindTy::MAY_ESCAPE, EscReasonTy(EscReasonBits::VOLATILE)};
+
+    const auto *Src = MI->getArgOperand(1);
+
+    // Considering llvm.memcpy intrinsic
+    if ((MI->getIntrinsicID() == Intrinsic::memcpy) && (Src == U.get())) {
+      // Check whether the source argument is a struct containing pointers
+      if (const auto *Alloca = dyn_cast<AllocaInst>(U.get())) {
+        if (const Type *StructTy = Alloca->getAllocatedType();
+            StructTy && structContainsPointerType(StructTy)) {
+          const auto DstObjs = getUnderlyingMayEscObjects(MI->getArgOperand(0));
+          return {EscKindTy::MAY_ALIASING, DstObjs};
+        }
+      }
+    }
+  }
+
+  // Calling a function pointer does not in itself cause the pointer to
+  // be captured.  This is a subtle point considering that (for example)
+  // the callee might return its own address.  It is analogous to saying
+  // that loading a value from a pointer does not cause the pointer to be
+  // captured, even though the loaded value might be the pointer itself
+  // (think of self-referential objects).
+  if (Call->isCallee(&U))
+    return {EscKindTy::NO_ESCAPE, std::nullopt};
+
+  // Check if that's the argument which can escape through this call
+  // Not captured if only passed via 'nocapture' arguments.
+  if (Call->isDataOperand(&U) &&
+      !Call->doesNotCapture(Call->getDataOperandNo(&U)) &&
+      U->getType()->isPointerTy()) {
+    // If that's IPA, need to check whether passing to calls is escape or not
+    if (ArgsEscapes) {
+      const Function *Callee = Call->getCalledFunction();
+      const auto ArgNo = Call->getDataOperandNo(&U);
+      if (!isLocalFunc(Callee) ||
+          // If it's variadic function, arguments after fixed ones are escaped
+          (Callee->isVarArg() &&
+           (ArgNo >= Callee->getFunctionType()->getNumParams())))
+        // If IPA, then argument escapes only in a Call of non-local function
+        return {EscKindTy::MAY_ESCAPE, EscReasonBits::PASSING_TO_CALL};
+
+      // If called function is local, find argument information in ArgsEscapes
+      // provided by IPA callgraph traversal
+      const auto ArgEscReason = getArgEscStatus(ArgNo, Callee);
+      if (ArgEscReason.any() &&
+          (ArgEscReason != EscReasonBits::PTR_ARG_ALIASING))
+        return {EscKindTy::MAY_ESCAPE, EscReasonBits::PASSING_TO_CALL};
+    } else {
+      // If not IPA, each call is the escape for each pointer-typed argument
+      return {EscKindTy::MAY_ESCAPE, EscReasonBits::PASSING_TO_CALL};
+    }
+  }
+  return {EscKindTy::NO_ESCAPE, std::nullopt};
+}
+
+EscapeAnalysisInfo::EscInfoTy
+EscapeAnalysisInfo::getEscInfoLoad(const Instruction *I) const {
+  LLVM_DEBUG(dbgs() << " -- Load\n");
+  // Volatile loads make the address observable.
+  if (cast<LoadInst>(I)->isVolatile())
+    return {EscKindTy::MAY_ESCAPE, EscReasonBits::VOLATILE};
+  return {EscKindTy::NO_ESCAPE, std::nullopt};
+}
+
+EscapeAnalysisInfo::EscInfoTy
+EscapeAnalysisInfo::getEscInfoStore(const Use &U, const Instruction *I) const {
+  LLVM_DEBUG(dbgs() << " -- Store\n");
+  // Volatile stores make the address observable.
+  if (cast<StoreInst>(I)->isVolatile())
+    return {EscKindTy::MAY_ESCAPE, EscReasonBits::VOLATILE};
+
+  if (U.getOperandNo() != 0)
+    return {EscKindTy::NO_ESCAPE, std::nullopt};
+
+  // Passing value instead of pointer is neither escape nor alias
+  if (const auto *Src = I->getOperand(0); !Src->getType()->isPointerTy())
+    return {EscKindTy::NO_ESCAPE, std::nullopt};
+
+  const auto DstObjs = getUnderlyingMayEscObjects(I->getOperand(1));
+  if (DstObjs.empty())
+    return {EscKindTy::NO_ESCAPE, std::nullopt};
+
+  // TODO Do we need it?
+  // Store to GV - escape
+  for (const auto *Obj : DstObjs) {
+    if (isa<GlobalVariable>(Obj))
+      return {EscKindTy::MAY_ESCAPE, EscReasonBits::GPTR_ALIASING};
+    // if (isa<Argument>(Obj) && Obj->getType()->isPointerTy())
+    // return {EscKindTy::MAY_ESCAPE, EscReasonBits::PTR_ARG_ALIASING};
+  }
+
+  return {EscKindTy::MAY_ALIASING, DstObjs};
+}
+
+EscapeAnalysisInfo::EscInfoTy
+EscapeAnalysisInfo::getEscInfoAtomicRMW(const Use &U,
+                                        const Instruction *I) const {
+  LLVM_DEBUG(dbgs() << " -- AtomicRMW\n");
+  // atomicrmw conceptually includes both a load and store from
+  // the same location.
+  // As with a store, the location being accessed is not captured,
+  // but the value being stored is.
+  // Volatile stores make the address observable.
+  const auto *ARMWI = cast<AtomicRMWInst>(I);
+  if (U.getOperandNo() == 1 || ARMWI->isVolatile())
+    return {EscKindTy::MAY_ESCAPE, EscReasonBits::VOLATILE};
+  return {EscKindTy::NO_ESCAPE, std::nullopt};
+}
+
+EscapeAnalysisInfo::EscInfoTy
+EscapeAnalysisInfo::getEscInfoAtomicCmpXchg(const Use &U,
+                                            const Instruction *I) const {
+  LLVM_DEBUG(dbgs() << " -- AtomicCmpXchg\n");
+  // cmpxchg conceptually includes both a load and store from
+  // the same location.
+  // As with a store, the location being accessed is not captured,
+  // but the value being stored is.
+  // Volatile stores make the address observable.
+  if (const auto *ACXI = cast<AtomicCmpXchgInst>(I);
+      U.getOperandNo() == 1 || U.getOperandNo() == 2 || ACXI->isVolatile())
+    return {EscKindTy::MAY_ESCAPE, EscReasonBits::OTHER};
+  return {EscKindTy::NO_ESCAPE, std::nullopt};
+}
+
+EscapeAnalysisInfo::EscInfoTy
+EscapeAnalysisInfo::getEscInfoGetElementPtr(const Instruction *I) const {
+  LLVM_DEBUG(dbgs() << " -- GetElementPtr\n");
+  // AA does not support pointers of vectors, so GEP vector splats need to
+  // be considered as captures.
+  if (I->getType()->isVectorTy())
+    return {EscKindTy::MAY_ESCAPE, EscReasonBits::OTHER};
+
+  // GEP itself is not escape or alias
+  return {EscKindTy::NO_ESCAPE, std::nullopt};
+}
+
+EscapeAnalysisInfo::EscInfoTy
+EscapeAnalysisInfo::getEscInfoICmp(const Use &U, const Instruction *I) const {
+  LLVM_DEBUG(dbgs() << " -- ICmp\n");
+  const unsigned Idx = U.getOperandNo();
+  const unsigned OtherIdx = 1 - Idx;
+  if (const auto *CPN =
+          dyn_cast<ConstantPointerNull>(I->getOperand(OtherIdx))) {
+    // Don't count comparisons of a no-alias return value against null as
+    // captures. This allows us to ignore comparisons of malloc results
+    // with null, for example.
+    if (CPN->getType()->getAddressSpace() == 0)
+      if (isNoAliasCall(U.get()->stripPointerCasts()))
+        return {EscKindTy::NO_ESCAPE, std::nullopt};
+
+    if (!I->getFunction()->nullPointerIsDefined()) {
+      const auto *O = I->getOperand(Idx)->stripPointerCastsSameRepresentation();
+      // Comparing a dereferenceable_or_null pointer against null cannot
+      // lead to pointer escapes, because if it is not null it must be a
+      // valid (in-bounds) pointer.
+      if (isDereferenceableOrNull(O, I->getModule()->getDataLayout()))
+        return {EscKindTy::NO_ESCAPE, std::nullopt};
+    }
+  }
+
+  // Otherwise, be conservative. There are crazy ways to capture pointers
+  // using comparisons.
+  // return {CaptureKind::MAY_CAPTURE, std::nullopt};
+  return {EscKindTy::NO_ESCAPE, std::nullopt};
+}
+
+EscapeAnalysisInfo::EscInfoTy
+EscapeAnalysisInfo::getEscInfoRet(const Use &U) const {
+  LLVM_DEBUG(dbgs() << " -- Ret\n");
+  // If not return pointer, means that's not escape
+  if (!U->getType()->isPointerTy())
+    return {EscKindTy::NO_ESCAPE, std::nullopt};
+
+  // Returning null pointer is not escape
+  if (isa<ConstantPointerNull>(U.get()))
+    return {EscKindTy::NO_ESCAPE, std::nullopt};
+
+  return {EscKindTy::MAY_ESCAPE, EscReasonBits::RET_PTR};
+}
+
 /// Determine what kind of escape behaviour V may exhibit, return
 /// escape reason and list of aliases if applicable.
 EscapeAnalysisInfo::EscInfoTy
@@ -365,214 +615,27 @@ EscapeAnalysisInfo::getEscapeKindForOpnd(const Use &U) const {
 
   switch (I->getOpcode()) {
   case Instruction::Call:
-  case Instruction::Invoke: {
-    LLVM_DEBUG(dbgs() << " -- Call/Invoke\n");
-    // This object is already escaped since it's external
-    const auto EscReason = isExternalEscapedObject(U.get());
-    LLVM_DEBUG(dbgs() << "\tEscReason:"; printEscReason(EscReason));
-    if (EscReason.any() && EscReason != PTR_ARG_ALIASING)
-      return {EscKindTy::MAY_ESCAPE,
-              EscReason | EscReasonTy(EscReasonBits::PASSING_TO_CALL)};
-
-    const auto *Call = cast<CallBase>(I);
-
-    // Not captured if the callee is readonly, doesn't return a copy through
-    // its return value and doesn't unwind (a readonly function can leak bits
-    // by throwing an exception or not depending on the input value).
-    if (Call->onlyReadsMemory() && Call->doesNotThrow() &&
-        Call->getType()->isVoidTy())
-      return {EscKindTy::NO_ESCAPE, std::nullopt};
-
-    // The pointer is not captured if returned pointer is not captured.
-    // NOTE: CaptureTracking users should not assume that only functions
-    // marked with nocapture do not capture. This means that places like
-    // getUnderlyingObject in ValueTracking or DecomposeGEPExpression
-    // in BasicAA also need to know about this property.
-    if (isIntrinsicReturningPointerAliasingArgumentWithoutCapturing(Call, true))
-      return {EscKindTy::MAY_ALIASING, getUnderlyingMayEscObjects(I)};
-
-    // Volatile operations effectively capture the memory location that they
-    // load and store to.
-    if (const auto *MI = dyn_cast<MemIntrinsic>(Call)) {
-      if (MI->isVolatile())
-        return {EscKindTy::MAY_ESCAPE, EscReasonTy(EscReasonBits::VOLATILE)};
-
-      const auto *Src = MI->getArgOperand(1);
-
-      // Considering llvm.memcpy intrinsic
-      if ((MI->getIntrinsicID() == Intrinsic::memcpy) && (Src == U.get())) {
-        // Check whether the source argument is a struct containing pointers
-        if (const auto *Alloca = dyn_cast<AllocaInst>(U.get())) {
-          if (const Type *StructTy = Alloca->getAllocatedType();
-              StructTy && structContainsPointerType(StructTy)) {
-            const auto DstObjs = getUnderlyingMayEscObjects(
-                MI->getArgOperand(0));
-            return {EscKindTy::MAY_ALIASING, DstObjs};
-          }
-        }
-      }
-    }
-
-    // Calling a function pointer does not in itself cause the pointer to
-    // be captured.  This is a subtle point considering that (for example)
-    // the callee might return its own address.  It is analogous to saying
-    // that loading a value from a pointer does not cause the pointer to be
-    // captured, even though the loaded value might be the pointer itself
-    // (think of self-referential objects).
-    if (Call->isCallee(&U))
-      return {EscKindTy::NO_ESCAPE, std::nullopt};
-
-    // Check if that's the argument which can escape through this call
-    // Not captured if only passed via 'nocapture' arguments.
-    if (Call->isDataOperand(&U) &&
-        !Call->doesNotCapture(Call->getDataOperandNo(&U)) &&
-        U->getType()->isPointerTy()) {
-      // If that's IPA, need to check whether passing to calls is escape or not
-      if (ArgsEscapes) {
-        const Function *Callee = Call->getCalledFunction();
-        if (!isLocalFunc(Callee))
-          // If IPA, then argument escapes only in a Call of non-local function
-          return {EscKindTy::MAY_ESCAPE, EscReasonBits::PASSING_TO_CALL};
-
-        // If called function is local, find argument information in ArgsEscapes
-        // provided by IPA callgraph traversal
-        const auto FuncIt = ArgsEscapes->find(Callee);
-        assert(FuncIt != ArgsEscapes->end() &&
-               "ArgsEscapes must contain information about called function");
-
-        // If it's variadic function, all arguments after fixed ones are escaped
-        if (Callee->isVarArg() && (Call->getDataOperandNo(&U) >=
-                                   Callee->getFunctionType()->getNumParams()))
-          return {EscKindTy::MAY_ESCAPE, EscReasonBits::PASSING_TO_CALL};
-
-        const auto ArgEscIt = FuncIt->second.find(Call->getDataOperandNo(&U));
-        assert(ArgEscIt != FuncIt->second.end() &&
-               "ArgEscapes must contain information about all arguments");
-        if (ArgEscIt->second.any() &&
-            (ArgEscIt->second != EscReasonBits::PTR_ARG_ALIASING))
-          return {EscKindTy::MAY_ESCAPE, EscReasonBits::PASSING_TO_CALL};
-      } else {
-        // If not IPA, each call is the escape for each pointer-typed argument
-        return {EscKindTy::MAY_ESCAPE, EscReasonBits::PASSING_TO_CALL};
-      }
-    }
-    return {EscKindTy::NO_ESCAPE, std::nullopt};
-  }
+  case Instruction::Invoke:
+    return getEscInfoCall(U, I);
   case Instruction::Load:
-    LLVM_DEBUG(dbgs() << " -- Load\n");
-    // Volatile loads make the address observable.
-    if (cast<LoadInst>(I)->isVolatile())
-      return {EscKindTy::MAY_ESCAPE, EscReasonBits::VOLATILE};
-    return {EscKindTy::NO_ESCAPE, std::nullopt};
-  case Instruction::Store: {
-    LLVM_DEBUG(dbgs() << " -- Store\n");
-    // Volatile stores make the address observable.
-    if (cast<StoreInst>(I)->isVolatile())
-      return {EscKindTy::MAY_ESCAPE, EscReasonBits::VOLATILE};
-
-    if (U.getOperandNo() != 0)
-      return {EscKindTy::NO_ESCAPE, std::nullopt};
-
-    // Passing value instead of pointer is neither escape nor alias
-    if (const auto *Src = I->getOperand(0); !Src->getType()->isPointerTy())
-      return {EscKindTy::NO_ESCAPE, std::nullopt};
-
-    const auto DstObjs = getUnderlyingMayEscObjects(I->getOperand(1));
-    if (DstObjs.empty())
-      return {EscKindTy::NO_ESCAPE, std::nullopt};
-
-    // TODO Do we need it?
-    // Store to GV - escape
-    for (const auto *Obj : DstObjs) {
-      if (isa<GlobalVariable>(Obj))
-        return {EscKindTy::MAY_ESCAPE, EscReasonBits::GPTR_ALIASING};
-      // if (isa<Argument>(Obj) && Obj->getType()->isPointerTy())
-        // return {EscKindTy::MAY_ESCAPE, EscReasonBits::PTR_ARG_ALIASING};
-    }
-
-    return {EscKindTy::MAY_ALIASING, DstObjs};
-  }
-  case Instruction::AtomicRMW: {
-    LLVM_DEBUG(dbgs() << " -- AtomicRMW\n");
-    // atomicrmw conceptually includes both a load and store from
-    // the same location.
-    // As with a store, the location being accessed is not captured,
-    // but the value being stored is.
-    // Volatile stores make the address observable.
-    const auto *ARMWI = cast<AtomicRMWInst>(I);
-    if (U.getOperandNo() == 1 || ARMWI->isVolatile())
-      return {EscKindTy::MAY_ESCAPE, EscReasonBits::VOLATILE};
-    return {EscKindTy::NO_ESCAPE, std::nullopt};
-  }
-  case Instruction::AtomicCmpXchg: {
-    LLVM_DEBUG(dbgs() << " -- AtomicCmpXchg\n");
-    // cmpxchg conceptually includes both a load and store from
-    // the same location.
-    // As with a store, the location being accessed is not captured,
-    // but the value being stored is.
-    // Volatile stores make the address observable.
-    if (const auto *ACXI = cast<AtomicCmpXchgInst>(I);
-        U.getOperandNo() == 1 || U.getOperandNo() == 2 || ACXI->isVolatile())
-      return {EscKindTy::MAY_ESCAPE, EscReasonBits::OTHER};
-    return {EscKindTy::NO_ESCAPE, std::nullopt};
-  }
-  case Instruction::GetElementPtr: {
-    LLVM_DEBUG(dbgs() << " -- GetElementPtr\n");
-    // AA does not support pointers of vectors, so GEP vector splats need to
-    // be considered as captures.
-    if (I->getType()->isVectorTy())
-      return {EscKindTy::MAY_ESCAPE, EscReasonBits::OTHER};
-
-    // GEP itself is not escape or alias
-    return {EscKindTy::NO_ESCAPE, std::nullopt};
-  }
-  case Instruction::ICmp: {
-    LLVM_DEBUG(dbgs() << " -- ICmp\n");
-    const unsigned Idx = U.getOperandNo();
-    const unsigned OtherIdx = 1 - Idx;
-    if (const auto *CPN =
-        dyn_cast<ConstantPointerNull>(I->getOperand(OtherIdx))) {
-      // Don't count comparisons of a no-alias return value against null as
-      // captures. This allows us to ignore comparisons of malloc results
-      // with null, for example.
-      if (CPN->getType()->getAddressSpace() == 0)
-        if (isNoAliasCall(U.get()->stripPointerCasts()))
-          return {EscKindTy::NO_ESCAPE, std::nullopt};
-
-      if (!I->getFunction()->nullPointerIsDefined()) {
-        const auto *O =
-            I->getOperand(Idx)->stripPointerCastsSameRepresentation();
-        // Comparing a dereferenceable_or_null pointer against null cannot
-        // lead to pointer escapes, because if it is not null it must be a
-        // valid (in-bounds) pointer.
-        if (isDereferenceableOrNull(O, I->getModule()->getDataLayout()))
-          return {EscKindTy::NO_ESCAPE, std::nullopt};
-      }
-    }
-
-    // Otherwise, be conservative. There are crazy ways to capture pointers
-    // using comparisons.
-    // return {CaptureKind::MAY_CAPTURE, std::nullopt};
-    return {EscKindTy::NO_ESCAPE, std::nullopt};
-  }
-
-  case Instruction::Ret: {
-    LLVM_DEBUG(dbgs() << " -- Ret\n");
-    // If not return pointer, means that's not escape
-    if (!U->getType()->isPointerTy())
-      return {EscKindTy::NO_ESCAPE, std::nullopt};
-
-    // Returning null pointer is not escape
-    if (isa<ConstantPointerNull>(U.get()))
-      return {EscKindTy::NO_ESCAPE, std::nullopt};
-
-    return {EscKindTy::MAY_ESCAPE, EscReasonBits::RET_PTR};
-  }
+    return getEscInfoLoad(I);
+  case Instruction::Store:
+    return getEscInfoStore(U, I);
+  case Instruction::AtomicRMW:
+    return getEscInfoAtomicRMW(U, I);
+  case Instruction::AtomicCmpXchg:
+    return getEscInfoAtomicCmpXchg(U, I);
+  case Instruction::GetElementPtr:
+    return getEscInfoGetElementPtr(I);
+  case Instruction::ICmp:
+    return getEscInfoICmp(U, I);
+  case Instruction::Ret:
+    return getEscInfoRet(U);
   default:
     LLVM_DEBUG(dbgs() << " -- Default\n");
     return {EscKindTy::NO_ESCAPE, std::nullopt};
-    // Think, maybe we behave too aggressive, because previous logic was
-    // return {EscapeKind::MAY_ESCAPE, std::nullopt};
+    // Need to recheck, maybe we behave too aggressive, because previous logic
+    // was return {EscapeKind::MAY_ESCAPE, std::nullopt};
   }
 }
 
@@ -786,8 +849,8 @@ void EscapeAnalysisInfo::printEscapingForBB(const BasicBlock *BB,
   bool PrintedEscapeHeader = false;
   for (const auto &V : It->second.getEscapedObjs()) {
     if (ArgsEscapes) {
-      if (V.second == PTR_ARG_ALIASING)
-        continue;
+      // if (V.second == PTR_ARG_ALIASING)
+        // continue;
     } else {
       if (isExternalEscapedObject(V.first).any())
         // I'm not sure, we should not print objects escaping by definition
@@ -803,7 +866,8 @@ void EscapeAnalysisInfo::printEscapingForBB(const BasicBlock *BB,
 
     OS << *V.first << "\n";
   }
-  OS << "\n";
+  if (PrintedEscapeHeader)
+    OS << "\n";
 }
 
 void EscapeAnalysisInfo::print(raw_ostream &OS) const {

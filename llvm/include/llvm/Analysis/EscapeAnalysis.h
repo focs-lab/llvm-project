@@ -165,6 +165,7 @@ private:
   /// Check if that's the object is "already escaped":
   /// e.g. pointer function argument or global variable.
   EscReasonTy isExternalEscapedObject(const Value *V) const;
+  EscReasonTy isExternalEscapedObjectSimple(const Value *V) const;
 
   /// Determine what kind of escape behaviour V may exhibit.
   struct EscInfoTy {
@@ -177,6 +178,16 @@ private:
   /// escape reason and list of aliases if applicable.
   EscInfoTy getEscapeKindForOpnd(const Use &U) const;
 
+  /// Functions to process operand/instruction pair to get escape status
+  EscInfoTy getEscInfoCall(const Use &U, const Instruction *I) const;
+  EscInfoTy getEscInfoLoad(const Instruction *I) const;
+  EscInfoTy getEscInfoStore(const Use &U, const Instruction *I) const;
+  EscInfoTy getEscInfoAtomicRMW(const Use &U, const Instruction *I) const;
+  EscInfoTy getEscInfoAtomicCmpXchg(const Use &U, const Instruction *I) const;
+  EscInfoTy getEscInfoGetElementPtr(const Instruction *I) const;
+  EscInfoTy getEscInfoICmp(const Use &U, const Instruction *I) const;
+  EscInfoTy getEscInfoRet(const Use &U) const;
+
   /// Print escaped objects in some path from Entry to BB
   void printEscapingForBB(const BasicBlock *BB, raw_ostream &OS) const;
 
@@ -186,9 +197,11 @@ private:
   /// Check whether type contains pointers
   static bool structContainsPointerType(const Type *Ty);
 
-  /// Escaping state for the function is the escape state for Exit BB
-  /// TODO: remove
+  /// Escaping state for the function is union of all BBs' escape states
   const EscapedObjectsTy &getFuncEscState() const;
+
+  /// Find in ArgsEscapes given argument and return escape status
+  EscReasonTy getArgEscStatus(unsigned ArgNo, const Function *Func) const;
 
   /// Custom implementation of getUnderlyingObject infrastracture (taken and
   /// modified from ValueTracker.cpp)
