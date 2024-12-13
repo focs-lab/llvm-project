@@ -525,7 +525,7 @@ void ThreadSanitizer::chooseInstructionsToInstrument(
       for (const auto *Obj :
            EscapeAnalysisInfo::getUnderlyingMayEscObjects(Addr)) {
         dbgs() << "check Obj " << *Obj << "\n";
-        const bool IsEscaped = EAI.value().isEscapedForBB(I->getParent(), Obj);
+        const bool IsEscaped = EAI.value().isEscapedForBBTSan(I->getParent(), Obj);
         DEBUG_WITH_TYPE("tsan-ea", compareCaptureAndEA(I, Addr, IsEscaped));
         if (IsEscaped) {
           InstrOmitted = false;
@@ -543,7 +543,7 @@ void ThreadSanitizer::chooseInstructionsToInstrument(
       for (const auto *Obj :
            EscapeAnalysisInfo::getUnderlyingMayEscObjects(Addr)) {
         LLVM_DEBUG(dbgs() << "EscapeAnalysisInfo " << *Obj << " -- ");
-        const bool IsEscaped = EAIGlobal.value()->isEscapedForBBInFunc(
+        const bool IsEscaped = EAIGlobal.value()->isEscapedForBBInFuncTSan(
           I->getFunction(), I->getParent(), Obj);
         DEBUG_WITH_TYPE("tsan-ea", compareCaptureAndEA(I, Addr, IsEscaped));
         if (IsEscaped) {

@@ -107,7 +107,7 @@ private:
 
     /// Make list of escaping object + its aliases, and add them to the list
     /// of escaping object
-    void addEscapingObject(const Value *EscapingObject, EscReasonTy EscReason);
+    void addEscapingObject(const Value *EscObj, EscReasonTy EscReason);
 
     /// Adds an object to the list of escaped objects with a specified escape
     /// reason. If the object is already in the list, update escape reason.
@@ -165,7 +165,7 @@ private:
   /// Check if that's the object is "already escaped":
   /// e.g. pointer function argument or global variable.
   EscReasonTy isExternalEscapedObject(const Value *V) const;
-  EscReasonTy isExternalEscapedObjectSimple(const Value *V) const;
+  static EscReasonTy isExternalEscapedObjectSimple(const Value *V);
 
   /// Determine what kind of escape behaviour V may exhibit.
   struct EscInfoTy {
@@ -180,13 +180,13 @@ private:
 
   /// Functions to process operand/instruction pair to get escape status
   EscInfoTy getEscInfoCall(const Use &U, const Instruction *I) const;
-  EscInfoTy getEscInfoLoad(const Instruction *I) const;
-  EscInfoTy getEscInfoStore(const Use &U, const Instruction *I) const;
-  EscInfoTy getEscInfoAtomicRMW(const Use &U, const Instruction *I) const;
-  EscInfoTy getEscInfoAtomicCmpXchg(const Use &U, const Instruction *I) const;
-  EscInfoTy getEscInfoGetElementPtr(const Instruction *I) const;
-  EscInfoTy getEscInfoICmp(const Use &U, const Instruction *I) const;
-  EscInfoTy getEscInfoRet(const Use &U) const;
+  static EscInfoTy getEscInfoLoad(const Instruction *I);
+  static EscInfoTy getEscInfoStore(const Use &U, const Instruction *I);
+  static EscInfoTy getEscInfoAtomicRMW(const Use &U, const Instruction *I);
+  static EscInfoTy getEscInfoAtomicCmpXchg(const Use &U, const Instruction *I);
+  static EscInfoTy getEscInfoGetElementPtr(const Instruction *I);
+  static EscInfoTy getEscInfoICmp(const Use &U, const Instruction *I);
+  static EscInfoTy getEscInfoRet(const Use &U);
 
   /// Print escaped objects in some path from Entry to BB
   void printEscapingForBB(const BasicBlock *BB, raw_ostream &OS) const;
@@ -214,6 +214,10 @@ private:
   static bool getUnderlyingObjectsForCodeGenWithoutPHIInvCheck(
       const Value *V, SmallVectorImpl<Value *> &Objects, unsigned MaxLookup);
 
+  static bool isPointerArgument(const Value *V) {
+    return isa<Argument>(V) && V->getType()->isPointerTy();
+  }
+
 public:
   /// Recursively search in the instruction for the underlying objects which
   /// may escape
@@ -227,9 +231,10 @@ public:
                             EscReason = std::nullopt) const;
 
   /// Is Value V is escaping in some path from Entry to BB?
-  bool
-  isEscapedForBB(const BasicBlock *BB, const Value *V,
-                 std::optional<std::reference_wrapper<EscReasonTy>> EscReason = std::nullopt) const;
+  bool isEscapedForBB(const BasicBlock *BB, const Value *V,
+                      std::optional<std::reference_wrapper<EscReasonTy>>
+                          EscReason = std::nullopt) const;
+  bool isEscapedForBBTSan(const BasicBlock *BB, const Value *V) const;
 
   static bool isLocalFunc(const Function *F) {
     return F && !F->isDeclaration() && F->isDefinitionExact();
@@ -252,7 +257,7 @@ class EscapeAnalysisGlobalInfo {
   /// (relevant for SCC with 1 node)
   static bool isRecursiveCallGraphNode(const Function *F,
                                        const CallGraphNode *CGN);
-  void updFuncArgsEscapes(const Function *F, const EscapeAnalysisInfo &EAI);
+  void updFuncArgsEscapes(const Function *F, const EscapeAnalysisInfo &EAI) const;
 
 public:
   explicit EscapeAnalysisGlobalInfo(CallGraph &CG);
@@ -263,6 +268,14 @@ public:
                             const Value *V) const {
     if (const auto It = FuncEscapeInfo.find(F); It != FuncEscapeInfo.end())
       return It->second.isEscapedForBB(BB, V);
+    return true;
+  }
+
+  /// Is Value V is escaping in some path from Entry to BB in the function F
+  bool isEscapedForBBInFuncTSan(const Function *F, const BasicBlock *BB,
+                            const Value *V) const {
+    if (const auto It = FuncEscapeInfo.find(F); It != FuncEscapeInfo.end())
+      return It->second.isEscapedForBBTSan(BB, V);
     return true;
   }
 

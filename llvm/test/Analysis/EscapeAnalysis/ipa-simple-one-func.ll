@@ -67,7 +67,11 @@ entry:
 
 define dso_local ptr @func_with_ptr_arg(ptr noundef %x, ptr noundef %y) {
 ; CHECK: Printing analysis 'Escape Analysis' for function 'func_with_ptr_arg':
-; CHECK-NOT: Escaping objects for BB entry:
+; CHECK-DAG:   %Alias = alloca ptr, align 8
+; CHECK-DAG: ptr %x
+; CHECK-DAG: ptr %y
+; CHECK-DAG:   %x.addr = alloca ptr, align 8
+; CHECK-DAG:   %y.addr = alloca ptr, align 8
 entry:
   %x.addr = alloca ptr, align 8
   %y.addr = alloca ptr, align 8
@@ -85,7 +89,9 @@ entry:
 ; CHECK: Escaping objects for BB if.then:
 ; CHECK-DAG:   %Alias = alloca ptr, align 8
 ; CHECK-DAG: ptr %x
+; CHECK-DAG: ptr %y
 ; CHECK-DAG:   %x.addr = alloca ptr, align 8
+; CHECK-DAG:   %y.addr = alloca ptr, align 8
 if.then:                                          ; preds = %entry
   %2 = load ptr, ptr %x.addr, align 8
   store ptr %2, ptr @GPtr, align 8
@@ -94,9 +100,9 @@ if.then:                                          ; preds = %entry
 ; CHECK: Escaping objects for BB if.end:
 ; CHECK-DAG:   %Alias = alloca ptr, align 8
 ; CHECK-DAG: ptr %x
-; CHECK-DAG:   %y.addr = alloca ptr, align 8
-; CHECK-DAG:   %x.addr = alloca ptr, align 8
 ; CHECK-DAG: ptr %y
+; CHECK-DAG:   %x.addr = alloca ptr, align 8
+; CHECK-DAG:   %y.addr = alloca ptr, align 8
 if.end:                                           ; preds = %if.then, %entry
   %3 = load ptr, ptr %y.addr, align 8
   store ptr %3, ptr @GPtr, align 8
