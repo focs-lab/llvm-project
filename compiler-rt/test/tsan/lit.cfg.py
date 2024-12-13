@@ -48,7 +48,8 @@ else:
     extra_cflags = []
 
 # Enable new Escape Analysis instead of default Capture Tracking
-escape_analysis_flag = ["-mllvm -tsan-use-escape-analysis"]
+#escape_analysis_flag = ["-mllvm -tsan-use-escape-analysis"]
+escape_analysis_flag = ["-mllvm -tsan-use-escape-analysis-global"]
 
 tsan_incdir = config.test_source_root + "/../"
 # Setup default compiler flags used with -fsanitize=thread option.

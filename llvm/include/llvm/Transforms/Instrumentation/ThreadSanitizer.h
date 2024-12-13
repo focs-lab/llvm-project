@@ -13,6 +13,8 @@
 #ifndef LLVM_TRANSFORMS_INSTRUMENTATION_THREADSANITIZER_H
 #define LLVM_TRANSFORMS_INSTRUMENTATION_THREADSANITIZER_H
 
+#include <llvm/Analysis/EscapeAnalysis.h>
+
 #include "llvm/IR/PassManager.h"
 
 namespace llvm {
