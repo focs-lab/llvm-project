@@ -164,8 +164,8 @@ private:
 
   /// Check if that's the object is "already escaped":
   /// e.g. pointer function argument or global variable.
-  EscReasonTy isExternalEscapedObject(const Value *V) const;
-  static EscReasonTy isExternalEscapedObjectSimple(const Value *V);
+  EscReasonTy getExtObjStatusWithArgLookup(const Value *V) const;
+  static EscReasonTy getExtObjStatus(const Value *V);
 
   /// Determine what kind of escape behaviour V may exhibit.
   struct EscInfoTy {
@@ -230,10 +230,11 @@ public:
                         std::optional<std::reference_wrapper<EscReasonTy>>
                             EscReason = std::nullopt) const;
 
+  EscReasonTy findObjInBBEscapeState(const BasicBlock *BB,
+                                     const Value *V) const;
+
   /// Is Value V is escaping in some path from Entry to BB?
-  bool isEscapedForBB(const BasicBlock *BB, const Value *V,
-                      std::optional<std::reference_wrapper<EscReasonTy>>
-                          EscReason = std::nullopt) const;
+  EscReasonTy isEscapedForBB(const BasicBlock *BB, const Value *V) const;
   bool isEscapedForBBTSan(const BasicBlock *BB, const Value *V) const;
 
   static bool isLocalFunc(const Function *F) {
@@ -262,14 +263,6 @@ class EscapeAnalysisGlobalInfo {
 public:
   explicit EscapeAnalysisGlobalInfo(CallGraph &CG);
   void print(Module &M, raw_ostream &O) const;
-
-  /// Is Value V is escaping in some path from Entry to BB in the function F
-  bool isEscapedForBBInFunc(const Function *F, const BasicBlock *BB,
-                            const Value *V) const {
-    if (const auto It = FuncEscapeInfo.find(F); It != FuncEscapeInfo.end())
-      return It->second.isEscapedForBB(BB, V);
-    return true;
-  }
 
   /// Is Value V is escaping in some path from Entry to BB in the function F
   bool isEscapedForBBInFuncTSan(const Function *F, const BasicBlock *BB,
