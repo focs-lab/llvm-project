@@ -28,43 +28,57 @@ namespace llvm {
 /// Interface to access escape analysis results for single function.
 class EscapeAnalysisInfo {
 public:
-  // Reasons of escaping
+  /// Reasons of escaping for objects
   enum EscReasonBits {
-    GPTR_ALIASING = 1,
+    GPTR_ALIASING    = 1,
     PTR_ARG_ALIASING = 1 << 1,
-    PASSING_TO_CALL = 1 << 2,
-    RET_PTR = 1 << 3,
-    VOLATILE = 1 << 4,
-    OTHER = 1 << 5,
-    INVALID = 1 << 6
+    PASSING_TO_CALL  = 1 << 2,
+    RET_PTR          = 1 << 3,
+    VOLATILE         = 1 << 4,
+    OTHER            = 1 << 5,
+    INVALID          = 1 << 6
   };
   using EscReasonTy = std::bitset<6>;
 
   using ArgumentEscapesMap =
       DenseMap<const Function *, SmallDenseMap<unsigned, EscReasonTy>>;
 
-  static void printEscReason(EscReasonTy EscReason) {
-    if (EscReason[0]) dbgs() << "GPTR_ALIASING ";
-    if (EscReason[1]) dbgs() << "PTR_ARG_ALIASING ";
-    if (EscReason[2]) dbgs() << "PASSING_TO_CALL ";
-    if (EscReason[3]) dbgs() << "RET_PTR ";
-    if (EscReason[4]) dbgs() << "VOLATILE ";
-    if (EscReason[5]) dbgs() << "OTHER ";
-    dbgs() << "\n";
-  }
+  static void printEscReason(EscReasonTy EscReason);
 
   /// Run analysis for given function.
   /// ArgumentEscape is needed for IPA analysis (because we should ignore
   /// escaping by calls)
-  explicit EscapeAnalysisInfo(
-      const Function &Fn,
-      std::shared_ptr<ArgumentEscapesMap> ArgsEsc = nullptr);
+  explicit EscapeAnalysisInfo(const Function &Fn,
+                              std::shared_ptr<ArgumentEscapesMap> ArgsEsc =
+                                  nullptr);
   void print(raw_ostream &OS) const;
+
+  /// Recursively search in the instruction for the underlying objects which
+  /// may escape
+  static SmallVector<Value *, 8>
+  getUnderlyingMayEscObjects(const Value *V,
+                             unsigned MaxLookup = MaxUnderlObjLookup);
+
+  /// Is Value V is escaping somewhere in the function
+  bool isEscapedForFunc(const Value *V,
+                        std::optional<std::reference_wrapper<EscReasonTy>>
+                            EscReason = std::nullopt) const;
+
+  EscReasonTy findObjInBBEscapeState(const BasicBlock *BB,
+                                     const Value *V) const;
+
+  /// Is Value V is escaping in some path from Entry to BB?
+  EscReasonTy isEscapedForBB(const BasicBlock *BB, const Value *V) const;
+  bool isEscapedForBBTSan(const BasicBlock *BB, const Value *V) const;
+
+  static bool isLocalFunc(const Function *F) {
+    return F && !F->isDeclaration() && F->isDefinitionExact();
+  }
 
 private:
   // Types of object escaping states
   enum class EscKindTy { NO_ESCAPE, MAY_ESCAPE, MAY_ALIASING };
-  static constexpr unsigned GetUnderlObjMaxLookup = 20;
+  static constexpr unsigned MaxUnderlObjLookup = 20;
 
   // Reference to the function being analyzed.
   const Function &AnalyzedFunc;
@@ -126,16 +140,9 @@ private:
     }
 
     const EscapedObjectsTy &getEscapedObjs() const { return EscapedObjects; };
-    const AliasRelationTy &getAliases() const { return AliasRel; }
+    const AliasRelationTy &getAliasRel() const { return AliasRel; }
 
-    void print(raw_ostream &OS) const {
-      OS << "Escaped objects:\n";
-      for (auto &Obj : EscapedObjects) {
-        OS << "  " << *Obj.first << " : ";
-        printEscReason(Obj.second);
-        OS << "\n";
-      }
-    }
+    void print(raw_ostream &OS) const;
 
   private:
     // Set of allocations that escape in this block.
@@ -144,9 +151,6 @@ private:
     // map from Alloca aliases to the original Allocas
     // Note that a Value may be the alias of multiple Allocas
     AliasRelationTy AliasRel;
-
-    // void getAliasSubtreeAsList(const Value *Obj,
-                               // SmallPtrSetImpl<const Value *> &AliasList);
 
     /// Merge two Alias relations into one
     void mergeAliases(const EscapeState &OtherES,
@@ -205,40 +209,17 @@ private:
 
   /// Custom implementation of getUnderlyingObject infrastracture (taken and
   /// modified from ValueTracker.cpp)
-  static const Value *getUnderlyingObjectThroughLoads(const Value *&P,
-                                                      unsigned MaxLookup);
-  static void getUnderlyingObjectsWithoutPHIInvCheck(
-      const Value *V, SmallVectorImpl<const Value *> &Objects,
-      unsigned MaxLookup);
-  static const Value *getUnderlyingObjectFromInt(const Value *V);
-  static bool getUnderlyingObjectsForCodeGenWithoutPHIInvCheck(
-      const Value *V, SmallVectorImpl<Value *> &Objects, unsigned MaxLookup);
+  // static const Value *getUnderlyingObjectThroughLoads(const Value *&P,
+  //                                                     unsigned MaxLookup);
+  // static void getUnderlyingObjectsWithoutPHIInvCheck(
+  //     const Value *V, SmallVectorImpl<const Value *> &Objects,
+  //     unsigned MaxLookup);
+  // static const Value *getUnderlyingObjectFromInt(const Value *V);
+  // static bool getUnderlyingObjectsForCodeGenWithoutPHIInvCheck(
+  //     const Value *V, SmallVectorImpl<Value *> &Objects, unsigned MaxLookup);
 
   static bool isPointerArgument(const Value *V) {
     return isa<Argument>(V) && V->getType()->isPointerTy();
-  }
-
-public:
-  /// Recursively search in the instruction for the underlying objects which
-  /// may escape
-  static SmallVector<Value *, 8>
-  getUnderlyingMayEscObjects(const Value *V,
-                             unsigned MaxLookup = GetUnderlObjMaxLookup);
-
-  /// Is Value V is escaping somewhere in the function
-  bool isEscapedForFunc(const Value *V,
-                        std::optional<std::reference_wrapper<EscReasonTy>>
-                            EscReason = std::nullopt) const;
-
-  EscReasonTy findObjInBBEscapeState(const BasicBlock *BB,
-                                     const Value *V) const;
-
-  /// Is Value V is escaping in some path from Entry to BB?
-  EscReasonTy isEscapedForBB(const BasicBlock *BB, const Value *V) const;
-  bool isEscapedForBBTSan(const BasicBlock *BB, const Value *V) const;
-
-  static bool isLocalFunc(const Function *F) {
-    return F && !F->isDeclaration() && F->isDefinitionExact();
   }
 };
 

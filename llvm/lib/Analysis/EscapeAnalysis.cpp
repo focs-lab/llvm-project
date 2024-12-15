@@ -43,6 +43,20 @@ using namespace llvm;
 // STATISTIC(NumEscapedRet, "Number of escaped by passing to a function");
 
 //===----------------------------------------------------------------------===//
+// For debug
+//===----------------------------------------------------------------------===//
+
+void EscapeAnalysisInfo::printEscReason(EscReasonTy EscReason) {
+  if (EscReason[0]) dbgs() << "GPTR_ALIASING ";
+  if (EscReason[1]) dbgs() << "PTR_ARG_ALIASING ";
+  if (EscReason[2]) dbgs() << "PASSING_TO_CALL ";
+  if (EscReason[3]) dbgs() << "RET_PTR ";
+  if (EscReason[4]) dbgs() << "VOLATILE ";
+  if (EscReason[5]) dbgs() << "OTHER ";
+  dbgs() << "\n";
+}
+
+//===----------------------------------------------------------------------===//
 // Alias relation
 //===----------------------------------------------------------------------===//
 
@@ -86,6 +100,15 @@ void EscapeAnalysisInfo::EscapeState::addAlias(const Value *Alias,
   if (isa<AllocaInst>(Alias) || isPointerArgument(Alias) ||
       isa<GlobalVariable>(Alias))
     addAlias(PointeeValue, Alias, EAI);
+}
+
+void EscapeAnalysisInfo::EscapeState::print(raw_ostream &OS) const {
+  OS << "Escaped objects:\n";
+  for (auto &Obj : EscapedObjects) {
+    OS << "  " << *Obj.first << " : ";
+    printEscReason(Obj.second);
+    OS << "\n";
+  }
 }
 
 /// Get list of aliases for the object a
@@ -273,7 +296,7 @@ EscapeAnalysisInfo::EscapeAnalysisInfo(
     }
 
     LLVM_DEBUG(printEscapingForBB(BB, dbgs());
-      BBEscapeStates[BB].getAliases().print(dbgs());
+      BBEscapeStates[BB].getAliasRel().print(dbgs());
       dbgs() << "******** END of BB " <<  BB->getName() << " ******** \n\n";);
   }
 }
@@ -369,8 +392,7 @@ bool EscapeAnalysisInfo::structContainsPointerType(const Type *Ty) {
 }
 
 /// Escaping state for the function is the escape state for Exit BB
-const EscapeAnalysisInfo::EscapedObjectsTy &
-EscapeAnalysisInfo::getFuncEscState() const {
+const EscapeAnalysisInfo::EscapedObjectsTy &EscapeAnalysisInfo::getFuncEscState() const {
   const auto It = BBEscapeStates.find(&AnalyzedFunc.back());
   assert(It != BBEscapeStates.end() &&
          "Escape state for exit  block  not  found");
@@ -624,8 +646,8 @@ bool EscapeAnalysisInfo::isDereferenceableOrNull(const Value *O,
 
 /// Wrapper around getUnderlyingObject to look through loads
 const Value *
-EscapeAnalysisInfo::getUnderlyingObjectThroughLoads(const Value *&P,
-                                                    const unsigned MaxLookup) {
+getUnderlyingObjectThroughLoads(const Value *&P,
+                                const unsigned MaxLookup) {
   while (true) {
     P = getUnderlyingObject(P, MaxLookup);
     if (const auto *Load = dyn_cast<LoadInst>(P))
@@ -641,7 +663,7 @@ EscapeAnalysisInfo::getUnderlyingObjectThroughLoads(const Value *&P,
 /// This is slightly modified version from ValueTracking.cpp. The differences:
 /// 1. Pass through LoadInst to get the original loaded object.
 /// 2. Ignore phi invariant check.
-void EscapeAnalysisInfo::getUnderlyingObjectsWithoutPHIInvCheck(
+void getUnderlyingObjectsWithoutPHIInvCheck(
     const Value *V, SmallVectorImpl<const Value *> &Objects,
     const unsigned MaxLookup) {
   SmallPtrSet<const Value *, 4> Visited;
@@ -674,7 +696,7 @@ void EscapeAnalysisInfo::getUnderlyingObjectsWithoutPHIInvCheck(
 
 /// This is the function that does the work of looking through basic
 /// ptrtoint+arithmetic+inttoptr sequences.
-const Value *EscapeAnalysisInfo::getUnderlyingObjectFromInt(const Value *V) {
+const Value *getUnderlyingObjectFromInt(const Value *V) {
   do {
     if (const Operator *U = dyn_cast<Operator>(V)) {
       // If we find a ptrtoint, we can transfer control back to the
@@ -703,7 +725,7 @@ const Value *EscapeAnalysisInfo::getUnderlyingObjectFromInt(const Value *V) {
 /// This is a wrapper around getUnderlyingObjects and adds support for basic
 /// ptrtoint+arithmetic+inttoptr sequences.
 /// It returns false if unidentified object is found in getUnderlyingObjects.
-bool EscapeAnalysisInfo::getUnderlyingObjectsForCodeGenWithoutPHIInvCheck(
+bool getUnderlyingObjectsForCodeGenWithoutPHIInvCheck(
     const Value *V, SmallVectorImpl<Value *> &Objects,
     const unsigned MaxLookup) {
   SmallPtrSet<const Value *, 16> Visited;
@@ -744,9 +766,8 @@ bool EscapeAnalysisInfo::getUnderlyingObjectsForCodeGenWithoutPHIInvCheck(
 
 /// Recuresively search in the instruction for the underlying objects which
 /// may escape
-SmallVector<Value *, 8>
-EscapeAnalysisInfo::getUnderlyingMayEscObjects(const Value *V,
-                                               const unsigned MaxLookup) {
+SmallVector<Value *, 8> EscapeAnalysisInfo::getUnderlyingMayEscObjects(
+    const Value *V, const unsigned MaxLookup) {
   SmallVector<Value *, 8> UnderlObjs;
   // LLVM_DEBUG(dbgs() << "\tgetUnderlyingMayEscObjects for " << *V << "\n");
   getUnderlyingObjectsForCodeGenWithoutPHIInvCheck(V, UnderlObjs, MaxLookup);
