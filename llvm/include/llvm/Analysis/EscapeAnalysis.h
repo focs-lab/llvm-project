@@ -144,6 +144,9 @@ private:
 
     void print(raw_ostream &OS) const;
 
+    /// Try to find object in the EscapedObjects and return escape reason
+    EscReasonTy getEscReason(const Value *V) const;
+
   private:
     // Set of allocations that escape in this block.
     EscapedObjectsTy EscapedObjects;

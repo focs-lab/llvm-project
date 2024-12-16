@@ -111,6 +111,14 @@ void EscapeAnalysisInfo::EscapeState::print(raw_ostream &OS) const {
   }
 }
 
+EscapeAnalysisInfo::EscReasonTy EscapeAnalysisInfo::EscapeState::getEscReason(
+    const Value *V) const {
+  const auto EscObjsIt = EscapedObjects.find(V);
+  if (EscObjsIt != EscapedObjects.end())
+    return EscObjsIt->second;
+  return 0;
+}
+
 /// Get list of aliases for the object a
 std::optional<EscapeAnalysisInfo::AliasRelationTy::AliasListTy>
 EscapeAnalysisInfo::AliasRelationTy::getAliases(const Value *V) const {
@@ -152,6 +160,7 @@ bool EscapeAnalysisInfo::EscapeState::operator==(const EscapeState &ES) const {
 void EscapeAnalysisInfo::EscapeState::addEscapeObjOrReason(
     const Value *EscObj, const EscReasonTy EscReason) {
   LLVM_DEBUG(dbgs() << "\t\t\t\taddEscapeObjOrReason: " << *EscObj << "\n");
+  LLVM_DEBUG(dbgs() << "\t\t\t\tNew EscReason: "; printEscReason(EscReason););
   if (const auto EscObjIt = EscapedObjects.find(EscObj);
       EscObjIt != EscapedObjects.end()) {
     // Object is already escaped - add the escape reason
@@ -160,7 +169,6 @@ void EscapeAnalysisInfo::EscapeState::addEscapeObjOrReason(
     // Object has not escaped before - add it
     EscapedObjects.insert({EscObj, EscReason});
   }
-  LLVM_DEBUG(dbgs() << "\t\t\t\tNew EscReason: "; printEscReason(EscReason););
 }
 
 void EscapeAnalysisInfo::EscapeState::addEscapingObject(
@@ -333,9 +341,18 @@ void EscapeAnalysisInfo::compBBEscapeState(const BasicBlock *BB,
         // If that's return instruction, we should check if it can return
         // a pointer to some external object
         if ((I.getOpcode() == Instruction::Ret) && (!IsRetEscape))
-          for (const Value *EO: UnderlObjs)
-            if (isEscapedForFunc(EO))
+          for (const Value *EO: UnderlObjs) {
+            LLVM_DEBUG(
+              dbgs() << "\t\treturn: check: " << *EO << "\n";
+              print(dbgs()));
+            if (isEscapedForFunc(EO) || ES.getEscReason(EO).any()) {
+              LLVM_DEBUG(
+                dbgs() << "\t\t\t\treturn: " << *EO << " is escaped\n");
               IsRetEscape = true;
+            } else
+              LLVM_DEBUG(
+                dbgs() << "\t\t\t\treturn: " << *EO << " is not escaped\n");
+          }
 
         for (const Value *EscObj : UnderlObjs) {
           LLVM_DEBUG(dbgs() << "\t\ttry to addEscapingObject: " << *EscObj << "\n");
@@ -580,11 +597,8 @@ EscapeAnalysisInfo::EscInfoTy
 EscapeAnalysisInfo::getEscInfoRet(const Use &U) {
   LLVM_DEBUG(dbgs() << " -- Ret\n");
   // If not return pointer, means that's not escape
-  if (!U->getType()->isPointerTy())
-    return {EscKindTy::NO_ESCAPE, std::nullopt};
-
   // Returning null pointer is not escape
-  if (isa<ConstantPointerNull>(U.get()))
+  if (!U->getType()->isPointerTy() || (isa<ConstantPointerNull>(U.get())))
     return {EscKindTy::NO_ESCAPE, std::nullopt};
 
   return {EscKindTy::MAY_ESCAPE, EscReasonBits::RET_PTR};
@@ -722,6 +736,23 @@ const Value *getUnderlyingObjectFromInt(const Value *V) {
   } while (true);
 }
 
+/// Check if it's a function call which can escape
+static bool isCallMayEscape(const Value *V) {
+  if (isa<CallInst>(V) || isa<InvokeInst>(V)) {
+    // Check if the call is to a known memory allocation function.
+    if (const Function *F = cast<CallBase>(V)->getCalledFunction()) {
+      if (F->getName() == "malloc" || F->getName() == "calloc" ||
+          F->getName() == "realloc" ||
+          // TODO this is temp. Consider mangling
+          F->getName() == "operator new" ||
+          F->getName() == "operator new[]")
+        return false; // Memory allocation functions do not escape.
+    }
+    return true;
+  }
+  return false;
+}
+
 /// This is a wrapper around getUnderlyingObjects and adds support for basic
 /// ptrtoint+arithmetic+inttoptr sequences.
 /// It returns false if unidentified object is found in getUnderlyingObjects.
@@ -753,8 +784,10 @@ bool getUnderlyingObjectsForCodeGenWithoutPHIInvCheck(
       // If getUnderlyingObjects fails to find an identifiable object,
       // getUnderlyingObjectsForCodeGen also fails for safety.
       if (!isIdentifiedObject(VV) &&
-          // Added because function arguments may escape or be aliases */
-          !isa<Argument>(VV)) {
+          // Function arguments may escape or be aliases */
+          !isa<Argument>(VV) &&
+          // Results of function calls (e.g. returning pointer) may escape
+          !isCallMayEscape(VV)) {
         Objects.clear();
         return false;
       }
@@ -769,14 +802,14 @@ bool getUnderlyingObjectsForCodeGenWithoutPHIInvCheck(
 SmallVector<Value *, 8> EscapeAnalysisInfo::getUnderlyingMayEscObjects(
     const Value *V, const unsigned MaxLookup) {
   SmallVector<Value *, 8> UnderlObjs;
-  // LLVM_DEBUG(dbgs() << "\tgetUnderlyingMayEscObjects for " << *V << "\n");
+  LLVM_DEBUG(dbgs() << "\tgetUnderlyingMayEscObjects for " << *V << "\n");
   getUnderlyingObjectsForCodeGenWithoutPHIInvCheck(V, UnderlObjs, MaxLookup);
-  // LLVM_DEBUG(if (!UnderlObjs.empty()) {
-  //   dbgs() << "\tgetUnderlyingMayEscObjects:";
-  //   for (const auto *Obj : UnderlObjs)
-  //     dbgs() << "\t\t" << *Obj << "\n"; }
-  //     else
-  //     dbgs() << "\tgetUnderlyingMayEscObjects -- empty\n"; );
+  LLVM_DEBUG(if (!UnderlObjs.empty()) {
+  dbgs() << "\tgetUnderlyingMayEscObjects:";
+  for (const auto *Obj : UnderlObjs)
+  dbgs() << "\t\t" << *Obj << "\n"; }
+  else
+  dbgs() << "\tgetUnderlyingMayEscObjects -- empty\n"; );
   return UnderlObjs;
 }
 
@@ -785,11 +818,7 @@ EscapeAnalysisInfo::findObjInBBEscapeState(const BasicBlock *BB,
                                            const Value *V) const {
   const auto It = BBEscapeStates.find(BB);
   assert((It != BBEscapeStates.end()) && "Cannot find BBEscapeState for BB\n");
-
-  const auto EscObjs = It->second.getEscapedObjs().find(V);
-  if (EscObjs != It->second.getEscapedObjs().end())
-    return EscObjs->second;
-  return 0;
+  return It->second.getEscReason(V);
 }
 
 /// Is Value V is escaping in some path from Entry to BB?
