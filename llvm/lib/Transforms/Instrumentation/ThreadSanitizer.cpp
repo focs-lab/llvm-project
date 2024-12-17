@@ -456,15 +456,18 @@ bool ThreadSanitizer::addrPointsToConstantData(Value *Addr) {
 }
 
 static void compareCaptureAndEA(Instruction *I, Value *Addr, bool IsEscaped) {
-  dbgs() << "Instr: " << *I << "\n";
   bool IsCaptured = true;
   if (isa<AllocaInst>(getUnderlyingObject(Addr)))
     IsCaptured = PointerMayBeCaptured(Addr, true, true);
 
-  if ((IsCaptured) && (!IsEscaped)) {
-    dbgs() << "EscapeAnalysis outperforms CaptureTracking!\n";
+  if (IsCaptured && (!IsEscaped)) {
+    LLVM_DEBUG(dbgs() << "EscapeAnalysis outperforms CaptureTracking!\n");
     NumEscapeAnalysisOutperformsCaptureTracking++;
+    return;
   }
+  if (!IsCaptured && IsEscaped)
+    LLVM_DEBUG(
+        dbgs() << "WARNING: CaptureTracking outperforms EscapeAnalysis!\n");
 }
 
 // Instrumenting some of the accesses may be proven redundant.
@@ -487,7 +490,7 @@ void ThreadSanitizer::chooseInstructionsToInstrument(
   DenseMap<Value *, size_t> WriteTargets; // Map of addresses to index in All
   // Iterate from the end.
   for (Instruction *I : reverse(Local)) {
-    LLVM_DEBUG(dbgs() << "\nchooseInstructionsToInstrument I: " << *I << "\n");
+    LLVM_DEBUG(dbgs() << "\nchooseI: " << *I << "\n");
 
     const bool IsWrite = isa<StoreInst>(*I);
     Value *Addr = IsWrite ? cast<StoreInst>(I)->getPointerOperand()
@@ -520,13 +523,20 @@ void ThreadSanitizer::chooseInstructionsToInstrument(
       }
     }
 
+    if (isa<AllocaInst>(getUnderlyingObject(Addr))) {
+      if (!PointerMayBeCaptured(Addr, true, true)) {
+        LLVM_DEBUG(dbgs() << "PointerMayBeCaptured -- Instruction omitted\n");
+        NumOmittedNonCaptured++;
+        continue;
+      }
+    }
+
     if (EAI.has_value()) {
       bool InstrOmitted = false;
       for (const auto *Obj :
            EscapeAnalysisInfo::getUnderlyingMayEscObjects(Addr)) {
-        dbgs() << "check Obj " << *Obj << "\n";
         const bool IsEscaped = EAI.value().isEscapedForBBTSan(I->getParent(), Obj);
-        DEBUG_WITH_TYPE("tsan-ea", compareCaptureAndEA(I, Addr, IsEscaped));
+        // DEBUG_WITH_TYPE("tsan-ea", compareCaptureAndEA(I, Addr, IsEscaped));
         if (IsEscaped) {
           InstrOmitted = false;
           break;
@@ -545,7 +555,7 @@ void ThreadSanitizer::chooseInstructionsToInstrument(
         LLVM_DEBUG(dbgs() << "EscapeAnalysisInfo " << *Obj << " -- ");
         const bool IsEscaped = EAIGlobal.value()->isEscapedForBBInFuncTSan(
           I->getFunction(), I->getParent(), Obj);
-        DEBUG_WITH_TYPE("tsan-ea", compareCaptureAndEA(I, Addr, IsEscaped));
+        // DEBUG_WITH_TYPE("tsan-ea", compareCaptureAndEA(I, Addr, IsEscaped));
         if (IsEscaped) {
           LLVM_DEBUG(dbgs() << "escaped\n");
           InstrOmitted = false;
@@ -556,16 +566,11 @@ void ThreadSanitizer::chooseInstructionsToInstrument(
       }
       if (InstrOmitted) {
         LLVM_DEBUG(dbgs() << "Instruction omitted\n");
+        NumEscapeAnalysisOutperformsCaptureTracking++;
         NumOmittedNonEscaped++;
         continue;
       }
-    } else {
-      if (isa<AllocaInst>(getUnderlyingObject(Addr))) {
-        if (!PointerMayBeCaptured(Addr, true, true)) {
-          NumOmittedNonCaptured++;
-          continue;
-        }
-      }
+      LLVM_DEBUG(dbgs() << "Instruction instrumented\n");
     }
 
     // Instrument this instruction.

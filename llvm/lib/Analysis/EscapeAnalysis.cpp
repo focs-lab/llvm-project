@@ -78,7 +78,7 @@ void EscapeAnalysisInfo::EscapeState::addAlias(const Value *Alias,
   // or escapes "by definition" (e.g. pointer function argument,
   // global pointer), then that's not just aliasing, but escaping as well
   const auto EscReason = EAI->getExtObjStatusWithArgLookup(PointeeValue);
-  LLVM_DEBUG(dbgs() << "\t\tEscReason: "; printEscReason(EscReason));
+  LLVM_DEBUG(dbgs() << "\t\t\t\tPointeeValue EscReason: "; printEscReason(EscReason));
   if (EscReason.any())
     addEscapeObjOrReason(Alias, EscReason);
 
@@ -251,7 +251,8 @@ EscapeAnalysisInfo::getExtObjStatusWithArgLookup(const Value *V) const {
   if (ArgsEscapes && (EscReason == EscReasonBits::PTR_ARG_ALIASING)) {
     const auto *Arg = cast<Argument>(V);
     LLVM_DEBUG(dbgs() << "\t\t\t\tEscReason for Arg: ";
-               getArgEscStatus(Arg->getArgNo(), Arg->getParent()));
+      printEscReason(
+               getArgEscStatus(Arg->getArgNo(), Arg->getParent())));
     return getArgEscStatus(Arg->getArgNo(), Arg->getParent());
   }
 
