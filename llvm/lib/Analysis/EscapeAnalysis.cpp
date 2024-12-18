@@ -824,10 +824,22 @@ EscapeAnalysisInfo::findObjInBBEscapeState(const BasicBlock *BB,
 
 /// Is Value V is escaping in some path from Entry to BB?
 bool EscapeAnalysisInfo::isEscapedForBBTSan(const BasicBlock *BB,
-                                            const Value *V) const {
-  if (getExtObjStatus(V).any())
+                                            const Value *V,
+                                            EscReasonTy &EscReason) const {
+  const auto ExtStatus = getExtObjStatus(V);
+  if (ExtStatus.any()) {
+    EscReason = ExtStatus;
     return true;
-  return findObjInBBEscapeState(BB, V).any();
+  }
+
+  const auto FoundStatus = findObjInBBEscapeState(BB, V);
+  if (FoundStatus.any()) {
+    EscReason = FoundStatus;
+    return true;
+  }
+
+  EscReason = 0;
+  return false;
 }
 
 /// Is Value V is escaping in some path from Entry to BB?

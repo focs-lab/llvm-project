@@ -105,9 +105,18 @@ STATISTIC(NumOmittedReadsFromConstantGlobals,
           "Number of reads from constant globals");
 STATISTIC(NumOmittedReadsFromVtable, "Number of vtable reads");
 STATISTIC(NumOmittedNonCaptured, "Number of accesses ignored due to capturing");
-STATISTIC(NumOmittedNonEscaped, "Number of accesses ignored due to non-escaping");
-STATISTIC(NumEscapeAnalysisOutperformsCaptureTracking,
-          "Number of instructions where Escape Analysis better than Capture Tracking");
+STATISTIC(NumOmittedNonEscaped,
+          "Number of accesses ignored due to non-escaping");
+
+// Statistics for object escape reasons
+STATISTIC(NumEscGPTRAliasing, "Number of escapes due to GPTR aliasing");
+STATISTIC(NumEscPTRArgAliasing,
+          "Number of escapes due to pointer argument aliasing");
+STATISTIC(NumEscPassingToCall, "Number of escapes due to passing to a call");
+STATISTIC(NumEscRetPtr, "Number of escapes due to returning a pointer");
+STATISTIC(NumEscVolatile, "Number of escapes due to volatile");
+STATISTIC(NumEscOther, "Number of escapes due to other reasons");
+STATISTIC(NumEscInvalid, "Number of escapes due to invalid reasons");
 
 const char kTsanModuleCtorName[] = "tsan.module_ctor";
 const char kTsanInitName[] = "__tsan_init";
@@ -227,12 +236,6 @@ PreservedAnalyses ThreadSanitizerPass::run(Function &F,
       return PreservedAnalyses::none();
   }
 
-  // if (TSan.sanitizeFunction(F, FAM.getResult<TargetLibraryAnalysis>(F),
-  //                           ClUseEscapeAnalysis
-  //                               ? std::optional<EscapeAnalysisInfo>(
-  //                                     FAM.getResult<EscapeAnalysis>(F))
-  //                               : std::nullopt))
-  //   return PreservedAnalyses::none();
   return PreservedAnalyses::all();
 }
 
@@ -455,19 +458,23 @@ bool ThreadSanitizer::addrPointsToConstantData(Value *Addr) {
   return false;
 }
 
-static void compareCaptureAndEA(Instruction *I, Value *Addr, bool IsEscaped) {
-  bool IsCaptured = true;
-  if (isa<AllocaInst>(getUnderlyingObject(Addr)))
-    IsCaptured = PointerMayBeCaptured(Addr, true, true);
+using EscReasonTy = EscapeAnalysisInfo::EscReasonTy;
 
-  if (IsCaptured && (!IsEscaped)) {
-    LLVM_DEBUG(dbgs() << "EscapeAnalysis outperforms CaptureTracking!\n");
-    NumEscapeAnalysisOutperformsCaptureTracking++;
-    return;
-  }
-  if (!IsCaptured && IsEscaped)
-    LLVM_DEBUG(
-        dbgs() << "WARNING: CaptureTracking outperforms EscapeAnalysis!\n");
+static void updateEscapeStatistics(EscReasonTy Reason) {
+  if ((Reason & EscReasonTy(EscapeAnalysisInfo::GPTR_ALIASING)).any())
+    ++NumEscGPTRAliasing;
+  if ((Reason & EscReasonTy(EscapeAnalysisInfo::PTR_ARG_ALIASING)).any())
+    ++NumEscPTRArgAliasing;
+  if ((Reason & EscReasonTy(EscapeAnalysisInfo::PASSING_TO_CALL)).any())
+    ++NumEscPassingToCall;
+  if ((Reason & EscReasonTy(EscapeAnalysisInfo::RET_PTR)).any())
+    ++NumEscRetPtr;
+  if ((Reason & EscReasonTy(EscapeAnalysisInfo::VOLATILE)).any())
+    ++NumEscVolatile;
+  if ((Reason & EscReasonTy(EscapeAnalysisInfo::OTHER)).any())
+    ++NumEscOther;
+  if ((Reason & EscReasonTy(EscapeAnalysisInfo::INVALID)).any())
+    ++NumEscInvalid;
 }
 
 // Instrumenting some of the accesses may be proven redundant.
@@ -535,8 +542,9 @@ void ThreadSanitizer::chooseInstructionsToInstrument(
       bool InstrOmitted = false;
       for (const auto *Obj :
            EscapeAnalysisInfo::getUnderlyingMayEscObjects(Addr)) {
-        const bool IsEscaped = EAI.value().isEscapedForBBTSan(I->getParent(), Obj);
-        // DEBUG_WITH_TYPE("tsan-ea", compareCaptureAndEA(I, Addr, IsEscaped));
+        EscReasonTy EscReason;
+        const bool IsEscaped =
+            EAI.value().isEscapedForBBTSan(I->getParent(), Obj, EscReason);
         if (IsEscaped) {
           InstrOmitted = false;
           break;
@@ -553,11 +561,12 @@ void ThreadSanitizer::chooseInstructionsToInstrument(
       for (const auto *Obj :
            EscapeAnalysisInfo::getUnderlyingMayEscObjects(Addr)) {
         LLVM_DEBUG(dbgs() << "EscapeAnalysisInfo " << *Obj << " -- ");
+        EscReasonTy EscReason;
         const bool IsEscaped = EAIGlobal.value()->isEscapedForBBInFuncTSan(
-          I->getFunction(), I->getParent(), Obj);
-        // DEBUG_WITH_TYPE("tsan-ea", compareCaptureAndEA(I, Addr, IsEscaped));
+          I->getFunction(), I->getParent(), Obj, EscReason);
         if (IsEscaped) {
           LLVM_DEBUG(dbgs() << "escaped\n");
+          updateEscapeStatistics(EscReason);
           InstrOmitted = false;
           break;
         }
@@ -566,7 +575,6 @@ void ThreadSanitizer::chooseInstructionsToInstrument(
       }
       if (InstrOmitted) {
         LLVM_DEBUG(dbgs() << "Instruction omitted\n");
-        NumEscapeAnalysisOutperformsCaptureTracking++;
         NumOmittedNonEscaped++;
         continue;
       }

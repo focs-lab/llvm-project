@@ -69,7 +69,8 @@ public:
 
   /// Is Value V is escaping in some path from Entry to BB?
   EscReasonTy isEscapedForBB(const BasicBlock *BB, const Value *V) const;
-  bool isEscapedForBBTSan(const BasicBlock *BB, const Value *V) const;
+  bool isEscapedForBBTSan(const BasicBlock *BB, const Value *V,
+                          EscReasonTy &EscReason) const;
 
   static bool isLocalFunc(const Function *F) {
     return F && !F->isDeclaration() && F->isDefinitionExact();
@@ -250,9 +251,10 @@ public:
 
   /// Is Value V is escaping in some path from Entry to BB in the function F
   bool isEscapedForBBInFuncTSan(const Function *F, const BasicBlock *BB,
-                            const Value *V) const {
+                                const Value *V,
+                                EscapeAnalysisInfo::EscReasonTy &EscReason) const {
     if (const auto It = FuncEscapeInfo.find(F); It != FuncEscapeInfo.end())
-      return It->second.isEscapedForBBTSan(BB, V);
+      return It->second.isEscapedForBBTSan(BB, V, EscReason);
     return true;
   }
 
