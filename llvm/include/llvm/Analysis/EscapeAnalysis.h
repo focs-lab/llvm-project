@@ -40,8 +40,20 @@ public:
   };
   using EscReasonTy = std::bitset<6>;
 
-  using ArgumentEscapesMap =
-      DenseMap<const Function *, SmallDenseMap<unsigned, EscReasonTy>>;
+  struct IPAArgRetInfo {
+    SmallDenseMap<unsigned, EscReasonTy> ArgEscapes; // for each argument
+    bool IsRetEscape = false; // whether return value is escaping or not
+    bool operator==(const IPAArgRetInfo &Other) const {
+      return ArgEscapes == Other.ArgEscapes && IsRetEscape == Other.IsRetEscape;
+    }
+    bool operator!=(const IPAArgRetInfo &Other) const {
+      return !(*this == Other);
+    }
+  };
+
+  bool getIsRetEscape() const { return IsRetEscape; }
+
+  using IPAFuncEscInfoMap = DenseMap<const Function *, IPAArgRetInfo>;
 
   static void printEscReason(EscReasonTy EscReason);
 
@@ -49,15 +61,15 @@ public:
   /// ArgumentEscape is needed for IPA analysis (because we should ignore
   /// escaping by calls)
   explicit EscapeAnalysisInfo(const Function &Fn,
-                              std::shared_ptr<ArgumentEscapesMap> ArgsEsc =
+                              std::shared_ptr<IPAFuncEscInfoMap> IPAFuncEscInfo =
                                   nullptr);
   void print(raw_ostream &OS) const;
 
   /// Recursively search in the instruction for the underlying objects which
   /// may escape
-  static SmallVector<Value *, 8>
-  getUnderlyingMayEscObjects(const Value *V,
-                             unsigned MaxLookup = MaxUnderlObjLookup);
+  static SmallVector<Value *, 8> getUnderlyingMayEscObjects(
+      const Value *V, unsigned MaxLookup = MaxUnderlObjLookup,
+      std::shared_ptr<IPAFuncEscInfoMap> IPAFuncEscInfo = nullptr);
 
   /// Is Value V is escaping somewhere in the function
   bool isEscapedForFunc(const Value *V,
@@ -88,7 +100,7 @@ private:
   using EscapedObjectsTy = DenseMap<const Value *, EscReasonTy>;
 
   // IPA information about arguments escapes
-  std::shared_ptr<ArgumentEscapesMap> ArgsEscapes;
+  std::shared_ptr<IPAFuncEscInfoMap> IPAFuncEscInfo;
 
   // Whether return value is escaping or not (need it in IPA)
   bool IsRetEscape = false;
@@ -164,6 +176,11 @@ private:
     void mergeEscapedObjects(const EscapeState &OtherES);
   };
 
+  /// Check if function returns escaped object, and update function return
+  /// escape status
+  void updRetEscStatus(EscapeState &ES,
+                       const SmallVectorImpl<Value *> &UnderlObjs);
+
   /// Compute the resulting escape state for BB
   void compBBEscapeState(const BasicBlock *BB, EscapeState &ES);
 
@@ -211,17 +228,6 @@ private:
   /// Find in ArgsEscapes given argument and return escape status
   EscReasonTy getArgEscStatus(unsigned ArgNo, const Function *Func) const;
 
-  /// Custom implementation of getUnderlyingObject infrastracture (taken and
-  /// modified from ValueTracker.cpp)
-  // static const Value *getUnderlyingObjectThroughLoads(const Value *&P,
-  //                                                     unsigned MaxLookup);
-  // static void getUnderlyingObjectsWithoutPHIInvCheck(
-  //     const Value *V, SmallVectorImpl<const Value *> &Objects,
-  //     unsigned MaxLookup);
-  // static const Value *getUnderlyingObjectFromInt(const Value *V);
-  // static bool getUnderlyingObjectsForCodeGenWithoutPHIInvCheck(
-  //     const Value *V, SmallVectorImpl<Value *> &Objects, unsigned MaxLookup);
-
   static bool isPointerArgument(const Value *V) {
     return isa<Argument>(V) && V->getType()->isPointerTy();
   }
@@ -232,18 +238,19 @@ class EscapeAnalysisGlobalInfo {
   DenseMap<const Function *, EscapeAnalysisInfo> FuncEscapeInfo;
 
   /// Map to store escape information for function arguments.
-  std::shared_ptr<EscapeAnalysisInfo::ArgumentEscapesMap> ArgsEscapes =
-      std::make_shared<EscapeAnalysisInfo::ArgumentEscapesMap>();
+  std::shared_ptr<EscapeAnalysisInfo::IPAFuncEscInfoMap> IPAFuncEscInfo =
+      std::make_shared<EscapeAnalysisInfo::IPAFuncEscInfoMap>();
 
   static void
-  setAllPtrArgsNotEscaped(EscapeAnalysisInfo::ArgumentEscapesMap &ArgsEscapes,
+  setAllPtrArgsNotEscaped(EscapeAnalysisInfo::IPAFuncEscInfoMap &IPAFuncEscInfo,
                           const Function *F);
 
   /// Check if call graph node is the recursive call
   /// (relevant for SCC with 1 node)
-  static bool isRecursiveCallGraphNode(const Function *F,
-                                       const CallGraphNode *CGN);
-  void updFuncArgsEscapes(const Function *F, const EscapeAnalysisInfo &EAI) const;
+  static bool isRecursiveCallGraphNode(const CallGraphNode *CGN);
+  void updIPAFuncEscInfo(const Function *F,
+                          const EscapeAnalysisInfo &EAI) const;
+  void printSCC(const std::vector<CallGraphNode *> &SCC);
 
 public:
   explicit EscapeAnalysisGlobalInfo(CallGraph &CG);
