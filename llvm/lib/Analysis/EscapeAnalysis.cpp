@@ -979,13 +979,8 @@ void EscapeAnalysisGlobalInfo::updIPAFuncEscInfo(
   (*IPAFuncEscInfo)[F].IsRetEscape = EAI.getIsRetEscape();
 }
 
-EscapeAnalysisGlobalInfo::EscapeAnalysisGlobalInfo(CallGraph &CG) {
-  // We do a bottom-up SCC traversal of the call graph.  In other words, we
-  // visit all callees before callers (leaf-first).
-
-  // This is needed to (conservatively) consider recursive calls and SCCs.
-  // First, find all SCCs and set all pointer argument as escaped
-  SmallPtrSet<const Function *, 8> RecursiveFuncs;
+bool EscapeAnalysisGlobalInfo::traverseSCCsAndInitIPAEscInfo(
+    CallGraph &CG, SmallPtrSet<const Function *, 8> RecursiveFuncs) {
   for (scc_iterator<CallGraph *> It = scc_begin(&CG); !It.isAtEnd(); ++It) {
     const std::vector<CallGraphNode *> &SCC = *It;
     assert(!SCC.empty() && "SCC with no functions?");
@@ -1002,17 +997,26 @@ EscapeAnalysisGlobalInfo::EscapeAnalysisGlobalInfo(CallGraph &CG) {
         RecursiveFuncs.insert(F);
       }
     } else { // SCC.size() > 1
-      for (const CallGraphNode *CGN: SCC) {
+      for (const CallGraphNode *CGN : SCC) {
         const auto F = CGN->getFunction();
         assert(EscapeAnalysisInfo::isLocalFunc(F));
         setAllPtrArgsNotEscaped(*IPAFuncEscInfo, F);
       }
     }
   }
+  return false;
+}
 
-  LLVM_DEBUG(dbgs() << "Printing ArgsEscapes\n";
-  for (const auto &F: *IPAFuncEscInfo)
-    dbgs() << F.first->getName() << "\n";);
+EscapeAnalysisGlobalInfo::EscapeAnalysisGlobalInfo(CallGraph &CG) {
+  // We do a bottom-up SCC traversal of the call graph.  In other words, we
+  // visit all callees before callers (leaf-first).
+
+  // This is needed to (conservatively) consider recursive calls and SCCs.
+  // First, find all SCCs and set all pointer argument as escaped
+  SmallPtrSet<const Function *, 8> RecursiveFuncs;
+  traverseSCCsAndInitIPAEscInfo(CG, RecursiveFuncs);
+
+  LLVM_DEBUG(printIPAFuncEscInfo(IPAFuncEscInfo.get(), dbgs()));
 
   // Main callgraph traversal
   for (scc_iterator<CallGraph *> It = scc_begin(&CG); !It.isAtEnd(); ++It) {
@@ -1060,6 +1064,99 @@ EscapeAnalysisGlobalInfo::EscapeAnalysisGlobalInfo(CallGraph &CG) {
       }
     }
   }
+
+  dbgs() << "Starting new traversal:\n";
+  return;
+
+  // Perform a top-down traversal of the call graph (from callers to callees)
+  // and update argument escape status for each called function based on the
+  // calling context of the caller functions.
+  SmallPtrSet<CallGraphNode *, 8> Visited;
+  std::deque<CallGraphNode *> WorkList;
+
+  // Find all root nodes (without parents) in the callgraph
+  for (const auto &CGNode : CG)
+    if (CGNode.second->getNumReferences() == 0) {
+      dbgs() << "Adding root node: " << CGNode.second->getFunction()->getName()
+             << "\n";
+      WorkList.push_back(CGNode.second.get());
+    }
+
+  // Top-down traversal
+  while (!WorkList.empty()) {
+    CallGraphNode *Node = WorkList.front();
+    WorkList.pop_front();
+
+    // If node is already visited, skip
+    if (!Visited.insert(Node).second)
+      continue;
+
+    const Function *F = Node->getFunction();
+    if (!EscapeAnalysisInfo::isLocalFunc(F))
+      continue;
+
+    assert(F);
+    dbgs() << "Processing node " << F->getName() << "\n";
+
+    // Add all callees to the list
+    for (const auto &CallRecord : *Node) {
+      CallGraphNode *CalleeNode = CallRecord.second;
+      if (CalleeNode)
+        WorkList.push_back(CalleeNode);
+    }
+  }
+
+  /*
+  for (scc_iterator<CallGraph *> It = scc_begin(&CG);
+       !It.isAtEnd(); ++It) {
+    const std::vector<CallGraphNode *> &SCC = *It;
+
+    for (const CallGraphNode *CGN : SCC) {
+      const Function *Caller = CGN->getFunction();
+      if (!EscapeAnalysisInfo::isLocalFunc(Caller))
+        // Skip external or non-local functions
+        continue;
+
+      // Iterate over all call sites within the caller function
+      for (CallGraphNode::const_iterator CI = CGN->begin(), CE = CGN->end();
+           CI != CE; ++CI) {
+        CallGraphNode *CalleeNode = CI->second;
+        const Function *Callee = CalleeNode->getFunction();
+
+        if (!EscapeAnalysisInfo::isLocalFunc(Callee))
+          // Skip external or non-local callees
+          continue;
+
+        // Update argument escape status for the called function, considering
+        // this specific call from the current caller function
+        EscapeAnalysisInfo::ArgEscapeStatus NewStatus;
+
+        // Iterate through the arguments of Callee and update their escape
+        // status
+        for (const auto &Arg : Callee->args()) {
+          if (Arg.getType()->isPointerTy()) {
+            // Determine if the argument escapes due to this specific call
+            EscapeAnalysisInfo::EscReasonTy ArgEscReason;
+            const auto &CallerEAI = FuncEscapeInfo[Caller];
+            bool DoesEscape =
+                CallerEAI.doesArgumentEscape(&Arg, Callee, ArgEscReason);
+
+            // Update the new status based on this information
+            NewStatus.ArgEscapes[Arg.getArgNo()] |= DoesEscape;
+          }
+        }
+
+        // Update return value escape status
+        bool RetEscapes =
+            FuncEscapeInfo[Caller].getReturnValueEscapeStatus(Callee);
+
+        // Merge the new escape status into the global escape status for Callee
+        auto &CalleeEAI = FuncEscapeInfo[Callee];
+        CalleeEAI.mergeWithCallerEscapeInfo(NewStatus, RetEscapes);
+      }
+    }
+  }
+  */
 }
 
 void EscapeAnalysisGlobalInfo::print(Module &M, raw_ostream &O) const {

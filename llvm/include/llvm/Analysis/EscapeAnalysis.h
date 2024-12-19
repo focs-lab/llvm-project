@@ -241,6 +241,11 @@ class EscapeAnalysisGlobalInfo {
   std::shared_ptr<EscapeAnalysisInfo::IPAFuncEscInfoMap> IPAFuncEscInfo =
       std::make_shared<EscapeAnalysisInfo::IPAFuncEscInfoMap>();
 
+  /// Traverse SCCs in the call graph, find recursive functions and SCCs
+  /// init IPAFuncEscInfo
+  bool traverseSCCsAndInitIPAEscInfo(
+      CallGraph &CG, SmallPtrSet<const Function *, 8> RecursiveFuncs);
+
   static void
   setAllPtrArgsNotEscaped(EscapeAnalysisInfo::IPAFuncEscInfoMap &IPAFuncEscInfo,
                           const Function *F);
