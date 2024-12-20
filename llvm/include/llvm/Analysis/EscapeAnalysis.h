@@ -79,14 +79,12 @@ public:
   EscReasonTy findObjInBBEscapeState(const BasicBlock *BB,
                                      const Value *V) const;
 
-  /// Is Value V is escaping in some path from Entry to BB?
-  EscReasonTy isEscapedForBB(const BasicBlock *BB, const Value *V) const;
-  bool isEscapedForBBTSan(const BasicBlock *BB, const Value *V,
-                          EscReasonTy &EscReason) const;
+  /// Return escape reason for V in BB
+  EscReasonTy getFullEscapedForBBReason(const BasicBlock *BB, const Value *V) const;
 
-  static bool isLocalFunc(const Function *F) {
-    return F && !F->isDeclaration() && F->isDefinitionExact();
-  }
+  /// Is Value V is escaping in some path from Entry to BB?
+  bool isEscapedForBB(const BasicBlock *BB, const Value *V,
+                      EscReasonTy *EscReason = nullptr) const;
 
 private:
   // Types of object escaping states
@@ -227,28 +225,56 @@ private:
 
   /// Find in ArgsEscapes given argument and return escape status
   EscReasonTy getArgEscStatus(unsigned ArgNo, const Function *Func) const;
-
-  static bool isPointerArgument(const Value *V) {
-    return isa<Argument>(V) && V->getType()->isPointerTy();
-  }
 };
 
 /// Interface to access safety global (interprocedural) analysis results.
 class EscapeAnalysisGlobalInfo {
+  Module &M;
   DenseMap<const Function *, EscapeAnalysisInfo> FuncEscapeInfo;
 
-  /// Map to store escape information for function arguments.
+  /// Map for escape information for function arguments from inside of the
+  /// function (escape comes from inner objects).
   std::shared_ptr<EscapeAnalysisInfo::IPAFuncEscInfoMap> IPAFuncEscInfo =
       std::make_shared<EscapeAnalysisInfo::IPAFuncEscInfoMap>();
+
+  /// Map for escape information about argument from outside of the function
+  /// (escape comes from passing parameters to the function calls)
+  std::shared_ptr<DenseMap<const Function *, SmallVector<bool>>>
+      IsArgEscapedFromCalls =
+          std::make_shared<DenseMap<const Function *, SmallVector<bool>>>();
 
   /// Traverse SCCs in the call graph, find recursive functions and SCCs
   /// init IPAFuncEscInfo
   bool traverseSCCsAndInitIPAEscInfo(
       CallGraph &CG, SmallPtrSet<const Function *, 8> RecursiveFuncs);
 
+  /// Bottom-top traversal of SCCs of the callgraph, do local analysis,
+  /// fill FuncEscapeInfo, IPAFuncEscInfo
+  bool
+  analyzeCallGraphBottomTop(CallGraph &CG,
+                            SmallPtrSet<const Function *, 8> &RecursiveFuncs,
+                            SmallVector<std::vector<CallGraphNode *>> &SCCList);
+
+  /// Init escape status of arguments and return
   static void
   setAllPtrArgsNotEscaped(EscapeAnalysisInfo::IPAFuncEscInfoMap &IPAFuncEscInfo,
                           const Function *F);
+
+  /// Return map: Function -> list of call instructions
+  DenseMap<const Function *, SmallVector<const CallBase *>>
+  getFuncToCallSitesMap();
+
+  /// Compute escape status for the function argument based on call instructions
+  void evalArgEscStatus(
+      const SmallVectorImpl<std::vector<CallGraphNode *>> &SCCList,
+      const DenseMap<const Function *, SmallVector<const CallBase *>>
+          &FuncCallSites);
+
+  /// Compute escape status for the function argument based on call instructions
+  void evalFuncArgEscStatus(
+      const DenseMap<const Function *, SmallVector<const CallBase *>>
+          &FuncCallSites,
+      const Function *F) const;
 
   /// Check if call graph node is the recursive call
   /// (relevant for SCC with 1 node)
@@ -258,7 +284,7 @@ class EscapeAnalysisGlobalInfo {
   void printSCC(const std::vector<CallGraphNode *> &SCC);
 
 public:
-  explicit EscapeAnalysisGlobalInfo(CallGraph &CG);
+  explicit EscapeAnalysisGlobalInfo(CallGraph &CG, Module &M);
   void print(Module &M, raw_ostream &O) const;
 
   /// Is Value V is escaping in some path from Entry to BB in the function F
@@ -266,7 +292,7 @@ public:
                                 const Value *V,
                                 EscapeAnalysisInfo::EscReasonTy &EscReason) const {
     if (const auto It = FuncEscapeInfo.find(F); It != FuncEscapeInfo.end())
-      return It->second.isEscapedForBBTSan(BB, V, EscReason);
+      return It->second.isEscapedForBB(BB, V, &EscReason);
     return true;
   }
 

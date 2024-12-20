@@ -544,7 +544,7 @@ void ThreadSanitizer::chooseInstructionsToInstrument(
            EscapeAnalysisInfo::getUnderlyingMayEscObjects(Addr)) {
         EscReasonTy EscReason;
         const bool IsEscaped =
-            EAI.value().isEscapedForBBTSan(I->getParent(), Obj, EscReason);
+            EAI.value().isEscapedForBB(I->getParent(), Obj, &EscReason);
         if (IsEscaped) {
           InstrOmitted = false;
           break;
