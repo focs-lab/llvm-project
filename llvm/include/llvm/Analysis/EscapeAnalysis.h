@@ -54,15 +54,18 @@ public:
   bool getIsRetEscape() const { return IsRetEscape; }
 
   using IPAFuncEscInfoMap = DenseMap<const Function *, IPAArgRetInfo>;
+  using IPAArgEscFromCallsMap = DenseMap<const Function *, SmallVector<bool>>;
 
   static void printEscReason(EscReasonTy EscReason);
 
   /// Run analysis for given function.
   /// ArgumentEscape is needed for IPA analysis (because we should ignore
   /// escaping by calls)
-  explicit EscapeAnalysisInfo(const Function &Fn,
-                              std::shared_ptr<IPAFuncEscInfoMap> IPAFuncEscInfo =
-                                  nullptr);
+  explicit EscapeAnalysisInfo(
+    const Function &Fn,
+    std::shared_ptr<IPAFuncEscInfoMap> IPAFuncEscInfo = nullptr,
+    std::shared_ptr<IPAArgEscFromCallsMap> IPAArgEscFromCallers_ = nullptr);
+
   void print(raw_ostream &OS) const;
 
   /// Recursively search in the instruction for the underlying objects which
@@ -97,8 +100,11 @@ private:
   // Resulting type: list of escaping objects
   using EscapedObjectsTy = DenseMap<const Value *, EscReasonTy>;
 
-  // IPA information about arguments escapes
+  // IPA information about arguments escapes (bottom-top)
   std::shared_ptr<IPAFuncEscInfoMap> IPAFuncEscInfo;
+
+  // IPA information about arguments escapes from calls (top-bottom)
+  std::shared_ptr<IPAArgEscFromCallsMap> IPAArgEscFromCallers;
 
   // Whether return value is escaping or not (need it in IPA)
   bool IsRetEscape = false;
@@ -190,6 +196,11 @@ private:
   EscReasonTy getExtObjStatusWithArgLookup(const Value *V) const;
   static EscReasonTy getExtObjStatus(const Value *V);
 
+  /// Get escape status of the object and if it's a pointer argument,
+  /// lookup in the top-bottom argument escape analysis
+  EscReasonTy
+  getExtObjStatusWithArgFromCallsLookup(const Value *V) const;
+
   /// Determine what kind of escape behaviour V may exhibit.
   struct EscInfoTy {
     EscKindTy EscKind;
@@ -225,6 +236,10 @@ private:
 
   /// Find in ArgsEscapes given argument and return escape status
   EscReasonTy getArgEscStatus(unsigned ArgNo, const Function *Func) const;
+
+  /// Find argument in the from-callers (top-bottom) escape info
+  EscReasonTy getArgEscStatusFromCallers(const unsigned ArgNo,
+                                         const Function *Func) const;
 };
 
 /// Interface to access safety global (interprocedural) analysis results.
@@ -239,21 +254,22 @@ class EscapeAnalysisGlobalInfo {
 
   /// Map for escape information about argument from outside of the function
   /// (escape comes from passing parameters to the function calls)
-  std::shared_ptr<DenseMap<const Function *, SmallVector<bool>>>
-      IsArgEscapedFromCalls =
-          std::make_shared<DenseMap<const Function *, SmallVector<bool>>>();
+  std::shared_ptr<EscapeAnalysisInfo::IPAArgEscFromCallsMap>
+  IPAArgEscapedFromCalls =
+      std::make_shared<EscapeAnalysisInfo::IPAArgEscFromCallsMap>();
 
   /// Traverse SCCs in the call graph, find recursive functions and SCCs
   /// init IPAFuncEscInfo
   bool traverseSCCsAndInitIPAEscInfo(
-      CallGraph &CG, SmallPtrSet<const Function *, 8> RecursiveFuncs);
+      CallGraph &CG, SmallPtrSet<const Function *, 8> &RecursiveFuncs);
 
   /// Bottom-top traversal of SCCs of the callgraph, do local analysis,
   /// fill FuncEscapeInfo, IPAFuncEscInfo
-  bool
-  analyzeCallGraphBottomTop(CallGraph &CG,
-                            SmallPtrSet<const Function *, 8> &RecursiveFuncs,
-                            SmallVector<std::vector<CallGraphNode *>> &SCCList);
+  bool analyzeCallGraphBottomTop(CallGraph &CG,
+                                 const SmallPtrSetImpl<const Function *> &
+                                 RecursiveFuncs,
+                                 SmallVector<std::vector<CallGraphNode *> > &
+                                 SCCList);
 
   /// Init escape status of arguments and return
   static void
@@ -265,10 +281,13 @@ class EscapeAnalysisGlobalInfo {
   getFuncToCallSitesMap();
 
   /// Compute escape status for the function argument based on call instructions
-  void evalArgEscStatus(
+  void analyzeCallGraphTopBottom(
       const SmallVectorImpl<std::vector<CallGraphNode *>> &SCCList,
       const DenseMap<const Function *, SmallVector<const CallBase *>>
-          &FuncCallSites);
+          &FuncCallSites,
+      const SmallPtrSetImpl<const Function *> &RecursiveFuncs);
+
+  void printArgEscStatus();
 
   /// Compute escape status for the function argument based on call instructions
   void evalFuncArgEscStatus(

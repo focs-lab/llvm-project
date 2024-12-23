@@ -78,6 +78,34 @@ void EscapeAnalysisGlobalInfo::printSCC(
   }
 }
 
+static void dbgPrintOpnd(const Use &Opnd) {
+  dbgs() << "\n\tOPND \t";
+  if (const auto F = dyn_cast<Function>(Opnd.get()))
+    dbgs() << F->getName() << "\t";
+  else
+    dbgs() << *Opnd.get() << "\t";
+}
+
+static void dbgPrintAliasCand(const SmallVectorImpl<Value *> &AliasList) {
+  for (const auto *A : AliasList)
+    dbgs() << "\tAlias candidate: " << *A << "\n";
+}
+
+void EscapeAnalysisGlobalInfo::printArgEscStatus() {
+  dbgs() << "\nIsArgEscapedFromCalls:\n";
+  for (const auto &Entry : *IPAArgEscapedFromCalls) {
+    const Function *F = Entry.first;
+    const SmallVector<bool> &EscapedArgs = Entry.second;
+    dbgs() << "\tFunction: " << F->getName() << "\n";
+    for (unsigned ArgIdx = 0; ArgIdx < EscapedArgs.size(); ++ArgIdx) {
+      dbgs() << "\t\tArg " << ArgIdx << ": "
+          << (EscapedArgs[ArgIdx] ? "YES" : "NO") << "\n";
+    }
+  }
+  dbgs() << "\n";
+}
+
+
 //===----------------------------------------------------------------------===//
 // Utils
 //===----------------------------------------------------------------------===//
@@ -111,7 +139,10 @@ void EscapeAnalysisInfo::EscapeState::addAlias(const Value *Alias,
   // If instruction creates an alias to the object which has escaped before
   // or escapes "by definition" (e.g. pointer function argument,
   // global pointer), then that's not just aliasing, but escaping as well
-  const auto EscReason = EAI->getExtObjStatusWithArgLookup(PointeeValue);
+
+  // const auto EscReason = EAI->getExtObjStatusWithArgLookup(PointeeValue);
+  // const auto EscReason = EAI->getExtObjStatus(PointeeValue);
+  const auto EscReason = EAI->getExtObjStatusWithArgFromCallsLookup(PointeeValue);
   LLVM_DEBUG(dbgs() << "\t\t\t\tPointeeValue EscReason: "; printEscReason(EscReason));
   if (EscReason.any())
     addEscapeObjOrReason(Alias, EscReason);
@@ -264,6 +295,18 @@ EscapeAnalysisInfo::getArgEscStatus(const unsigned ArgNo,
 }
 
 EscapeAnalysisInfo::EscReasonTy
+EscapeAnalysisInfo::getArgEscStatusFromCallers(
+  const unsigned ArgNo, const Function *Func) const {
+  if (const auto It = IPAArgEscFromCallers->find(Func);
+      It != IPAArgEscFromCallers->end()) {
+    if (It->second[ArgNo])
+      return EscReasonBits::PTR_ARG_ALIASING;
+    return 0;
+  }
+  return EscReasonBits::PTR_ARG_ALIASING;
+}
+
+EscapeAnalysisInfo::EscReasonTy
 EscapeAnalysisInfo::getExtObjStatus(const Value *V) {
   if (const auto *CI = dyn_cast<CallInst>(V);
     CI && CI->getFunctionType()->getReturnType()->isPointerTy()) {
@@ -293,13 +336,30 @@ EscapeAnalysisInfo::getExtObjStatusWithArgLookup(const Value *V) const {
   return EscReason;
 }
 
+EscapeAnalysisInfo::EscReasonTy
+EscapeAnalysisInfo::getExtObjStatusWithArgFromCallsLookup(const Value *V) const {
+  const auto EscReason = getExtObjStatus(V);
+  if (IPAArgEscFromCallers && (EscReason == EscReasonBits::PTR_ARG_ALIASING)) {
+    const auto *Arg = cast<Argument>(V);
+    LLVM_DEBUG(dbgs() << "\t\t\t\tEscReason for Arg: ";
+        printEscReason(
+          getArgEscStatusFromCallers(Arg->getArgNo(), Arg->getParent())));
+    return getArgEscStatusFromCallers(Arg->getArgNo(), Arg->getParent());
+  }
+
+  return EscReason;
+}
+
+
 //===----------------------------------------------------------------------===//
 // Main analysis
 //===----------------------------------------------------------------------===//
 
 EscapeAnalysisInfo::EscapeAnalysisInfo(
-    const Function &Fn, std::shared_ptr<IPAFuncEscInfoMap> IPAFuncEscInfo)
-    : AnalyzedFunc(Fn), IPAFuncEscInfo(IPAFuncEscInfo) {
+    const Function &Fn, std::shared_ptr<IPAFuncEscInfoMap> IPAFuncEscInfo_,
+    std::shared_ptr<IPAArgEscFromCallsMap> IPAArgEscFromCallers_)
+  : AnalyzedFunc(Fn), IPAFuncEscInfo(IPAFuncEscInfo_),
+    IPAArgEscFromCallers(IPAArgEscFromCallers_) {
   LLVM_DEBUG(dbgs() << "\n|||||||||||||||||||||||||||||||||||||||||||||||||||||"
                        "|||||||||||||||||\n"
                        "|||||||||||||||||||| Func "
@@ -359,17 +419,14 @@ void EscapeAnalysisInfo::updRetEscStatus(
   }
 }
 
+
 /// Compute the resulting escape state for BB
 void EscapeAnalysisInfo::compBBEscapeState(const BasicBlock *BB,
                                            EscapeState &ES) {
   for (const Instruction &I : *BB) {
     LLVM_DEBUG(dbgs() << "\nI " << I << "\n");
     for (const Use &Opnd : I.operands()) {
-      LLVM_DEBUG(dbgs() << "\n\tOPND \t";
-        if (const auto F = dyn_cast<Function>(Opnd.get()))
-          dbgs() << F->getName() << "\t";
-        else
-          dbgs() << *Opnd.get() << "\t";);
+      LLVM_DEBUG(dbgPrintOpnd(Opnd););
 
       const auto [EscKind, EscDetails] = getEscapeKindForOpnd(Opnd);
 
@@ -409,8 +466,7 @@ void EscapeAnalysisInfo::compBBEscapeState(const BasicBlock *BB,
             std::get<SmallVector<Value *, 8>>(EscDetails.value());
 
         LLVM_DEBUG(dbgs() << "\t-- ALIASING --\n";
-                   for (const auto *A : AliasList)
-                     dbgs() << "\tAlias candidate: " << *A << "\n");
+                   dbgPrintAliasCand(AliasList); );
 
         for (const Value *Alias : AliasList)
           for (const Value *Pointee : UnderlObjs)
@@ -995,8 +1051,8 @@ void EscapeAnalysisGlobalInfo::updIPAFuncEscInfo(
 }
 
 bool EscapeAnalysisGlobalInfo::traverseSCCsAndInitIPAEscInfo(
-    CallGraph &CG, SmallPtrSet<const Function *, 8> RecursiveFuncs) {
-  for (scc_iterator<CallGraph *> It = scc_begin(&CG); !It.isAtEnd(); ++It) {
+    CallGraph &CG, SmallPtrSet<const Function *, 8> &RecursiveFuncs) {
+  for (auto It = scc_begin(&CG); !It.isAtEnd(); ++It) {
     const std::vector<CallGraphNode *> &SCC = *It;
     assert(!SCC.empty() && "SCC with no functions?");
     LLVM_DEBUG(printSCC(SCC));
@@ -1047,7 +1103,7 @@ void EscapeAnalysisGlobalInfo::evalFuncArgEscStatus(
     const DenseMap<const Function *, SmallVector<const CallBase *>>
         &FuncCallSites,
     const Function *F) const {
-  const auto It = IsArgEscapedFromCalls->try_emplace(F, F->arg_size(), false);
+  const auto It = IPAArgEscapedFromCalls->try_emplace(F, F->arg_size(), false);
   auto &IsArgEscaped = It.first->second;
 
   const auto CallSitesIter = FuncCallSites.find(F);
@@ -1061,6 +1117,11 @@ void EscapeAnalysisGlobalInfo::evalFuncArgEscStatus(
 
     // Iterate over the parameters pass to this call instruction
     for (unsigned ArgIdx = 0; ArgIdx < CB->arg_size(); ++ArgIdx) {
+      // Consider variable argument functions
+      if (F->isVarArg() &&
+          (ArgIdx >= F->getFunctionType()->getNumParams()))
+        break;
+
       const Value *Arg = CB->getArgOperand(ArgIdx);
       LLVM_DEBUG(dbgs() << "\n\tArg " << ArgIdx << ": " << *Arg << "\n");
       if (!isPointerArgument(F->getArg(ArgIdx)))
@@ -1079,6 +1140,7 @@ void EscapeAnalysisGlobalInfo::evalFuncArgEscStatus(
 
       const auto UnderlObjs =
           EscapeAnalysisInfo::getUnderlyingMayEscObjects(Arg);
+      dbgs() << "Try to find " << CB->getFunction()->getName() << "\n";
       const auto EAIIt = FuncEscapeInfo.find(CB->getFunction());
       assert(EAIIt != FuncEscapeInfo.end());
       const EscapeAnalysisInfo &CallEAI = EAIIt->second;
@@ -1097,10 +1159,10 @@ void EscapeAnalysisGlobalInfo::evalFuncArgEscStatus(
 }
 
 bool EscapeAnalysisGlobalInfo::analyzeCallGraphBottomTop(
-    CallGraph &CG, SmallPtrSet<const Function *, 8> &RecursiveFuncs,
-    SmallVector<std::vector<CallGraphNode *>> &SCCList) {
+    CallGraph &CG, const SmallPtrSetImpl<const Function *> &RecursiveFuncs,
+    SmallVector<std::vector<CallGraphNode *> > &SCCList) {
   // Main callgraph traversal
-  for (scc_iterator<CallGraph *> It = scc_begin(&CG); !It.isAtEnd(); ++It) {
+  for (auto It = scc_begin(&CG); !It.isAtEnd(); ++It) {
     const std::vector<CallGraphNode *> &SCC = *It;
     assert(!SCC.empty() && "SCC with no functions?");
     SCCList.push_back(SCC);
@@ -1110,21 +1172,21 @@ bool EscapeAnalysisGlobalInfo::analyzeCallGraphBottomTop(
       Converged = true;
       for (const CallGraphNode *CGN : SCC) {
         const auto *F = CGN->getFunction();
-        if (!isLocalFunc(F))
-          // Just skip, because all externals calls will be treated as escaped
-          // during local escape analysis
+        if (F)
+          dbgs() << "Analyzing function: " << F->getName() << "\n";
+        // if (!isLocalFunc(F))
+          // continue;
+        if (!F || F->isDeclaration())
           continue;
+        dbgs() << "LOCAL\n";
 
         // Build escape summary for a function
-        if (auto Iter = FuncEscapeInfo.find(F); Iter != FuncEscapeInfo.end())
-          FuncEscapeInfo.erase(Iter);
+        FuncEscapeInfo.erase(F);
 
-        const auto [NewIter, Inserted] = FuncEscapeInfo.try_emplace(
+        const auto [It, Inserted] = FuncEscapeInfo.try_emplace(
             F, EscapeAnalysisInfo(*F, IPAFuncEscInfo));
 
-        assert(Inserted && "One function - one insert\n");
-
-        const auto &EAI = NewIter->second;
+        const auto &EAI = It->second;
         // For non-recursive functions, no need to iterate until convergence
         if ((SCC.size() == 1) && !RecursiveFuncs.contains(F)) {
           updIPAFuncEscInfo(F, EAI);
@@ -1138,7 +1200,7 @@ bool EscapeAnalysisGlobalInfo::analyzeCallGraphBottomTop(
           Converged = false;
           LLVM_DEBUG(dbgs() << "++++++ Func " << F->getName()
                             << " -- NOT Converging ++++++\n\n";
-                     NewIter->second.print(dbgs()););
+                     It->second.print(dbgs()););
         } else {
           LLVM_DEBUG(dbgs() << "++++++ Func " << F->getName()
                             << " -- Converging ++++++\n\n";);
@@ -1149,10 +1211,11 @@ bool EscapeAnalysisGlobalInfo::analyzeCallGraphBottomTop(
   return false;
 }
 
-void EscapeAnalysisGlobalInfo::evalArgEscStatus(
+void EscapeAnalysisGlobalInfo::analyzeCallGraphTopBottom(
     const SmallVectorImpl<std::vector<CallGraphNode *>> &SCCList,
     const DenseMap<const Function *, SmallVector<const CallBase *>>
-        &FuncCallSites) {
+        &FuncCallSites,
+    const SmallPtrSetImpl<const Function *> &RecursiveFuncs) {
   // Perform a top-down traversal of the call graph (from callers to callees)
   // and update argument escape status for each called function based on the
   // calling context of the caller functions.
@@ -1164,8 +1227,23 @@ void EscapeAnalysisGlobalInfo::evalArgEscStatus(
       if (!isLocalFunc(F))
         continue;
 
+      // We consider only static functions
+      if (!F->hasLocalLinkage())
+        continue;
+
       LLVM_DEBUG(dbgs() << "\nFunc: " << F->getName() << "\n");
+      dbgs() << "\nFunc: " << F->getName() << "\n";
       evalFuncArgEscStatus(FuncCallSites, F);
+
+      // Build escape summary for a function
+      FuncEscapeInfo.erase(F);
+
+      // const auto Res =
+        FuncEscapeInfo.try_emplace(
+          F, EscapeAnalysisInfo(*F, IPAFuncEscInfo, IPAArgEscapedFromCalls));
+      // const auto &EAI = Res.first->second;
+      // if ((SCC.size() == 1) && !RecursiveFuncs.contains(F))
+        // break;
     }
   }
 }
@@ -1186,28 +1264,14 @@ EscapeAnalysisGlobalInfo::EscapeAnalysisGlobalInfo(CallGraph &CG, Module &M_)
   SmallVector<std::vector<CallGraphNode *>> SCCList;
 
   analyzeCallGraphBottomTop(CG, RecursiveFuncs, SCCList);
-  return;
 
   // For each function, get list of instruction calling it
   const auto FuncCallSites = getFuncToCallSitesMap();
 
   // Compute how arguments escape from passing escaped parameters in calls
-  evalArgEscStatus(SCCList, FuncCallSites);
+  analyzeCallGraphTopBottom(SCCList, FuncCallSites, RecursiveFuncs);
 
-  LLVM_DEBUG({
-    dbgs() << "\nIsArgEscapedFromCalls:\n";
-    for (const auto &Entry : *IsArgEscapedFromCalls) {
-      const Function *F = Entry.first;
-      const SmallVector<bool> &EscapedArgs = Entry.second;
-      dbgs() << "\tFunction: " << F->getName() << "\n";
-      for (unsigned ArgIdx = 0; ArgIdx < EscapedArgs.size(); ++ArgIdx) {
-        dbgs() << "\t\tArg " << ArgIdx << ": "
-               << (EscapedArgs[ArgIdx] ? "YES" : "NO") << "\n";
-      }
-    }
-    dbgs() << "\n";
-  });
-
+  LLVM_DEBUG(printArgEscStatus(););
   LLVM_DEBUG(dbgs() << "\n");
 }
 
