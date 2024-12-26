@@ -327,7 +327,7 @@ EscapeAnalysisInfo::getExtObjStatusWithArgLookup(const Value *V) const {
   const auto EscReason = getExtObjStatus(V);
   if (IPAFuncEscInfo && (EscReason == EscReasonBits::PTR_ARG_ALIASING)) {
     const auto *Arg = cast<Argument>(V);
-    LLVM_DEBUG(dbgs() << "\t\t\t\tEscReason for Arg: ";
+    LLVM_DEBUG(dbgs() << "\t\t\t\tEscReason for Arg " << *Arg << ": ";
       printEscReason(
                getArgEscStatus(Arg->getArgNo(), Arg->getParent())));
     return getArgEscStatus(Arg->getArgNo(), Arg->getParent());
@@ -923,6 +923,7 @@ SmallVector<Value *, 8> EscapeAnalysisInfo::getUnderlyingMayEscObjects(
 EscapeAnalysisInfo::EscReasonTy
 EscapeAnalysisInfo::findObjInBBEscapeState(const BasicBlock *BB,
                                            const Value *V) const {
+  dbgs() << "findObjInBBEscapeState for BB " << BB->getName() << "\n";
   const auto It = BBEscapeStates.find(BB);
   assert((It != BBEscapeStates.end()) && "Cannot find BBEscapeState for BB\n");
   return It->second.getEscReason(V);
@@ -961,8 +962,11 @@ bool EscapeAnalysisInfo::isEscapedForFunc(
     const Value *V,
     std::optional<std::reference_wrapper<EscReasonTy>> EscReason) const {
   EscReasonTy CombinedEscReason;
-  for (const auto &BB : AnalyzedFunc)
+  for (const auto &BB : AnalyzedFunc) {
+    if (pred_empty(&BB))
+      continue;
     CombinedEscReason |= getFullEscapedForBBReason(&BB, V);
+  }
 
   if (EscReason.has_value())
     EscReason->get() = CombinedEscReason;
@@ -1172,13 +1176,10 @@ bool EscapeAnalysisGlobalInfo::analyzeCallGraphBottomTop(
       Converged = true;
       for (const CallGraphNode *CGN : SCC) {
         const auto *F = CGN->getFunction();
-        if (F)
-          dbgs() << "Analyzing function: " << F->getName() << "\n";
         // if (!isLocalFunc(F))
           // continue;
         if (!F || F->isDeclaration())
           continue;
-        dbgs() << "LOCAL\n";
 
         // Build escape summary for a function
         FuncEscapeInfo.erase(F);
@@ -1211,6 +1212,27 @@ bool EscapeAnalysisGlobalInfo::analyzeCallGraphBottomTop(
   return false;
 }
 
+bool EscapeAnalysisGlobalInfo::isFuncPassedToObjCSelector(const Function *F) {
+  for (const GlobalVariable &GV : M.globals()) {
+    if (GV.getName().starts_with("OBJC_SELECTOR_REFERENCES_") && GV.
+        hasInitializer()) {
+      const auto *Initializer = GV.getInitializer();
+
+      if (Initializer->getName() == "OBJC_METH_VAR_NAME_") {
+        if (const auto *InitStr = dyn_cast<ConstantDataArray>(
+            Initializer->getOperand(0))) {
+          if (InitStr->isString() &&
+              // Drop last \00 symbol in the func name in selector
+              F->getName().contains(InitStr->getAsString().drop_back(1))) {
+            return true;
+          }
+        }
+      }
+    }
+  }
+  return false;
+}
+
 void EscapeAnalysisGlobalInfo::analyzeCallGraphTopBottom(
     const SmallVectorImpl<std::vector<CallGraphNode *>> &SCCList,
     const DenseMap<const Function *, SmallVector<const CallBase *>>
@@ -1224,6 +1246,7 @@ void EscapeAnalysisGlobalInfo::analyzeCallGraphTopBottom(
 
     for (CallGraphNode *CGN : SCC) {
       const Function *F = CGN->getFunction();
+
       if (!isLocalFunc(F))
         continue;
 
@@ -1231,8 +1254,11 @@ void EscapeAnalysisGlobalInfo::analyzeCallGraphTopBottom(
       if (!F->hasLocalLinkage())
         continue;
 
+      // For now, conservatively skip all ObjC methods
+      if (isFuncPassedToObjCSelector(F))
+        continue;
+
       LLVM_DEBUG(dbgs() << "\nFunc: " << F->getName() << "\n");
-      dbgs() << "\nFunc: " << F->getName() << "\n";
       evalFuncArgEscStatus(FuncCallSites, F);
 
       // Build escape summary for a function

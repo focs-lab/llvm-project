@@ -280,6 +280,9 @@ class EscapeAnalysisGlobalInfo {
   DenseMap<const Function *, SmallVector<const CallBase *>>
   getFuncToCallSitesMap();
 
+  /// Check weather function passed to the Objective C selector
+  bool isFuncPassedToObjCSelector(const Function *F);
+
   /// Compute escape status for the function argument based on call instructions
   void analyzeCallGraphTopBottom(
       const SmallVectorImpl<std::vector<CallGraphNode *>> &SCCList,
