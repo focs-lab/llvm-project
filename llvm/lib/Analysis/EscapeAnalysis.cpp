@@ -923,7 +923,6 @@ SmallVector<Value *, 8> EscapeAnalysisInfo::getUnderlyingMayEscObjects(
 EscapeAnalysisInfo::EscReasonTy
 EscapeAnalysisInfo::findObjInBBEscapeState(const BasicBlock *BB,
                                            const Value *V) const {
-  dbgs() << "findObjInBBEscapeState for BB " << BB->getName() << "\n";
   const auto It = BBEscapeStates.find(BB);
   assert((It != BBEscapeStates.end()) && "Cannot find BBEscapeState for BB\n");
   return It->second.getEscReason(V);
@@ -963,7 +962,7 @@ bool EscapeAnalysisInfo::isEscapedForFunc(
     std::optional<std::reference_wrapper<EscReasonTy>> EscReason) const {
   EscReasonTy CombinedEscReason;
   for (const auto &BB : AnalyzedFunc) {
-    if (pred_empty(&BB))
+    if (pred_empty(&BB) && !BB.isEntryBlock())
       continue;
     CombinedEscReason |= getFullEscapedForBBReason(&BB, V);
   }
@@ -1144,7 +1143,6 @@ void EscapeAnalysisGlobalInfo::evalFuncArgEscStatus(
 
       const auto UnderlObjs =
           EscapeAnalysisInfo::getUnderlyingMayEscObjects(Arg);
-      dbgs() << "Try to find " << CB->getFunction()->getName() << "\n";
       const auto EAIIt = FuncEscapeInfo.find(CB->getFunction());
       assert(EAIIt != FuncEscapeInfo.end());
       const EscapeAnalysisInfo &CallEAI = EAIIt->second;
