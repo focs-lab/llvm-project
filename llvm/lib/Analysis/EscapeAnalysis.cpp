@@ -1249,8 +1249,8 @@ void EscapeAnalysisGlobalInfo::analyzeCallGraphTopBottom(
         continue;
 
       // We consider only static functions
-      if (!F->hasLocalLinkage())
-        continue;
+      // if (!F->hasLocalLinkage())
+        // continue;
 
       // For now, conservatively skip all ObjC methods
       if (isFuncPassedToObjCSelector(F))
