@@ -1073,7 +1073,7 @@ bool EscapeAnalysisGlobalInfo::traverseSCCsAndInitIPAEscInfo(
     } else { // SCC.size() > 1
       for (const CallGraphNode *CGN : SCC) {
         const auto F = CGN->getFunction();
-        assert(isLocalFunc(F));
+        assert(F && !F->isDeclaration());
         setAllPtrArgsNotEscaped(*IPAFuncEscInfo, F);
       }
     }
