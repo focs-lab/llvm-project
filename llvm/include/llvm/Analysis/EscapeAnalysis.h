@@ -25,6 +25,11 @@
 namespace llvm {
 /// This is the implementation of simple escape analysis
 
+struct UnderlObjInfo {
+  const Value *Obj;
+  bool LoadInstFlag;
+};
+
 /// Interface to access escape analysis results for single function.
 class EscapeAnalysisInfo {
 public:
@@ -70,7 +75,7 @@ public:
 
   /// Recursively search in the instruction for the underlying objects which
   /// may escape
-  static SmallVector<Value *, 8> getUnderlyingMayEscObjects(
+  static SmallVector<UnderlObjInfo> getUnderlyingMayEscObjects(
       const Value *V, unsigned MaxLookup = MaxUnderlObjLookup,
       std::shared_ptr<IPAFuncEscInfoMap> IPAFuncEscInfo = nullptr);
 
@@ -148,7 +153,7 @@ private:
     /// in the escape analysis information. If the pointee value has previously
     /// escaped or if the alias itself is an escaping pointer, the alias is
     /// also marked as escaping.
-    void addAlias(const Value *Alias, const Value *PointeeValue,
+    void addAlias(const UnderlObjInfo &Pointer, const UnderlObjInfo &Pointee,
                   const EscapeAnalysisInfo *EAI);
 
     void merge(const EscapeState &OtherES, const EscapeAnalysisInfo *EAI) {
@@ -156,7 +161,7 @@ private:
       mergeEscapedObjects(OtherES);
     }
 
-    const EscapedObjectsTy &getEscapedObjs() const { return EscapedObjects; };
+    const EscapedObjectsTy &getEscapedObjs() const { return EscapedObjs; };
     const AliasRelationTy &getAliasRel() const { return AliasRel; }
 
     void print(raw_ostream &OS) const;
@@ -166,7 +171,7 @@ private:
 
   private:
     // Set of allocations that escape in this block.
-    EscapedObjectsTy EscapedObjects;
+    EscapedObjectsTy EscapedObjs;
 
     // map from Alloca aliases to the original Allocas
     // Note that a Value may be the alias of multiple Allocas
@@ -183,7 +188,7 @@ private:
   /// Check if function returns escaped object, and update function return
   /// escape status
   void updRetEscStatus(EscapeState &ES,
-                       const SmallVectorImpl<Value *> &UnderlObjs);
+                       const SmallVectorImpl<UnderlObjInfo> &UnderlObjs);
 
   /// Compute the resulting escape state for BB
   void compBBEscapeState(const BasicBlock *BB, EscapeState &ES);
@@ -204,7 +209,7 @@ private:
   /// Determine what kind of escape behaviour V may exhibit.
   struct EscInfoTy {
     EscKindTy EscKind;
-    std::optional<std::variant<EscReasonTy, SmallVector<Value *, 8>>>
+    std::optional<std::variant<EscReasonTy, SmallVector<UnderlObjInfo>>>
         EscDetails = std::nullopt;
   };
 

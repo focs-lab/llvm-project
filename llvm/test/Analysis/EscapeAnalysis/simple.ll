@@ -4,20 +4,18 @@
 
 @GPtr = dso_local global ptr null, align 8
 
-define dso_local ptr @escape_func() {
+define dso_local void @escape_func() {
 ; CHECK: Printing analysis 'Escape Analysis' for function 'escape_func':
 ; CHECK-NEXT: Escaping objects for BB entry:
 ; CHECK-NEXT:   %x = alloca i32, align 4
 entry:
   %x = alloca i32, align 4
-  store i32 30, ptr %x, align 4
+  store i32 333, ptr %x, align 4
   call void @external_func(ptr noundef %x)
-  ret ptr %x
-}
-
-define dso_local void @external_func(ptr noundef %ptr) {
   ret void
 }
+
+declare void @external_func(ptr noundef)
 
 define dso_local void @assigning_global_ptr() {
 ; CHECK: Printing analysis 'Escape Analysis' for function 'assigning_global_ptr':
@@ -47,4 +45,24 @@ entry:
   %x = alloca ptr, align 8
   %0 = load ptr, ptr %x, align 8
   ret ptr %0
+}
+
+; void ptrtoint_and_inttoptr() {
+; 	int y;
+; 	int *x = (int *)(long int)&y;
+; 	GPtr = x;
+; }
+define void @ptrtoint_and_inttoptr() #0 {
+; CHECK: Printing analysis 'Escape Analysis' for function 'ptrtoint_and_inttoptr':
+; CHECK-NEXT: Escaping objects for BB entry:
+; CHECK-DAG:  %y = alloca i32, align 4
+entry:
+  %y = alloca i32, align 4
+  %x = alloca ptr, align 8
+  %0 = ptrtoint ptr %y to i64
+  %1 = inttoptr i64 %0 to ptr
+  store ptr %1, ptr %x, align 8
+  %2 = load ptr, ptr %x, align 8
+  store ptr %2, ptr @GPtr, align 8
+  ret void
 }

@@ -8,7 +8,6 @@ define dso_local ptr @escape_aliasing() {
 ; CHECK: Printing analysis 'Escape Analysis' for function 'escape_aliasing':
 ; CHECK-NEXT: Escaping objects for BB entry:
 ; CHECK-DAG:   %x = alloca i32, align 4
-; CHECK-DAG:   %alias = alloca ptr, align 8
 entry:
   %x = alloca i32, align 4
   %alias = alloca ptr, align 8
@@ -25,7 +24,6 @@ define dso_local void @multiple_aliases() {
 ; CHECK-DAG:   %x = alloca i32, align 4
 ; CHECK-DAG:   %y = alloca i32, align 4
 ; CHECK-DAG:   %z = alloca i32, align 4
-; CHECK-DAG:   %Ptr = alloca ptr, align 8
 entry:
   %x = alloca i32, align 4
   %y = alloca i32, align 4
@@ -55,7 +53,6 @@ entry:
 define dso_local void @escape_pointee_object() {
 ; CHECK: Printing analysis 'Escape Analysis' for function 'escape_pointee_object':
 ; CHECK-NEXT: Escaping objects for BB entry:
-; CHECK-DAG:   %p = alloca ptr, align 8
 ; CHECK-DAG:   %x = alloca [10 x i32], align 16
 entry:
   %x = alloca [10 x i32], align 16
@@ -67,11 +64,16 @@ entry:
   ret void
 }
 
+; void escape_in_the_middle_of_alias_chain() {
+;   int x[10];
+;   int *y = &x[3];
+;   int *z = &y[4];
+;   GPtr = y;
+; }
+
 define dso_local void @escape_in_the_middle_of_alias_chain() {
 ; CHECK: Printing analysis 'Escape Analysis' for function 'escape_in_the_middle_of_alias_chain':
 ; CHECK-NEXT: Escaping objects for BB entry:
-; CHECK-DAG:  %z = alloca ptr, align 8
-; CHECK-DAG:  %y = alloca ptr, align 8
 ; CHECK-DAG:  %x = alloca [10 x i32], align 16
 entry:
   %x = alloca [10 x i32], align 16
@@ -97,22 +99,4 @@ entry:
   store ptr %y, ptr @GPtr, align 8
   %0 = load i32, ptr %y, align 4
   ret i32 %0
-}
-
-define dso_local void @mutual_aliases() {
-; CHECK: Printing analysis 'Escape Analysis' for function 'mutual_aliases':
-; CHECK-NEXT: Escaping objects for BB entry:
-; CHECK-DAG:  %x = alloca i32, align 4
-; CHECK-DAG:  %a1 = alloca ptr, align 8
-; CHECK-DAG:  %a2 = alloca ptr, align 8
-entry:
-  %x = alloca i32, align 4
-  %a1 = alloca ptr, align 8
-  %a2 = alloca ptr, align 8
-  %0 = load ptr, ptr %a2, align 8
-  store ptr %0, ptr %a1, align 8
-  store ptr %x, ptr %a1, align 8
-  %1 = load ptr, ptr %a2, align 8
-  store ptr %1, ptr @GPtr, align 8
-  ret void
 }

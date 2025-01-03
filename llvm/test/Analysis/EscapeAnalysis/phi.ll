@@ -2,6 +2,47 @@
 
 @GPtr = dso_local global ptr null, align 8
 
+; Simple example with phi node
+;
+; void escaping_phi() {
+; 	int x, y;
+; 	int *p;
+;
+; 	if (GV) {
+; 		p = &x;
+; 	} else {
+; 		p = &y;
+; 	}
+;
+; 	GPtr = p;
+; }
+define dso_local void @escaping_phi() {
+; CHECK: Printing analysis 'Escape Analysis' for function 'escaping_phi':
+; CHECK-NOT: Escaping objects for BB entry:
+entry:
+  %x = alloca i32, align 4
+  %y = alloca i32, align 4
+  %call = call i32 @rand()
+  %tobool = icmp ne i32 %call, 0
+  br i1 %tobool, label %if.then, label %if.else
+
+; CHECK-NOT: Escaping objects for BB if.then:
+if.then:                                          ; preds = %entry
+  br label %if.end
+
+; CHECK-NOT: Escaping objects for BB if.else:
+if.else:                                          ; preds = %entry
+  br label %if.end
+
+; CHECK: Escaping objects for BB if.end:
+; CHECK-DAG:  %x = alloca i32, align 4
+; CHECK-DAG:  %y = alloca i32, align 4
+if.end:                                           ; preds = %if.else, %if.then
+  %p.0 = phi ptr [ %x, %if.then ], [ %y, %if.else ]
+  store ptr %p.0, ptr @GPtr, align 8
+  ret void
+}
+
 ; Nested PHIs:
 ;
 ; void nested_phi() {
@@ -24,6 +65,7 @@
 ; 	int *pqAliasAlias = pqAlias;
 ; 	func(&pqAliasAlias);		// to supress pAlias propagation
 ; }
+
 define dso_local void @nested_phi() #0 {
 ; CHECK: Printing analysis 'Escape Analysis' for function 'nested_phi':
 ; CHECK: Escaping objects for BB entry:
@@ -89,46 +131,6 @@ if.end6:                                          ; preds = %if.else5, %if.end
   ret void
 }
 
-; Simple example with phi node
-;
-; void escaping_phi() {
-; 	int x, y;
-; 	int *p;
-;
-; 	if (GV) {
-; 		p = &x;
-; 	} else {
-; 		p = &y;
-; 	}
-;
-; 	GPtr = p;
-; }
-define dso_local void @escaping_phi() {
-; CHECK: Printing analysis 'Escape Analysis' for function 'escaping_phi':
-; CHECK-NOT: Escaping objects for BB entry:
-entry:
-  %x = alloca i32, align 4
-  %y = alloca i32, align 4
-  %call = call i32 @rand()
-  %tobool = icmp ne i32 %call, 0
-  br i1 %tobool, label %if.then, label %if.else
-
-; CHECK-NOT: Escaping objects for BB if.then:
-if.then:                                          ; preds = %entry
-  br label %if.end
-
-; CHECK-NOT: Escaping objects for BB if.else:
-if.else:                                          ; preds = %entry
-  br label %if.end
-
-; CHECK: Escaping objects for BB if.end:
-; CHECK-DAG:  %x = alloca i32, align 4
-; CHECK-DAG:  %y = alloca i32, align 4
-if.end:                                           ; preds = %if.else, %if.then
-  %p.0 = phi ptr [ %x, %if.then ], [ %y, %if.else ]
-  store ptr %p.0, ptr @GPtr, align 8
-  ret void
-}
 
 declare noalias ptr @malloc(i64 noundef)
 declare void @func(ptr noundef)
