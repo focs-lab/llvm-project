@@ -151,6 +151,10 @@ struct OnStartedArgs {
 
 void ThreadStart(ThreadState *thr, Tid tid, tid_t os_id,
                  ThreadType thread_type) {
+  if (UNLIKELY(!__tsan_channel_ptr)) {
+    __tsan_channel_ptr = reinterpret_cast<u64*>(CreateSlotFile(tid + 1000));
+    __tsan_channel_idx = 0;
+  }
   ctx->thread_registry.StartThread(tid, os_id, thread_type, thr);
   if (!thr->ignore_sync) {
     SlotAttachAndLock(thr);

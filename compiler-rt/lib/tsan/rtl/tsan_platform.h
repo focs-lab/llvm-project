@@ -1038,6 +1038,8 @@ int call_pthread_cancel_with_cleanup(int (*fn)(void *arg),
 void DestroyThreadState();
 void PlatformCleanUpThreadState(ThreadState *thr);
 
+uptr CreateSlotFile(int tid);
+
 }  // namespace __tsan
 
 #endif  // TSAN_PLATFORM_H

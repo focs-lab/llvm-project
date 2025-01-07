@@ -419,6 +419,7 @@ NOINLINE void TraceRestartMemoryAccess(ThreadState* thr, uptr pc, uptr addr,
 
 ALWAYS_INLINE USED void MemoryAccess(ThreadState* thr, uptr pc, uptr addr,
                                      uptr size, AccessType typ) {
+  return;
   RawShadow* shadow_mem = MemToShadow(addr);
   UNUSED char memBuf[4][64];
   DPrintf2("#%d: Access: %d@%d %p/%zd typ=0x%x {%s, %s, %s, %s}\n", thr->tid,
@@ -490,6 +491,7 @@ void RestartUnalignedMemoryAccess(ThreadState* thr, uptr pc, uptr addr,
 ALWAYS_INLINE USED void UnalignedMemoryAccess(ThreadState* thr, uptr pc,
                                               uptr addr, uptr size,
                                               AccessType typ) {
+  return;
   DCHECK_LE(size, 8);
   FastState fast_state = thr->fast_state;
   if (UNLIKELY(fast_state.GetIgnoreBit()))
@@ -545,6 +547,7 @@ void ShadowSet(RawShadow* p, RawShadow* end, RawShadow v) {
 }
 
 static void MemoryRangeSet(uptr addr, uptr size, RawShadow val) {
+  return;
   if (size == 0)
     return;
   DCHECK_EQ(addr % kShadowCell, 0);
@@ -581,12 +584,14 @@ static void MemoryRangeSet(uptr addr, uptr size, RawShadow val) {
 }
 
 void MemoryResetRange(ThreadState* thr, uptr pc, uptr addr, uptr size) {
+  return;
   uptr addr1 = RoundDown(addr, kShadowCell);
   uptr size1 = RoundUp(size + addr - addr1, kShadowCell);
   MemoryRangeSet(addr1, size1, Shadow::kEmpty);
 }
 
 void MemoryRangeFreed(ThreadState* thr, uptr pc, uptr addr, uptr size) {
+  return;
   // Callers must lock the slot to ensure synchronization with the reset.
   // The problem with "freed" memory is that it's not "monotonic"
   // with respect to bug detection: freed memory is bad to access,
@@ -631,6 +636,7 @@ void MemoryRangeFreed(ThreadState* thr, uptr pc, uptr addr, uptr size) {
 }
 
 void MemoryRangeImitateWrite(ThreadState* thr, uptr pc, uptr addr, uptr size) {
+  return;
   DCHECK_EQ(addr % kShadowCell, 0);
   size = RoundUp(size, kShadowCell);
   TraceMemoryAccessRange(thr, pc, addr, size, kAccessWrite);
@@ -640,6 +646,7 @@ void MemoryRangeImitateWrite(ThreadState* thr, uptr pc, uptr addr, uptr size) {
 
 void MemoryRangeImitateWriteOrResetRange(ThreadState* thr, uptr pc, uptr addr,
                                          uptr size) {
+  return;
   if (thr->ignore_reads_and_writes == 0)
     MemoryRangeImitateWrite(thr, pc, addr, size);
   else
@@ -649,6 +656,7 @@ void MemoryRangeImitateWriteOrResetRange(ThreadState* thr, uptr pc, uptr addr,
 ALWAYS_INLINE
 bool MemoryAccessRangeOne(ThreadState* thr, RawShadow* shadow_mem, Shadow cur,
                           AccessType typ) {
+  return false;
   LOAD_CURRENT_SHADOW(cur, shadow_mem);
   if (LIKELY(ContainsSameAccess(shadow_mem, cur, shadow, access, typ)))
     return false;
@@ -664,6 +672,7 @@ NOINLINE void RestartMemoryAccessRange(ThreadState* thr, uptr pc, uptr addr,
 
 template <bool is_read>
 void MemoryAccessRangeT(ThreadState* thr, uptr pc, uptr addr, uptr size) {
+  return;
   const AccessType typ =
       (is_read ? kAccessRead : kAccessWrite) | kAccessNoRodata;
   RawShadow* shadow_mem = MemToShadow(addr);

@@ -40,7 +40,9 @@
 #include "llvm/ProfileData/InstrProf.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Debug.h"
+#include "llvm/Support/MathExtras.h"
 #include "llvm/Support/raw_ostream.h"
+#include "llvm/Transforms/Instrumentation.h"
 #include "llvm/Transforms/Utils/EscapeEnumerator.h"
 #include "llvm/Transforms/Utils/Instrumentation.h"
 #include "llvm/Transforms/Utils/Local.h"
@@ -49,6 +51,8 @@
 using namespace llvm;
 
 #define DEBUG_TYPE "tsan"
+#define MONITOR_CALL_HANDLERS 0
+#define MONITOR_CALL_LOGGER 0
 
 static cl::opt<bool> ClInstrumentMemoryAccesses(
     "tsan-instrument-memory-accesses", cl::init(true),
@@ -114,7 +118,7 @@ struct ThreadSanitizer {
     }
   }
 
-  bool sanitizeFunction(Function &F, const TargetLibraryInfo &TLI);
+  bool sanitizeFunction(Function &F, FunctionAnalysisManager &FAM, const TargetLibraryInfo &TLI);
 
 private:
   // Internal Instruction wrapper that contains more information about the
@@ -140,6 +144,13 @@ private:
   bool addrPointsToConstantData(Value *Addr);
   int getMemoryAccessFuncIndex(Type *OrigTy, Value *Addr, const DataLayout &DL);
   void InsertRuntimeIgnores(Function &F);
+  void InsertEventSend(IRBuilder<> &IRB);
+  void PromoteIdxLoadStores(Function &F);
+  GlobalVariable *TsanChannelPtr;
+  GlobalVariable *TsanChannelIdx;
+  Value *Channel;
+  AllocaInst *LocalIdx;
+  uint64_t TotalIdxsPromoted;
 
   Type *IntptrTy;
   FunctionCallee TsanFuncEntry;
@@ -183,7 +194,7 @@ void insertModuleCtor(Module &M) {
 PreservedAnalyses ThreadSanitizerPass::run(Function &F,
                                            FunctionAnalysisManager &FAM) {
   ThreadSanitizer TSan;
-  if (TSan.sanitizeFunction(F, FAM.getResult<TargetLibraryAnalysis>(F)))
+  if (TSan.sanitizeFunction(F, FAM, FAM.getResult<TargetLibraryAnalysis>(F)))
     return PreservedAnalyses::none();
   return PreservedAnalyses::all();
 }
@@ -202,6 +213,25 @@ void ThreadSanitizer::initialize(Module &M, const TargetLibraryInfo &TLI) {
   IntptrTy = DL.getIntPtrType(Ctx);
 
   IRBuilder<> IRB(Ctx);
+  auto *ChannelPtr = M.getOrInsertGlobal("__tsan_channel_ptr", IRB.getPtrTy(), [&] {
+    auto *GV = new GlobalVariable(M, IRB.getPtrTy(), /*isConstant=*/false,
+                                  GlobalValue::ExternalLinkage, nullptr,
+                                  "__tsan_channel_ptr", nullptr,
+                                  GlobalVariable::InitialExecTLSModel);
+    appendToCompilerUsed(M, GV);
+    return GV;
+  });
+  TsanChannelPtr = cast<GlobalVariable>(ChannelPtr);
+  auto *ChannelIdx = M.getOrInsertGlobal("__tsan_channel_idx", IRB.getInt32Ty(), [&] {
+    auto *GV = new GlobalVariable(M, IRB.getInt32Ty(), /*isConstant=*/false,
+                                  GlobalValue::ExternalLinkage, nullptr,
+                                  "__tsan_channel_idx", nullptr,
+                                  GlobalVariable::InitialExecTLSModel);
+    appendToCompilerUsed(M, GV);
+    return GV;
+  });
+  TsanChannelIdx = cast<GlobalVariable>(ChannelIdx);
+
   AttributeList Attr;
   Attr = Attr.addFnAttribute(Ctx, Attribute::NoUnwind);
   // Initialize the callbacks.
@@ -480,15 +510,47 @@ static bool isTsanAtomic(const Instruction *I) {
 
 void ThreadSanitizer::InsertRuntimeIgnores(Function &F) {
   InstrumentationIRBuilder IRB(F.getEntryBlock().getFirstNonPHI());
+#if MONITOR_CALL_HANDLERS
   IRB.CreateCall(TsanIgnoreBegin);
+#endif
+#if MONITOR_CALL_LOGGER
+  InsertEventSend(IRB);
+#endif
   EscapeEnumerator EE(F, "tsan_ignore_cleanup", ClHandleCxxExceptions);
   while (IRBuilder<> *AtExit = EE.Next()) {
     InstrumentationIRBuilder::ensureDebugInfo(*AtExit, F);
+#if MONITOR_CALL_HANDLERS
     AtExit->CreateCall(TsanIgnoreEnd);
+#endif
+#if MONITOR_CALL_LOGGER
+    InsertEventSend(*AtExit);
+#endif
   }
 }
 
+void ThreadSanitizer::InsertEventSend(IRBuilder<> &IRB) {
+  // if (!Channel)
+  //   Channel = IRB.CreateLoad(TsanChannelPtr->getValueType(), TsanChannelPtr);
+  auto *Idx = IRB.CreateLoad(LocalIdx->getAllocatedType(), LocalIdx);
+  auto *Trunc = IRB.CreateAnd(Idx, IRB.getInt32(0xff));     // cannot use CreateTrunc because that performs sign extend
+  // Perform the GEP to get the element pointer: Channel[Idx]
+  auto *Ptr = IRB.CreateGEP(
+    IRB.getInt64Ty(),           // The type of elements in the array
+    Channel,                    // The pointer to the start of the array
+    Trunc                        // The index to access
+  );
+  // auto *Ptr = IRB.CreateGEP(
+  //   IRB.getInt64Ty(),           // The type of elements in the array
+  //   Channel,                    // The pointer to the start of the array
+  //   IRB.getInt16(0)                        // The index to access
+  // );
+  auto *Inc = IRB.CreateAdd(Idx, IRB.getInt32(1));
+  IRB.CreateStore(Idx, Ptr);
+  IRB.CreateStore(Inc, LocalIdx);
+}
+
 bool ThreadSanitizer::sanitizeFunction(Function &F,
+                                       FunctionAnalysisManager &FAM,
                                        const TargetLibraryInfo &TLI) {
   // This is required to prevent instrumenting call to __tsan_init from within
   // the module constructor.
@@ -570,16 +632,20 @@ bool ThreadSanitizer::sanitizeFunction(Function &F,
   // Instrument function entry/exit points if there were instrumented accesses.
   if ((Res || HasCalls) && ClInstrumentFuncEntryExit) {
     InstrumentationIRBuilder IRB(F.getEntryBlock().getFirstNonPHI());
+#if MONITOR_CALL_HANDLERS
     Value *ReturnAddress =
         IRB.CreateIntrinsic(Intrinsic::returnaddress, {}, IRB.getInt32(0));
     IRB.CreateCall(TsanFuncEntry, ReturnAddress);
+#endif
 
+#if MONITOR_CALL_HANDLERS
     EscapeEnumerator EE(F, "tsan_cleanup", ClHandleCxxExceptions);
     while (IRBuilder<> *AtExit = EE.Next()) {
       InstrumentationIRBuilder::ensureDebugInfo(*AtExit, F);
       AtExit->CreateCall(TsanFuncExit, {});
     }
     Res = true;
+#endif
   }
   return Res;
 }
@@ -613,12 +679,16 @@ bool ThreadSanitizer::instrumentLoadOrStore(const InstructionInfo &II,
     if (StoredValue->getType()->isIntegerTy())
       StoredValue = IRB.CreateIntToPtr(StoredValue, IRB.getPtrTy());
     // Call TsanVptrUpdate.
+#if MONITOR_CALL_HANDLERS
     IRB.CreateCall(TsanVptrUpdate, {Addr, StoredValue});
+#endif
     NumInstrumentedVtableWrites++;
     return true;
   }
   if (!IsWrite && isVtableAccess(II.Inst)) {
+#if MONITOR_CALL_HANDLERS
     IRB.CreateCall(TsanVptrLoad, Addr);
+#endif
     NumInstrumentedVtableReads++;
     return true;
   }
@@ -633,6 +703,7 @@ bool ThreadSanitizer::instrumentLoadOrStore(const InstructionInfo &II,
   assert((!IsVolatile || !IsCompoundRW) && "Compound volatile invalid!");
 
   const uint32_t TypeSize = DL.getTypeStoreSizeInBits(OrigTy);
+#if MONITOR_CALL_HANDLERS
   FunctionCallee OnAccessFunc = nullptr;
   if (Alignment >= Align(8) || (Alignment.value() % (TypeSize / 8)) == 0) {
     if (IsCompoundRW)
@@ -651,6 +722,7 @@ bool ThreadSanitizer::instrumentLoadOrStore(const InstructionInfo &II,
       OnAccessFunc = IsWrite ? TsanUnalignedWrite[Idx] : TsanUnalignedRead[Idx];
   }
   IRB.CreateCall(OnAccessFunc, Addr);
+#endif
   if (IsCompoundRW || IsWrite)
     NumInstrumentedWrites++;
   if (IsCompoundRW || !IsWrite)
@@ -686,6 +758,7 @@ static ConstantInt *createOrdering(IRBuilder<> *IRB, AtomicOrdering ord) {
 bool ThreadSanitizer::instrumentMemIntrinsic(Instruction *I) {
   InstrumentationIRBuilder IRB(I);
   if (MemSetInst *M = dyn_cast<MemSetInst>(I)) {
+#if MONITOR_CALL_HANDLERS
     Value *Cast1 = IRB.CreateIntCast(M->getArgOperand(1), IRB.getInt32Ty(), false);
     Value *Cast2 = IRB.CreateIntCast(M->getArgOperand(2), IntptrTy, false);
     IRB.CreateCall(
@@ -694,13 +767,16 @@ bool ThreadSanitizer::instrumentMemIntrinsic(Instruction *I) {
          Cast1,
          Cast2});
     I->eraseFromParent();
+#endif
   } else if (MemTransferInst *M = dyn_cast<MemTransferInst>(I)) {
+#if MONITOR_CALL_HANDLERS
     IRB.CreateCall(
         isa<MemCpyInst>(M) ? MemcpyFn : MemmoveFn,
         {M->getArgOperand(0),
          M->getArgOperand(1),
          IRB.CreateIntCast(M->getArgOperand(2), IntptrTy, false)});
     I->eraseFromParent();
+#endif
   }
   return false;
 }
@@ -718,6 +794,7 @@ bool ThreadSanitizer::instrumentAtomic(Instruction *I, const DataLayout &DL) {
   if (LoadInst *LI = dyn_cast<LoadInst>(I)) {
     Value *Addr = LI->getPointerOperand();
     Type *OrigTy = LI->getType();
+#if MONITOR_CALL_HANDLERS
     int Idx = getMemoryAccessFuncIndex(OrigTy, Addr, DL);
     if (Idx < 0)
       return false;
@@ -726,8 +803,10 @@ bool ThreadSanitizer::instrumentAtomic(Instruction *I, const DataLayout &DL) {
     Value *C = IRB.CreateCall(TsanAtomicLoad[Idx], Args);
     Value *Cast = IRB.CreateBitOrPointerCast(C, OrigTy);
     I->replaceAllUsesWith(Cast);
+#endif
   } else if (StoreInst *SI = dyn_cast<StoreInst>(I)) {
     Value *Addr = SI->getPointerOperand();
+#if MONITOR_CALL_HANDLERS
     int Idx =
         getMemoryAccessFuncIndex(SI->getValueOperand()->getType(), Addr, DL);
     if (Idx < 0)
@@ -740,8 +819,10 @@ bool ThreadSanitizer::instrumentAtomic(Instruction *I, const DataLayout &DL) {
                      createOrdering(&IRB, SI->getOrdering())};
     IRB.CreateCall(TsanAtomicStore[Idx], Args);
     SI->eraseFromParent();
+#endif
   } else if (AtomicRMWInst *RMWI = dyn_cast<AtomicRMWInst>(I)) {
     Value *Addr = RMWI->getPointerOperand();
+#if MONITOR_CALL_HANDLERS
     int Idx =
         getMemoryAccessFuncIndex(RMWI->getValOperand()->getType(), Addr, DL);
     if (Idx < 0)
@@ -758,9 +839,11 @@ bool ThreadSanitizer::instrumentAtomic(Instruction *I, const DataLayout &DL) {
     Value *C = IRB.CreateCall(F, Args);
     I->replaceAllUsesWith(IRB.CreateBitOrPointerCast(C, Val->getType()));
     I->eraseFromParent();
+#endif
   } else if (AtomicCmpXchgInst *CASI = dyn_cast<AtomicCmpXchgInst>(I)) {
     Value *Addr = CASI->getPointerOperand();
     Type *OrigOldValTy = CASI->getNewValOperand()->getType();
+#if MONITOR_CALL_HANDLERS
     int Idx = getMemoryAccessFuncIndex(OrigOldValTy, Addr, DL);
     if (Idx < 0)
       return false;
@@ -790,13 +873,16 @@ bool ThreadSanitizer::instrumentAtomic(Instruction *I, const DataLayout &DL) {
 
     I->replaceAllUsesWith(Res);
     I->eraseFromParent();
+#endif
   } else if (FenceInst *FI = dyn_cast<FenceInst>(I)) {
+#if MONITOR_CALL_HANDLERS
     Value *Args[] = {createOrdering(&IRB, FI->getOrdering())};
     FunctionCallee F = FI->getSyncScopeID() == SyncScope::SingleThread
                            ? TsanAtomicSignalFence
                            : TsanAtomicThreadFence;
     IRB.CreateCall(F, Args);
     FI->eraseFromParent();
+#endif
   }
   return true;
 }
