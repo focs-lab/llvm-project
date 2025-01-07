@@ -59,7 +59,7 @@ static void *GetFuncAddr(const char *name, uptr trampoline) {
 bool InterceptFunction(const char *name, uptr *ptr_to_real, uptr func,
                        uptr trampoline) {
   void *addr = GetFuncAddr(name, trampoline);
-  *ptr_to_real = (uptr)addr;
+  // *ptr_to_real = (uptr)addr;
   return addr && (func == trampoline);
 }
 

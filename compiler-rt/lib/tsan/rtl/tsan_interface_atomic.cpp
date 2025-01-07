@@ -233,16 +233,16 @@ static T AtomicLoad(ThreadState *thr, uptr pc, const volatile T *a, morder mo) {
   // Don't create sync object if it does not exist yet. For example, an atomic
   // pointer is initialized to nullptr and then periodically acquire-loaded.
   T v = NoTsanAtomicLoad(a, mo);
-  SyncVar *s = ctx->metamap.GetSyncIfExists((uptr)a);
-  if (s) {
-    SlotLocker locker(thr);
-    ReadLock lock(&s->mtx);
-    thr->clock.Acquire(s->clock);
+  // SyncVar *s = ctx->metamap.GetSyncIfExists((uptr)a);
+  // if (s) {
+    // SlotLocker locker(thr);
+    // ReadLock lock(&s->mtx);
+    // thr->clock.Acquire(s->clock);
     // Re-read under sync mutex because we need a consistent snapshot
     // of the value and the clock we acquire.
-    v = NoTsanAtomicLoad(a, mo);
-  }
-  MemoryAccess(thr, pc, (uptr)a, AccessSize<T>(), kAccessRead | kAccessAtomic);
+  //   v = NoTsanAtomicLoad(a, mo);
+  // }
+  // MemoryAccess(thr, pc, (uptr)a, AccessSize<T>(), kAccessRead | kAccessAtomic);
   return v;
 }
 
@@ -262,7 +262,7 @@ template <typename T>
 static void AtomicStore(ThreadState *thr, uptr pc, volatile T *a, T v,
                         morder mo) {
   DCHECK(IsStoreOrder(mo));
-  MemoryAccess(thr, pc, (uptr)a, AccessSize<T>(), kAccessWrite | kAccessAtomic);
+  // MemoryAccess(thr, pc, (uptr)a, AccessSize<T>(), kAccessWrite | kAccessAtomic);
   // This fast-path is critical for performance.
   // Assume the access is atomic.
   // Strictly saying even relaxed store cuts off release sequence,
@@ -271,35 +271,35 @@ static void AtomicStore(ThreadState *thr, uptr pc, volatile T *a, T v,
     NoTsanAtomicStore(a, v, mo);
     return;
   }
-  SlotLocker locker(thr);
+  // SlotLocker locker(thr);
   {
-    auto s = ctx->metamap.GetSyncOrCreate(thr, pc, (uptr)a, false);
-    Lock lock(&s->mtx);
-    thr->clock.ReleaseStore(&s->clock);
+    // auto s = ctx->metamap.GetSyncOrCreate(thr, pc, (uptr)a, false);
+    // Lock lock(&s->mtx);
+    // thr->clock.ReleaseStore(&s->clock);
     NoTsanAtomicStore(a, v, mo);
   }
-  IncrementEpoch(thr);
+  // IncrementEpoch(thr);
 }
 
 template <typename T, T (*F)(volatile T *v, T op)>
 static T AtomicRMW(ThreadState *thr, uptr pc, volatile T *a, T v, morder mo) {
-  MemoryAccess(thr, pc, (uptr)a, AccessSize<T>(), kAccessWrite | kAccessAtomic);
+  // MemoryAccess(thr, pc, (uptr)a, AccessSize<T>(), kAccessWrite | kAccessAtomic);
   if (LIKELY(mo == mo_relaxed))
     return F(a, v);
-  SlotLocker locker(thr);
+  // SlotLocker locker(thr);
   {
-    auto s = ctx->metamap.GetSyncOrCreate(thr, pc, (uptr)a, false);
-    RWLock lock(&s->mtx, IsReleaseOrder(mo));
-    if (IsAcqRelOrder(mo))
-      thr->clock.ReleaseAcquire(&s->clock);
-    else if (IsReleaseOrder(mo))
-      thr->clock.Release(&s->clock);
-    else if (IsAcquireOrder(mo))
-      thr->clock.Acquire(s->clock);
+    // auto s = ctx->metamap.GetSyncOrCreate(thr, pc, (uptr)a, false);
+    // RWLock lock(&s->mtx, IsReleaseOrder(mo));
+    // if (IsAcqRelOrder(mo))
+    //   thr->clock.ReleaseAcquire(&s->clock);
+    // else if (IsReleaseOrder(mo))
+    //   thr->clock.Release(&s->clock);
+    // else if (IsAcquireOrder(mo))
+    //   thr->clock.Acquire(s->clock);
     v = F(a, v);
   }
-  if (IsReleaseOrder(mo))
-    IncrementEpoch(thr);
+  // if (IsReleaseOrder(mo))
+  //   IncrementEpoch(thr);
   return v;
 }
 
@@ -411,7 +411,7 @@ static bool AtomicCAS(ThreadState *thr, uptr pc, volatile T *a, T *c, T v,
   // (mo_relaxed) when those are used.
   DCHECK(IsLoadOrder(fmo));
 
-  MemoryAccess(thr, pc, (uptr)a, AccessSize<T>(), kAccessWrite | kAccessAtomic);
+  // MemoryAccess(thr, pc, (uptr)a, AccessSize<T>(), kAccessWrite | kAccessAtomic);
   if (LIKELY(mo == mo_relaxed && fmo == mo_relaxed)) {
     T cc = *c;
     T pr = func_cas(a, cc, v);
@@ -420,12 +420,12 @@ static bool AtomicCAS(ThreadState *thr, uptr pc, volatile T *a, T *c, T v,
     *c = pr;
     return false;
   }
-  SlotLocker locker(thr);
+  // SlotLocker locker(thr);
   bool release = IsReleaseOrder(mo);
   bool success;
   {
-    auto s = ctx->metamap.GetSyncOrCreate(thr, pc, (uptr)a, false);
-    RWLock lock(&s->mtx, release);
+    // auto s = ctx->metamap.GetSyncOrCreate(thr, pc, (uptr)a, false);
+    // RWLock lock(&s->mtx, release);
     T cc = *c;
     T pr = func_cas(a, cc, v);
     success = pr == cc;
@@ -433,15 +433,15 @@ static bool AtomicCAS(ThreadState *thr, uptr pc, volatile T *a, T *c, T v,
       *c = pr;
       mo = fmo;
     }
-    if (success && IsAcqRelOrder(mo))
-      thr->clock.ReleaseAcquire(&s->clock);
-    else if (success && IsReleaseOrder(mo))
-      thr->clock.Release(&s->clock);
-    else if (IsAcquireOrder(mo))
-      thr->clock.Acquire(s->clock);
+    // if (success && IsAcqRelOrder(mo))
+    //   thr->clock.ReleaseAcquire(&s->clock);
+    // else if (success && IsReleaseOrder(mo))
+    //   thr->clock.Release(&s->clock);
+    // else if (IsAcquireOrder(mo))
+    //   thr->clock.Acquire(s->clock);
   }
-  if (success && release)
-    IncrementEpoch(thr);
+  // if (success && release)
+  //   IncrementEpoch(thr);
   return success;
 }
 
