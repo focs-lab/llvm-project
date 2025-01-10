@@ -98,6 +98,8 @@ public:
   /// Is Value V is escaping in some path from Entry to BB?
   bool isEscapedForBB(const BasicBlock *BB, const Value *V,
                       EscReasonTy *EscReason = nullptr) const;
+  bool isEscapedForBBIPA(const BasicBlock *BB, const Value *V,
+                      EscReasonTy *EscReason = nullptr) const;
 
   // PointeeListTy &getBBEscapeState(const BasicBlock *BB) const {
     // auto It = BBEscapeStates.find(BB);
@@ -350,12 +352,12 @@ public:
         bool IsEscaped = false;
         It->second.forEachPointeeDo(UnderlObj.Obj, [&](const Value *V) {
           // dbgs() << "forEach: " << *V << "\n";
-          if (FEIIt->second.isEscapedForBB(BB, V, &EscReason))
+          if (FEIIt->second.isEscapedForBBIPA(BB, V, &EscReason))
             IsEscaped = true;
         });
         return IsEscaped;
       }
-      return FEIIt->second.isEscapedForBB(BB, UnderlObj.Obj, &EscReason);
+      return FEIIt->second.isEscapedForBBIPA(BB, UnderlObj.Obj, &EscReason);
     }
     return true;
   }

@@ -911,6 +911,28 @@ bool EscapeAnalysisInfo::isEscapedForBB(const BasicBlock *BB, const Value *V,
   return false;
 }
 
+/// Is Value V is escaping in some path from Entry to BB?
+bool EscapeAnalysisInfo::isEscapedForBBIPA(const BasicBlock *BB, const Value *V,
+                                           EscReasonTy *EscReason) const {
+  const auto ExtStatus = getExtObjStatusWithIPA(V);
+  if (ExtStatus.any()) {
+    if (EscReason)
+      *EscReason = ExtStatus;
+    return true;
+  }
+
+  const auto FoundStatus = findObjInBBEscapeState(BB, V);
+  if (FoundStatus.any()) {
+    if (EscReason)
+      *EscReason = FoundStatus;
+    return true;
+  }
+
+  if (EscReason)
+    *EscReason = 0;
+  return false;
+}
+
 /// Return escape reason for V in BB
 EscapeAnalysisInfo::EscReasonTy EscapeAnalysisInfo::getFullEscapedForBBReason(
     const BasicBlock *BB, const Value *V) const {
