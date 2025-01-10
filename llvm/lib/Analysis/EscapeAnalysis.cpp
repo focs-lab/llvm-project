@@ -138,6 +138,7 @@ void EscapeAnalysisInfo::EscapeState::checkAndUpdEscStatus(
       EscReason.any())
     addEscapeObjOrReason(AffectedObj, EscReason);
 
+  // Assigning to structures
   if (const auto *Alloca = dyn_cast<AllocaInst>(CheckedObj);
       Alloca && Alloca->getAllocatedType()->isStructTy()) {
     if (const auto It = EscapedObjs.find(AffectedObj); It != EscapedObjs.end())

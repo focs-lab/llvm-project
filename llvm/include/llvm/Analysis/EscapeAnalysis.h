@@ -338,23 +338,24 @@ public:
                                 const UnderlObjInfo &UnderlObj,
                                 EscapeAnalysisInfo::EscReasonTy &EscReason) const {
     if (auto FEIIt = FuncEscapeInfo.find(F); FEIIt != FuncEscapeInfo.end()) {
-      if (FEIIt->second.isEscapedForBB(BB, UnderlObj.Obj, &EscReason))
+      // if (FEIIt->second.isEscapedForBB(BB, UnderlObj.Obj, &EscReason))
+        // return true;
+      if (isa<GlobalVariable>(UnderlObj.Obj))
         return true;
 
       if (UnderlObj.Loaded) {
-        dbgs() << "Loaded: " << *UnderlObj.Obj << "\n";
+        // dbgs() << "Loaded: " << *UnderlObj.Obj << "\n";
         const auto It = FEIIt->second.BBEscapeStates.find(BB);
         assert(It != FEIIt->second.BBEscapeStates.end());
         bool IsEscaped = false;
         It->second.forEachPointeeDo(UnderlObj.Obj, [&](const Value *V) {
-          dbgs() << "forEach: " << *V << "\n";
+          // dbgs() << "forEach: " << *V << "\n";
           if (FEIIt->second.isEscapedForBB(BB, V, &EscReason))
             IsEscaped = true;
         });
         return IsEscaped;
       }
-      // return FEIIt->second.isEscapedForBB(BB, UnderlObj.Obj, &EscReason);
-      return false;
+      return FEIIt->second.isEscapedForBB(BB, UnderlObj.Obj, &EscReason);
     }
     return true;
   }
