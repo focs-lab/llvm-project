@@ -5,69 +5,46 @@
 
 ; CHECK: Printing analysis 'Escape Analysis' for module '<stdin>':
 
-define dso_local void @alias_of_ptr_arg_2(ptr noundef %Arg1, ptr noundef %Arg2) #0 {
-; CHECK: Printing analysis 'Escape Analysis' for function 'alias_of_ptr_arg_2':
-; CHECK-NEXT: Escaping objects for BB entry:
-; CHECK-DAG: ptr %Arg2
-; CHECK-DAG: ptr %Arg1
-; CHECK-DAG:   %Arg1.addr = alloca ptr, align 8
-; CHECK-DAG:   %Arg2.addr = alloca ptr, align 8
-; CHECK-DAG:   %x = alloca ptr, align 8
+define dso_local void @escaping_arg(ptr noundef %Arg1, ptr noundef %Arg2) #0 {
+; CHECK: Printing analysis 'Escape Analysis' for function 'escaping_arg':
 entry:
   %Arg1.addr = alloca ptr, align 8
   %Arg2.addr = alloca ptr, align 8
   %x = alloca ptr, align 8
-  %y = alloca ptr, align 8
   store ptr %Arg1, ptr %Arg1.addr, align 8
   store ptr %Arg2, ptr %Arg2.addr, align 8
   %0 = load ptr, ptr %Arg1.addr, align 8
   store ptr %0, ptr %x, align 8
   %call = call i32 @rand() #2
   %tobool = icmp ne i32 %call, 0
-  br i1 %tobool, label %if.then, label %if.else
+  br i1 %tobool, label %if.then, label %if.end
 
 ; CHECK: Escaping objects for BB if.then:
-; CHECK-DAG: ptr %Arg2
 ; CHECK-DAG: ptr %Arg1
-; CHECK-DAG:   %Arg1.addr = alloca ptr, align 8
-; CHECK-DAG:   %Arg2.addr = alloca ptr, align 8
-; CHECK-DAG:   %x = alloca ptr, align 8
-if.then:
+if.then:                                          ; preds = %entry
   %1 = load ptr, ptr %x, align 8
   store ptr %1, ptr @GPtr, align 8
   br label %if.end
 
-; CHECK: Escaping objects for BB if.else:
-; CHECK-DAG: ptr %Arg2
-; CHECK-DAG: ptr %Arg1
-; CHECK-DAG:   %Arg1.addr = alloca ptr, align 8
-; CHECK-DAG:   %Arg2.addr = alloca ptr, align 8
-; CHECK-DAG:   %x = alloca ptr, align 8
-; CHECK-DAG:   %y = alloca ptr, align 8
-if.else:
-  %2 = load ptr, ptr %Arg2.addr, align 8
-  store ptr %2, ptr %y, align 8
-  br label %if.end
-
 ; CHECK: Escaping objects for BB if.end:
-; CHECK-DAG: ptr %Arg2
 ; CHECK-DAG: ptr %Arg1
-; CHECK-DAG:   %Arg1.addr = alloca ptr, align 8
-; CHECK-DAG:   %Arg2.addr = alloca ptr, align 8
-; CHECK-DAG:   %x = alloca ptr, align 8
-; CHECK-DAG:   %y = alloca ptr, align 8
-if.end:
+if.end:                                           ; preds = %if.then, %entry
   ret void
 }
 
-; CHECK: Printing analysis 'Escape Analysis' for function 'alias_of_ptr_arg_2_caller':
+; void escaping_arg_caller() {
+;   int x, y;
+;   escaping_arg(&x, &y);
+; }
+;
+; CHECK: Printing analysis 'Escape Analysis' for function 'escaping_arg_caller':
 ; CHECK-NEXT:  Escaping objects for BB entry:
 ; CHECK-DAG:    %x = alloca i32, align 4
-define dso_local void @alias_of_ptr_arg_2_caller() {
+define dso_local void @escaping_arg_caller() #0 {
 entry:
   %x = alloca i32, align 4
   %y = alloca i32, align 4
-  call void @alias_of_ptr_arg_2(ptr noundef %x, ptr noundef %y)
+  call void @escaping_arg(ptr noundef %x, ptr noundef %y)
   ret void
 }
 

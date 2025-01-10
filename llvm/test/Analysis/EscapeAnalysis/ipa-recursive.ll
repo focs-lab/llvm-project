@@ -1,81 +1,73 @@
 ; RUN: opt < %s -passes='print<escape-analysis-global>' -disable-output 2>&1 | FileCheck %s
 
 @GPtr = dso_local global ptr null, align 8
+@GPtrPtr = dso_local global ptr null, align 8
 
 ; CHECK: Printing analysis 'Escape Analysis' for module '<stdin>':
 
-; // Simple recursive function
-; void rec_func(int *x, int *y, int *z) {
-; 	if (rand()) {
-; 		int *Alias = y;
-; 		*Alias = 333;
-; 	} else {
-; 		rec_func(x, y, z);
-; 	}
-; 	int *Alias2 = x;
-; 	GPtr = Alias2;
-; 	GPtr = y;
+; static void rec_func(int **x, int **y, int **z) {
+;   int xLocal;
+;   *x = &xLocal;
+;
+;   if (rand()) {
+;     rec_func(x, y, z);
+;   }
+;   GPtrPtr = x;
+; }
+;
+; void caller() {
+;   int *x, *y, *z;
+;   rec_func(&x, &y, &z);
 ; }
 
-define dso_local void @rec_func(ptr noundef %x, ptr noundef %y, ptr noundef %z) {
+define dso_local void @caller() {
+; CHECK: Printing analysis 'Escape Analysis' for function 'caller':
+; CHECK-NEXT: Escaping objects for BB entry:
+; CHECK-DAG:   %x = alloca ptr, align 8
+entry:
+  %x = alloca ptr, align 8
+  %y = alloca ptr, align 8
+  %z = alloca ptr, align 8
+  call void @rec_func(ptr noundef %x, ptr noundef %y, ptr noundef %z)
+  ret void
+}
+
+; Function Attrs: noinline nounwind uwtable
+define internal void @rec_func(ptr noundef %x, ptr noundef %y, ptr noundef %z) #0 {
 ; CHECK: Printing analysis 'Escape Analysis' for function 'rec_func':
-; CHECK: Escaping objects for BB entry:
-; CHECK-DAG: ptr %y
+; CHECK-NEXT: Escaping objects for BB entry:
+; CHECK-DAG:   %xLocal = alloca i32, align 4
 ; CHECK-DAG: ptr %x
-; CHECK-DAG:   %y.addr = alloca ptr, align 8
-; CHECK-DAG:   %x.addr = alloca ptr, align 8
 entry:
   %x.addr = alloca ptr, align 8
   %y.addr = alloca ptr, align 8
   %z.addr = alloca ptr, align 8
-  %Alias = alloca ptr, align 8
-  %Alias2 = alloca ptr, align 8
+  %xLocal = alloca i32, align 4
   store ptr %x, ptr %x.addr, align 8
   store ptr %y, ptr %y.addr, align 8
   store ptr %z, ptr %z.addr, align 8
+  %0 = load ptr, ptr %x.addr, align 8
+  store ptr %xLocal, ptr %0, align 8
   %call = call i32 @rand() #2
   %tobool = icmp ne i32 %call, 0
-  br i1 %tobool, label %if.then, label %if.else
+  br i1 %tobool, label %if.then, label %if.end
 
 ; CHECK: Escaping objects for BB if.then:
-; CHECK-DAG: ptr %y
-; CHECK-DAG:   %Alias = alloca ptr, align 8
+; CHECK-DAG:   %xLocal = alloca i32, align 4
 ; CHECK-DAG: ptr %x
-; CHECK-DAG:   %y.addr = alloca ptr, align 8
-; CHECK-DAG:   %x.addr = alloca ptr, align 8
 if.then:                                          ; preds = %entry
-  %0 = load ptr, ptr %y.addr, align 8
-  store ptr %0, ptr %Alias, align 8
-  %1 = load ptr, ptr %Alias, align 8
-  store i32 333, ptr %1, align 4
-  br label %if.end
-
-; CHECK: Escaping objects for BB if.else:
-; CHECK-DAG: ptr %y
-; CHECK-DAG: ptr %x
-; CHECK-DAG:   %y.addr = alloca ptr, align 8
-; CHECK-DAG:   %x.addr = alloca ptr, align 8
-if.else:                                          ; preds = %entry
-  %2 = load ptr, ptr %x.addr, align 8
-  %3 = load ptr, ptr %y.addr, align 8
-  %4 = load ptr, ptr %z.addr, align 8
-  call void @rec_func(ptr noundef %2, ptr noundef %3, ptr noundef %4)
+  %1 = load ptr, ptr %x.addr, align 8
+  %2 = load ptr, ptr %y.addr, align 8
+  %3 = load ptr, ptr %z.addr, align 8
+  call void @rec_func(ptr noundef %1, ptr noundef %2, ptr noundef %3)
   br label %if.end
 
 ; CHECK: Escaping objects for BB if.end:
-; CHECK-DAG: ptr %y
-; CHECK-DAG:   %Alias2 = alloca ptr, align 8
-; CHECK-DAG:   %Alias = alloca ptr, align 8
+; CHECK-DAG:   %xLocal = alloca i32, align 4
 ; CHECK-DAG: ptr %x
-; CHECK-DAG:   %y.addr = alloca ptr, align 8
-; CHECK-DAG:   %x.addr = alloca ptr, align 8
-if.end:                                           ; preds = %if.else, %if.then
-  %5 = load ptr, ptr %x.addr, align 8
-  store ptr %5, ptr %Alias2, align 8
-  %6 = load ptr, ptr %Alias2, align 8
-  store ptr %6, ptr @GPtr, align 8
-  %7 = load ptr, ptr %y.addr, align 8
-  store ptr %7, ptr @GPtr, align 8
+if.end:                                           ; preds = %if.then, %entry
+  %4 = load ptr, ptr %x.addr, align 8
+  store ptr %4, ptr @GPtrPtr, align 8
   ret void
 }
 

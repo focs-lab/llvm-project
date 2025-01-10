@@ -7,7 +7,6 @@
 define dso_local ptr @escape_struct_field() {
 ; CHECK: Printing analysis 'Escape Analysis' for function 'escape_struct_field':
 ; CHECK-NEXT: Escaping objects for BB entry:
-; CHECK-DAG:   %s = alloca ptr, align 8
 ; CHECK-DAG:   %x = alloca i32, align 4
 entry:
   %s = alloca ptr, align 8

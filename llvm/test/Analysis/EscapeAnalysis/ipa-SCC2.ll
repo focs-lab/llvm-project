@@ -7,9 +7,6 @@
 define dso_local void @func1(ptr noundef %x, ptr noundef %y, ptr noundef %z, ptr noundef %NoEsc) {
 ; CHECK: Printing analysis 'Escape Analysis' for function 'func1':
 ; CHECK-NEXT: Escaping objects for BB entry:
-; CHECK-DAG:   %x.addr = alloca ptr, align 8
-; CHECK-DAG:   %y.addr = alloca ptr, align 8
-; CHECK-DAG:   %z.addr = alloca ptr, align 8
 ; CHECK-DAG: ptr %y
 ; CHECK-DAG: ptr %x
 ; CHECK-DAG: ptr %z

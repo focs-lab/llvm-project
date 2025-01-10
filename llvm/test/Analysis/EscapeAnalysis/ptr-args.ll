@@ -4,10 +4,14 @@
 
 @GPtr = dso_local global ptr null, align 8
 
+; void escape_through_ptr_argument(int **k) {
+;   int x;
+;   *k = &x;
+; }
+;
 define dso_local void @escape_through_ptr_argument(ptr noundef %k) {
 ; CHECK: Printing analysis 'Escape Analysis' for function 'escape_through_ptr_argument':
 ; CHECK-NEXT: Escaping objects for BB entry:
-; CHECK-DAG:  %k.addr = alloca ptr, align 8
 ; CHECK-DAG:  %x = alloca i32, align 4
 entry:
   %k.addr = alloca ptr, align 8
@@ -18,10 +22,14 @@ entry:
   ret void
 }
 
+;void no_escape_through_ptr_argument(int *k) {
+;  int x;
+;  k = &x;
+;}
+;
 define dso_local void @no_escape_through_ptr_argument(ptr noundef %k) {
 ; CHECK: Printing analysis 'Escape Analysis' for function 'no_escape_through_ptr_argument':
-; CHECK-NEXT: Escaping objects for BB entry:
-; CHECK-DAG:  %k.addr = alloca ptr, align 8
+; CHECK-NOT: Escaping objects for BB entry:
 entry:
   %k.addr = alloca ptr, align 8
   %x = alloca i32, align 4
@@ -30,10 +38,13 @@ entry:
   ret void
 }
 
-define void @escape_through_gptr_aliasing() {
-; CHECK: Printing analysis 'Escape Analysis' for function 'escape_through_gptr_aliasing':
-; CHECK-NEXT: Escaping objects for BB entry:
-; CHECK-DAG:  %GPtrAlias = alloca ptr, align 8
+; void no_escape_through_gptr() {
+;   int *GPtrAlias = GPtr;
+; }
+;
+define void @no_escape_through_gptr() {
+; CHECK: Printing analysis 'Escape Analysis' for function 'no_escape_through_gptr':
+; CHECK-NOT: Escaping objects for BB entry:
 entry:
   %GPtrAlias = alloca ptr, align 8
   %0 = load ptr, ptr @GPtr, align 8

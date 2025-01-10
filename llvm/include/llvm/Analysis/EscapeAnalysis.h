@@ -21,17 +21,20 @@
 
 #include <bitset>
 #include <variant>
+#include <functional>
 
 namespace llvm {
 /// This is the implementation of simple escape analysis
 
 struct UnderlObjInfo {
   const Value *Obj;
-  bool LoadInstFlag;
+  bool Loaded;
 };
 
 /// Interface to access escape analysis results for single function.
 class EscapeAnalysisInfo {
+  friend class EscapeAnalysisGlobalInfo;
+
 public:
   /// Reasons of escaping for objects
   enum EscReasonBits {
@@ -40,14 +43,16 @@ public:
     PASSING_TO_CALL  = 1 << 2,
     RET_PTR          = 1 << 3,
     VOLATILE         = 1 << 4,
-    OTHER            = 1 << 5,
-    INVALID          = 1 << 6
+    ESCAPED_CALL     = 1 << 5,
+    OTHER            = 1 << 6,
+    INVALID          = 1 << 7
   };
   using EscReasonTy = std::bitset<6>;
 
   struct IPAArgRetInfo {
     SmallDenseMap<unsigned, EscReasonTy> ArgEscapes; // for each argument
     bool IsRetEscape = false; // whether return value is escaping or not
+    bool IsRecursive = false; // whether function is recursive or not
     bool operator==(const IPAArgRetInfo &Other) const {
       return ArgEscapes == Other.ArgEscapes && IsRetEscape == Other.IsRetEscape;
     }
@@ -75,7 +80,7 @@ public:
 
   /// Recursively search in the instruction for the underlying objects which
   /// may escape
-  static SmallVector<UnderlObjInfo> getUnderlyingMayEscObjects(
+  static SmallVector<UnderlObjInfo> getUnderlyingMayEscObjs(
       const Value *V, unsigned MaxLookup = MaxUnderlObjLookup,
       std::shared_ptr<IPAFuncEscInfoMap> IPAFuncEscInfo = nullptr);
 
@@ -94,6 +99,12 @@ public:
   bool isEscapedForBB(const BasicBlock *BB, const Value *V,
                       EscReasonTy *EscReason = nullptr) const;
 
+  // PointeeListTy &getBBEscapeState(const BasicBlock *BB) const {
+    // auto It = BBEscapeStates.find(BB);
+    // return It != BBEscapeStates.end() ?
+           // &It->second : std::nullopt;
+  // }
+
 private:
   // Types of object escaping states
   enum class EscKindTy { NO_ESCAPE, MAY_ESCAPE, MAY_ALIASING };
@@ -106,31 +117,30 @@ private:
   using EscapedObjectsTy = DenseMap<const Value *, EscReasonTy>;
 
   // IPA information about arguments escapes (bottom-top)
-  std::shared_ptr<IPAFuncEscInfoMap> IPAFuncEscInfo;
+  std::shared_ptr<IPAFuncEscInfoMap> IPABottomTopInfo;
 
   // IPA information about arguments escapes from calls (top-bottom)
-  std::shared_ptr<IPAArgEscFromCallsMap> IPAArgEscFromCallers;
+  std::shared_ptr<IPAArgEscFromCallsMap> IPAArgEscTopDown;
 
   // Whether return value is escaping or not (need it in IPA)
   bool IsRetEscape = false;
-
   struct EscapeState;
 
   /// Map of basic blocks to their escape analysis states.
   DenseMap<const BasicBlock *, EscapeState> BBEscapeStates;
 
-  class AliasRelationTy {
+  class PointsToRelTy {
     friend struct EscapeState;
 
-    using AliasListTy = SmallPtrSet<const Value *, 8>;
-    DenseMap<const Value *, AliasListTy> AliasMap;
+    using PointeeListTy = SmallPtrSet<const Value *, 8>;
+    DenseMap<const Value *, PointeeListTy> PointsToMap;
 
   public:
     /// Traverse the (implicit) tree of aliases and get the list of aliases
-    std::optional<AliasListTy> getAliases(const Value *V) const;
+    std::optional<PointeeListTy> getPointees(const Value *V) const;
 
     /// We need it to check if something changed in the data-flow analysis
-    bool operator==(const AliasRelationTy &Other) const;
+    bool operator==(const PointsToRelTy &Other) const;
 
     /// Print alias relation
     void print(raw_ostream &OS) const;
@@ -149,12 +159,20 @@ private:
     /// reason. If the object is already in the list, update escape reason.
     void addEscapeObjOrReason(const Value *EscObj, const EscReasonTy EscReason);
 
+    /// Check CheckedObj escape status (as [maybe] external object)
+    /// and update AffectedObj if needed
+    void checkAndUpdEscStatus(const Value *CheckedObj, const Value *AffectedObj,
+                              const EscapeAnalysisInfo *EAI);
+
+    void forEachPointeeDo(const Value *Obj,
+                          std::function<void(const Value *)> Action) const;
+
     /// Adds an alias relationship between a given alias and a pointee value
     /// in the escape analysis information. If the pointee value has previously
     /// escaped or if the alias itself is an escaping pointer, the alias is
     /// also marked as escaping.
-    void addAlias(const UnderlObjInfo &Pointer, const UnderlObjInfo &Pointee,
-                  const EscapeAnalysisInfo *EAI);
+    void addPointsTo(const UnderlObjInfo &Pointer, const UnderlObjInfo &Pointee,
+                     const EscapeAnalysisInfo *EAI);
 
     void merge(const EscapeState &OtherES, const EscapeAnalysisInfo *EAI) {
       mergeAliases(OtherES, EAI);
@@ -162,7 +180,7 @@ private:
     }
 
     const EscapedObjectsTy &getEscapedObjs() const { return EscapedObjs; };
-    const AliasRelationTy &getAliasRel() const { return AliasRel; }
+    const PointsToRelTy &getPointsTo() const { return PointsTo; }
 
     void print(raw_ostream &OS) const;
 
@@ -175,7 +193,7 @@ private:
 
     // map from Alloca aliases to the original Allocas
     // Note that a Value may be the alias of multiple Allocas
-    AliasRelationTy AliasRel;
+    PointsToRelTy PointsTo;
 
     /// Merge two Alias relations into one
     void mergeAliases(const EscapeState &OtherES,
@@ -189,6 +207,7 @@ private:
   /// escape status
   void updRetEscStatus(EscapeState &ES,
                        const SmallVectorImpl<UnderlObjInfo> &UnderlObjs);
+  void addEscapedPtrArgs(EscapeState &ES);
 
   /// Compute the resulting escape state for BB
   void compBBEscapeState(const BasicBlock *BB, EscapeState &ES);
@@ -204,7 +223,7 @@ private:
   /// Get escape status of the object and if it's a pointer argument,
   /// lookup in the top-bottom argument escape analysis
   EscReasonTy
-  getExtObjStatusWithArgFromCallsLookup(const Value *V) const;
+  getExtObjStatusWithIPA(const Value *V) const;
 
   /// Determine what kind of escape behaviour V may exhibit.
   struct EscInfoTy {
@@ -215,7 +234,7 @@ private:
 
   /// Determine what kind of escape behaviour V may exhibit, return
   /// escape reason and list of aliases if applicable.
-  EscInfoTy getEscapeKindForOpnd(const Use &U) const;
+  EscInfoTy getEscInfoForOpnd(const Use &U) const;
 
   /// Functions to process operand/instruction pair to get escape status
   EscInfoTy getEscInfoCall(const Use &U, const Instruction *I) const;
@@ -243,7 +262,7 @@ private:
   EscReasonTy getArgEscStatus(unsigned ArgNo, const Function *Func) const;
 
   /// Find argument in the from-callers (top-bottom) escape info
-  EscReasonTy getArgEscStatusFromCallers(const unsigned ArgNo,
+  EscReasonTy getArgEscStatusTopDown(const unsigned ArgNo,
                                          const Function *Func) const;
 };
 
@@ -316,10 +335,27 @@ public:
 
   /// Is Value V is escaping in some path from Entry to BB in the function F
   bool isEscapedForBBInFuncTSan(const Function *F, const BasicBlock *BB,
-                                const Value *V,
+                                const UnderlObjInfo &UnderlObj,
                                 EscapeAnalysisInfo::EscReasonTy &EscReason) const {
-    if (const auto It = FuncEscapeInfo.find(F); It != FuncEscapeInfo.end())
-      return It->second.isEscapedForBB(BB, V, &EscReason);
+    if (auto FEIIt = FuncEscapeInfo.find(F); FEIIt != FuncEscapeInfo.end()) {
+      if (FEIIt->second.isEscapedForBB(BB, UnderlObj.Obj, &EscReason))
+        return true;
+
+      if (UnderlObj.Loaded) {
+        dbgs() << "Loaded: " << *UnderlObj.Obj << "\n";
+        const auto It = FEIIt->second.BBEscapeStates.find(BB);
+        assert(It != FEIIt->second.BBEscapeStates.end());
+        bool IsEscaped = false;
+        It->second.forEachPointeeDo(UnderlObj.Obj, [&](const Value *V) {
+          dbgs() << "forEach: " << *V << "\n";
+          if (FEIIt->second.isEscapedForBB(BB, V, &EscReason))
+            IsEscaped = true;
+        });
+        return IsEscaped;
+      }
+      // return FEIIt->second.isEscapedForBB(BB, UnderlObj.Obj, &EscReason);
+      return false;
+    }
     return true;
   }
 

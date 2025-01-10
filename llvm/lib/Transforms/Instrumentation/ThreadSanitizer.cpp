@@ -540,11 +540,11 @@ void ThreadSanitizer::chooseInstructionsToInstrument(
 
     if (EAI.has_value()) {
       bool InstrOmitted = false;
-      for (const auto *Obj :
-           EscapeAnalysisInfo::getUnderlyingMayEscObjects(Addr)) {
+      for (const UnderlObjInfo &UnderlObj :
+           EscapeAnalysisInfo::getUnderlyingMayEscObjs(Addr)) {
         EscReasonTy EscReason;
         const bool IsEscaped =
-            EAI.value().isEscapedForBB(I->getParent(), Obj, &EscReason);
+            EAI.value().isEscapedForBB(I->getParent(), UnderlObj.Obj, &EscReason);
         if (IsEscaped) {
           InstrOmitted = false;
           break;
@@ -558,12 +558,13 @@ void ThreadSanitizer::chooseInstructionsToInstrument(
       }
     } else if (EAIGlobal.has_value()) {
       bool InstrOmitted = false;
-      for (const auto *Obj :
-           EscapeAnalysisInfo::getUnderlyingMayEscObjects(Addr)) {
-        LLVM_DEBUG(dbgs() << "EscapeAnalysisInfo " << *Obj << " -- ");
+      for (const UnderlObjInfo &UnderlObj :
+           EscapeAnalysisInfo::getUnderlyingMayEscObjs(Addr)) {
+        LLVM_DEBUG(dbgs() << "EscapeAnalysisInfo " << *UnderlObj.Obj << " -- ");
         EscReasonTy EscReason;
         const bool IsEscaped = EAIGlobal.value()->isEscapedForBBInFuncTSan(
-          I->getFunction(), I->getParent(), Obj, EscReason);
+          I->getFunction(), I->getParent(), UnderlObj, EscReason);
+
         if (IsEscaped) {
           LLVM_DEBUG(dbgs() << "escaped\n");
           updateEscapeStatistics(EscReason);

@@ -83,128 +83,99 @@ for.end:                                          ; preds = %for.cond
   ret void
 }
 
-; Aliases, and escaping in one of two branches.
+; void assign_pointers_loop() {
+;   int x, y, z;
+;   int *a1, *a2;
+;   while (rand()) {
+;     if (rand()) {
+;      a2 = &y;
+;      a1 = a2;
+;      GPtr = a1;
+;     } else {
+;       a1 = &x;
+;       GPtr = a1;
+;     }
 ;
-; Original C code:
-; void mutual_aliases_cond() {
-; 	int x;
-; 	int *a1, *a2;
-; 	if (rand()) {
-; 		a1 = a2;
-; 		GPtr = a2;
-; 	} else {
-; 		a1 = &x;
-; 		x = 999;
-; 	}
+;     if (rand()) {
+;       GPtr = &z;
+;       return;
+;     }
+;   }
 ; }
-define dso_local void @mutual_aliases_cond() #0 {
-; CHECK: Printing analysis 'Escape Analysis' for function 'mutual_aliases_cond':
+define dso_local void @assign_pointers_loop() {
+; CHECK: Printing analysis 'Escape Analysis' for function 'assign_pointers_loop':
 ; CHECK-NOT: Escaping objects for BB entry:
 entry:
   %x = alloca i32, align 4
-  %a1 = alloca ptr, align 8
-  %a2 = alloca ptr, align 8
-  %call = call i32 @rand() #2
-  %tobool = icmp ne i32 %call, 0
-  br i1 %tobool, label %if.then, label %if.else
-
-; CHECK: Escaping objects for BB if.then:
-; CHECK-DAG:  %a1 = alloca ptr, align 8
-; CHECK-DAG:  %a2 = alloca ptr, align 8
-if.then:                                          ; preds = %entry
-  %0 = load ptr, ptr %a2, align 8
-  store ptr %0, ptr %a1, align 8
-  %1 = load ptr, ptr %a2, align 8
-  store ptr %1, ptr @GPtr, align 8
-  br label %if.end
-
-; CHECK-NOT: Escaping objects for BB if.else:
-if.else:                                          ; preds = %entry
-  store ptr %x, ptr %a1, align 8
-  store i32 999, ptr %x, align 4
-  br label %if.end
-
-; CHECK: Escaping objects for BB if.end:
-; CHECK-DAG:  %a1 = alloca ptr, align 8
-; CHECK-DAG:  %a2 = alloca ptr, align 8
-if.end:                                           ; preds = %if.else, %if.then
-  ret void
-}
-
-; Here we added the loop, so escape state propagated through other BBs:
-;
-; void mutual_aliases_loop() {
-;  	int x;
-;  	int *a1, *a2;
-;  	while (rand()) {
-;  		if (rand()) {
-;  			a1 = a2;
-;  			GPtr = a2;
-;  		} else {
-;  			a1 = &x;
-;  			x = 999;
-;  		}
-;  	}
-;  }
-define dso_local void @mutual_aliases_loop() {
-; CHECK: Printing analysis 'Escape Analysis' for function 'mutual_aliases_loop':
-; CHECK-NOT: Escaping objects for BB entry:
-entry:
-  %x = alloca i32, align 4
+  %y = alloca i32, align 4
+  %z = alloca i32, align 4
   %a1 = alloca ptr, align 8
   %a2 = alloca ptr, align 8
   br label %while.cond
 
 ; CHECK: Escaping objects for BB while.cond:
-; CHECK-DAG:  %a2 = alloca ptr, align 8
-; CHECK-DAG:  %x = alloca i32, align 4
-; CHECK-DAG:  %a1 = alloca ptr, align 8
-while.cond:                                       ; preds = %if.end, %entry
+; CHECK-DAG:   %y = alloca i32, align 4
+; CHECK-DAG:   %x = alloca i32, align 4
+while.cond:
   %call = call i32 @rand() #2
   %tobool = icmp ne i32 %call, 0
   br i1 %tobool, label %while.body, label %while.end
 
 ; CHECK: Escaping objects for BB while.body:
-; CHECK-DAG:  %a2 = alloca ptr, align 8
-; CHECK-DAG:  %x = alloca i32, align 4
-; CHECK-DAG:  %a1 = alloca ptr, align 8
-while.body:                                       ; preds = %while.cond
+; CHECK-DAG:   %y = alloca i32, align 4
+; CHECK-DAG:   %x = alloca i32, align 4
+while.body:
   %call1 = call i32 @rand() #2
   %tobool2 = icmp ne i32 %call1, 0
   br i1 %tobool2, label %if.then, label %if.else
 
 ; CHECK: Escaping objects for BB if.then:
-; CHECK-DAG:  %a2 = alloca ptr, align 8
-; CHECK-DAG:  %x = alloca i32, align 4
-; CHECK-DAG:  %a1 = alloca ptr, align 8
-if.then:                                          ; preds = %while.body
+; CHECK-DAG:   %y = alloca i32, align 4
+; CHECK-DAG:   %x = alloca i32, align 4
+if.then:
+  store ptr %y, ptr %a2, align 8
   %0 = load ptr, ptr %a2, align 8
   store ptr %0, ptr %a1, align 8
-  %1 = load ptr, ptr %a2, align 8
+  %1 = load ptr, ptr %a1, align 8
   store ptr %1, ptr @GPtr, align 8
   br label %if.end
 
 ; CHECK: Escaping objects for BB if.else:
-; CHECK-DAG:  %a2 = alloca ptr, align 8
-; CHECK-DAG:  %x = alloca i32, align 4
-; CHECK-DAG:  %a1 = alloca ptr, align 8
-if.else:                                          ; preds = %while.body
+; CHECK-DAG:   %y = alloca i32, align 4
+; CHECK-DAG:   %x = alloca i32, align 4
+if.else:
   store ptr %x, ptr %a1, align 8
-  store i32 999, ptr %x, align 4
+  %2 = load ptr, ptr %a1, align 8
+  store ptr %2, ptr @GPtr, align 8
   br label %if.end
 
 ; CHECK: Escaping objects for BB if.end:
-; CHECK-DAG:  %a2 = alloca ptr, align 8
-; CHECK-DAG:  %x = alloca i32, align 4
-; CHECK-DAG:  %a1 = alloca ptr, align 8
-if.end:                                           ; preds = %if.else, %if.then
+; CHECK-DAG:   %y = alloca i32, align 4
+; CHECK-DAG:   %x = alloca i32, align 4
+if.end:
+  %call3 = call i32 @rand() #2
+  %tobool4 = icmp ne i32 %call3, 0
+  br i1 %tobool4, label %if.then5, label %if.end6
+
+; CHECK: Escaping objects for BB if.then5:
+; CHECK-DAG:   %y = alloca i32, align 4
+; CHECK-DAG:   %x = alloca i32, align 4
+; CHECK-DAG:   %z = alloca i32, align 4
+if.then5:
+  store ptr %z, ptr @GPtr, align 8
+  br label %while.end
+
+; CHECK: Escaping objects for BB if.end6:
+; CHECK-DAG:   %y = alloca i32, align 4
+; CHECK-DAG:   %x = alloca i32, align 4
+if.end6:
   br label %while.cond
 
 ; CHECK: Escaping objects for BB while.end:
-; CHECK-DAG:  %a2 = alloca ptr, align 8
-; CHECK-DAG:  %x = alloca i32, align 4
-; CHECK-DAG:  %a1 = alloca ptr, align 8
-while.end:                                        ; preds = %while.cond
+; CHECK-DAG:   %y = alloca i32, align 4
+; CHECK-DAG:   %x = alloca i32, align 4
+; CHECK-DAG:   %z = alloca i32, align 4
+while.end:
   ret void
 }
 

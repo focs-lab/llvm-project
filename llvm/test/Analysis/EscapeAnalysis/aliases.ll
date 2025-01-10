@@ -3,6 +3,27 @@
 %struct.StructTy = type { ptr }
 
 @GPtr = dso_local global ptr null, align 8
+@GPtrPtr = dso_local global ptr null, align 8
+
+; // Ptr --> x, Ptr escapes, then x escapes
+; void escape_through_escaped_pointer() {
+;   int x;
+;   int *Ptr = &x;
+;   GPtrPtr = &Ptr;
+; }
+;
+define dso_local void @escape_through_pointer() {
+; CHECK: Printing analysis 'Escape Analysis' for function 'escape_through_pointer':
+; CHECK-NEXT: Escaping objects for BB entry:
+; CHECK-DAG:   %Ptr = alloca ptr, align 8
+; CHECK-DAG:  %x = alloca i32, align 4
+entry:
+  %x = alloca i32, align 4
+  %Ptr = alloca ptr, align 8
+  store ptr %x, ptr %Ptr, align 8
+  store ptr %Ptr, ptr @GPtrPtr, align 8
+  ret void
+}
 
 define dso_local ptr @escape_aliasing() {
 ; CHECK: Printing analysis 'Escape Analysis' for function 'escape_aliasing':
@@ -99,4 +120,21 @@ entry:
   store ptr %y, ptr @GPtr, align 8
   %0 = load i32, ptr %y, align 4
   ret i32 %0
+}
+
+; CHECK: Printing analysis 'Escape Analysis' for function 'assign_pointers':
+; CHECK-NEXT: Escaping objects for BB entry:
+; CHECK-DAG:   %y = alloca i32, align 4
+define dso_local void @assign_pointers() {
+entry:
+  %x = alloca i32, align 4
+  %y = alloca i32, align 4
+  %a1 = alloca ptr, align 8
+  %a2 = alloca ptr, align 8
+  store ptr %y, ptr %a2, align 8
+  %0 = load ptr, ptr %a2, align 8
+  store ptr %0, ptr %a1, align 8
+  %1 = load ptr, ptr %a1, align 8
+  store ptr %1, ptr @GPtr, align 8
+  ret void
 }

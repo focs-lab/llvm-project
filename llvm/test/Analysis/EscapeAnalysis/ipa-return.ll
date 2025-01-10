@@ -5,14 +5,14 @@
 ; // and other function which uses these functions
 ;
 ; int *ret_non_escaping_value() {
-;   int *x;
-;   return x;
+;   int x;
+;   return &x;
 ; }
 ;
 ; int *ret_escaping_value() {
-;   int *y;
-;   GPtr = y;
-;   return y;
+;   int y;
+;   GPtr = &y;
+;   return &y;
 ; }
 ;
 ; void func() {
@@ -29,32 +29,26 @@
 define dso_local ptr @ret_non_escaping_value() {
 ; CHECK: Printing analysis 'Escape Analysis' for function 'ret_non_escaping_value':
 ; CHECK-NEXT: Escaping objects for BB entry:
-; CHECK-DAG:  %x = alloca ptr, align 8
+; CHECK-DAG:  %x = alloca i32, align 4
 entry:
-  %x = alloca ptr, align 8
-  %0 = load ptr, ptr %x, align 8
-  ret ptr %0
+  %x = alloca i32, align 4
+  ret ptr %x
 }
 
 define dso_local ptr @ret_escaping_value() {
 ; CHECK: Printing analysis 'Escape Analysis' for function 'ret_escaping_value':
 ; CHECK: Escaping objects for BB entry:
-; CHECK-DAG:   %y = alloca ptr, align 8
+; CHECK-DAG:   %y = alloca i32, align 4
 entry:
-  %y = alloca ptr, align 8
-  %0 = load ptr, ptr %y, align 8
-  store ptr %0, ptr @GPtr, align 8
-  %1 = load ptr, ptr %y, align 8
-  ret ptr %1
+  %y = alloca i32, align 4
+  store ptr %y, ptr @GPtr, align 8
+  ret ptr %y
 }
 
 define dso_local void @func() {
 ; CHECK: Printing analysis 'Escape Analysis' for function 'func':
 ; CHECK: Escaping objects for BB entry:
-; CHECK-DAG:  %call1 = call ptr @ret_escaping_value()
-; CHECK-DAG:  %z = alloca ptr, align 8
-; CHECK-DAG:  %y = alloca ptr, align 8
-; CHECK-DAG:  %call2 = call noalias ptr @malloc(i64 noundef 4)
+; CHECK-DAG:   %call1 = call ptr @ret_escaping_value()
 entry:
   %x = alloca ptr, align 8
   %y = alloca ptr, align 8
