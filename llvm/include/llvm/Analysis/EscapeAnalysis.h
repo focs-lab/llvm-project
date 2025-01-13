@@ -63,7 +63,7 @@ public:
 
   bool getIsRetEscape() const { return IsRetEscape; }
 
-  using IPAFuncEscInfoMap = DenseMap<const Function *, IPAArgRetInfo>;
+  using IPABottomTopMap = DenseMap<const Function *, IPAArgRetInfo>;
   using IPAArgEscFromCallsMap = DenseMap<const Function *, SmallVector<bool>>;
 
   static void printEscReason(EscReasonTy EscReason);
@@ -73,7 +73,7 @@ public:
   /// escaping by calls)
   explicit EscapeAnalysisInfo(
     const Function &Fn,
-    std::shared_ptr<IPAFuncEscInfoMap> IPAFuncEscInfo = nullptr,
+    std::shared_ptr<IPABottomTopMap> IPAFuncEscInfo = nullptr,
     std::shared_ptr<IPAArgEscFromCallsMap> IPAArgEscFromCallers_ = nullptr);
 
   void print(raw_ostream &OS) const;
@@ -82,7 +82,7 @@ public:
   /// may escape
   static SmallVector<UnderlObjInfo> getUnderlyingMayEscObjs(
       const Value *V, unsigned MaxLookup = MaxUnderlObjLookup,
-      std::shared_ptr<IPAFuncEscInfoMap> IPAFuncEscInfo = nullptr);
+      std::shared_ptr<IPABottomTopMap> IPAFuncEscInfo = nullptr);
 
   /// Is Value V is escaping somewhere in the function
   bool isEscapedForFunc(const Value *V,
@@ -119,10 +119,10 @@ private:
   using EscapedObjectsTy = DenseMap<const Value *, EscReasonTy>;
 
   // IPA information about arguments escapes (bottom-top)
-  std::shared_ptr<IPAFuncEscInfoMap> IPABottomTopInfo;
+  std::shared_ptr<IPABottomTopMap> IPABottomTopInfo;
 
   // IPA information about arguments escapes from calls (top-bottom)
-  std::shared_ptr<IPAArgEscFromCallsMap> IPAArgEscTopDown;
+  std::shared_ptr<IPAArgEscFromCallsMap> IPATopDownArgEsc;
 
   // Whether return value is escaping or not (need it in IPA)
   bool IsRetEscape = false;
@@ -264,7 +264,7 @@ private:
   EscReasonTy getArgEscStatus(unsigned ArgNo, const Function *Func) const;
 
   /// Find argument in the from-callers (top-bottom) escape info
-  EscReasonTy getArgEscStatusTopDown(const unsigned ArgNo,
+  EscReasonTy getArgEscTopDownIPA(const unsigned ArgNo,
                                          const Function *Func) const;
 };
 
@@ -275,13 +275,13 @@ class EscapeAnalysisGlobalInfo {
 
   /// Map for escape information for function arguments from inside of the
   /// function (escape comes from inner objects).
-  std::shared_ptr<EscapeAnalysisInfo::IPAFuncEscInfoMap> IPAFuncEscInfo =
-      std::make_shared<EscapeAnalysisInfo::IPAFuncEscInfoMap>();
+  std::shared_ptr<EscapeAnalysisInfo::IPABottomTopMap> IPABottomTopEscInfo =
+      std::make_shared<EscapeAnalysisInfo::IPABottomTopMap>();
 
   /// Map for escape information about argument from outside of the function
   /// (escape comes from passing parameters to the function calls)
   std::shared_ptr<EscapeAnalysisInfo::IPAArgEscFromCallsMap>
-  IPAArgEscapedFromCalls =
+  IPATopDownArgEscInfo =
       std::make_shared<EscapeAnalysisInfo::IPAArgEscFromCallsMap>();
 
   /// Traverse SCCs in the call graph, find recursive functions and SCCs
@@ -291,7 +291,7 @@ class EscapeAnalysisGlobalInfo {
 
   /// Bottom-top traversal of SCCs of the callgraph, do local analysis,
   /// fill FuncEscapeInfo, IPAFuncEscInfo
-  bool analyzeCallGraphBottomTop(CallGraph &CG,
+  bool bottomTopIPATraversal(CallGraph &CG,
                                  const SmallPtrSetImpl<const Function *> &
                                  RecursiveFuncs,
                                  SmallVector<std::vector<CallGraphNode *> > &
@@ -299,7 +299,7 @@ class EscapeAnalysisGlobalInfo {
 
   /// Init escape status of arguments and return
   static void
-  setAllPtrArgsNotEscaped(EscapeAnalysisInfo::IPAFuncEscInfoMap &IPAFuncEscInfo,
+  setAllPtrArgsNotEscaped(EscapeAnalysisInfo::IPABottomTopMap &IPAFuncEscInfo,
                           const Function *F);
 
   /// Return map: Function -> list of call instructions
@@ -310,7 +310,7 @@ class EscapeAnalysisGlobalInfo {
   bool isFuncPassedToObjCSelector(const Function *F);
 
   /// Compute escape status for the function argument based on call instructions
-  void analyzeCallGraphTopBottom(
+  void topDownIPATraversal(
       const SmallVectorImpl<std::vector<CallGraphNode *>> &SCCList,
       const DenseMap<const Function *, SmallVector<const CallBase *>>
           &FuncCallSites,

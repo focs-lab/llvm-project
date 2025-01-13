@@ -21,7 +21,8 @@ entry:
 
 define internal void @func_with_ptr_arg(ptr noundef %x, ptr noundef %y) {
 ; CHECK: Printing analysis 'Escape Analysis' for function 'func_with_ptr_arg':
-; CHECK-NOT: Escaping objects for BB entry:
+; CHECK-NEXT: Escaping objects for BB entry:
+; CHECK-DAG: ptr %x
 entry:
   %x.addr = alloca ptr, align 8
   %y.addr = alloca ptr, align 8
