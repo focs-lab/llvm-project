@@ -25,37 +25,51 @@ enum class align_val_t: __sanitizer::uptr {};
 }  // namespace std
 
 DECLARE_REAL(void *, malloc, uptr size)
+DECLARE_REAL(void *, memalign, uptr align, uptr size)
 DECLARE_REAL(void, free, void *ptr)
 
 // TODO(alekseys): throw std::bad_alloc instead of dying on OOM.
+// #define OPERATOR_NEW_BODY(mangled_name, nothrow) \
+//   if (in_symbolizer()) \
+//     return InternalAlloc(size); \
+//   void *p = 0; \
+//   {  \
+//     SCOPED_INTERCEPTOR_RAW(mangled_name, size); \
+//     p = user_alloc(thr, pc, size); \
+//     if (!nothrow && UNLIKELY(!p)) { \
+//       GET_STACK_TRACE_FATAL(thr, pc); \
+//       ReportOutOfMemory(size, &stack); \
+//     } \
+//   }  \
+//   invoke_malloc_hook(p, size);  \
+//   return p;
+
+// #define OPERATOR_NEW_BODY_ALIGN(mangled_name, nothrow) \
+//   if (in_symbolizer()) \
+//     return InternalAlloc(size, nullptr, (uptr)align); \
+//   void *p = 0; \
+//   {  \
+//     SCOPED_INTERCEPTOR_RAW(mangled_name, size); \
+//     p = user_memalign(thr, pc, (uptr)align, size); \
+//     if (!nothrow && UNLIKELY(!p)) { \
+//       GET_STACK_TRACE_FATAL(thr, pc); \
+//       ReportOutOfMemory(size, &stack); \
+//     } \
+//   }  \
+//   invoke_malloc_hook(p, size);  \
+//   return p;
+
+// NOTE(dwslim): changed user_alloc to REAL(malloc)
 #define OPERATOR_NEW_BODY(mangled_name, nothrow) \
   if (in_symbolizer()) \
     return InternalAlloc(size); \
-  void *p = 0; \
-  {  \
-    SCOPED_INTERCEPTOR_RAW(mangled_name, size); \
-    p = user_alloc(thr, pc, size); \
-    if (!nothrow && UNLIKELY(!p)) { \
-      GET_STACK_TRACE_FATAL(thr, pc); \
-      ReportOutOfMemory(size, &stack); \
-    } \
-  }  \
-  invoke_malloc_hook(p, size);  \
+  void *p = REAL(malloc)(size); \
   return p;
 
 #define OPERATOR_NEW_BODY_ALIGN(mangled_name, nothrow) \
   if (in_symbolizer()) \
     return InternalAlloc(size, nullptr, (uptr)align); \
-  void *p = 0; \
-  {  \
-    SCOPED_INTERCEPTOR_RAW(mangled_name, size); \
-    p = user_memalign(thr, pc, (uptr)align, size); \
-    if (!nothrow && UNLIKELY(!p)) { \
-      GET_STACK_TRACE_FATAL(thr, pc); \
-      ReportOutOfMemory(size, &stack); \
-    } \
-  }  \
-  invoke_malloc_hook(p, size);  \
+  void *p = REAL(memalign)((uptr)align, size); \
   return p;
 
 SANITIZER_INTERFACE_ATTRIBUTE
@@ -112,13 +126,20 @@ void *operator new[](__sanitizer::uptr size, std::align_val_t align,
                           true /*nothrow*/);
 }
 
+// #define OPERATOR_DELETE_BODY(mangled_name) \
+//   if (ptr == 0) return;  \
+//   if (in_symbolizer()) \
+//     return InternalFree(ptr); \
+//   invoke_free_hook(ptr);  \
+//   SCOPED_INTERCEPTOR_RAW(mangled_name, ptr);  \
+//   user_free(thr, pc, ptr);
+
+// NOTE(dwslim): changed user_free to REAL(free)
 #define OPERATOR_DELETE_BODY(mangled_name) \
   if (ptr == 0) return;  \
   if (in_symbolizer()) \
     return InternalFree(ptr); \
-  invoke_free_hook(ptr);  \
-  SCOPED_INTERCEPTOR_RAW(mangled_name, ptr);  \
-  user_free(thr, pc, ptr);
+  REAL(free)(ptr);
 
 SANITIZER_INTERFACE_ATTRIBUTE
 void operator delete(void *ptr) NOEXCEPT;
