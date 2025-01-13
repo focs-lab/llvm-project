@@ -210,6 +210,7 @@ const interpose_substitution substitution_##func_name[]             \
      asm(                                                                      \
        ".text\n"                                                               \
        __ASM_WEAK_WRAPPER(func)                                                \
+       ".set " #func ", " SANITIZER_STRINGIFY(TRAMPOLINE(func)) "\n"           \
        ".globl " SANITIZER_STRINGIFY(TRAMPOLINE(func)) "\n"                    \
        ".type  " SANITIZER_STRINGIFY(TRAMPOLINE(func)) ", "                    \
          ASM_TYPE_FUNCTION_STR "\n"                                            \
@@ -225,7 +226,6 @@ const interpose_substitution substitution_##func_name[]             \
     //  asm(                                                                      \
     //    ".text\n"                                                               \
     //    __ASM_WEAK_WRAPPER(func)                                                \
-    //    ".set " #func ", " SANITIZER_STRINGIFY(TRAMPOLINE(func)) "\n"           \
     //    ".globl " SANITIZER_STRINGIFY(TRAMPOLINE(func)) "\n"                    \
     //    ".type  " SANITIZER_STRINGIFY(TRAMPOLINE(func)) ", "                    \
     //      ASM_TYPE_FUNCTION_STR "\n"                                            \
