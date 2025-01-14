@@ -101,11 +101,12 @@ public:
   bool isEscapedForBBIPA(const BasicBlock *BB, const Value *V,
                       EscReasonTy *EscReason = nullptr) const;
 
-  // PointeeListTy &getBBEscapeState(const BasicBlock *BB) const {
-    // auto It = BBEscapeStates.find(BB);
-    // return It != BBEscapeStates.end() ?
-           // &It->second : std::nullopt;
-  // }
+  void forEachPointeeDo(const Value *Obj, const BasicBlock *BB,
+                        std::function<void(const Value *)> Action) const {
+    const auto It = BBEscapeStates.find(BB);
+    assert(It != BBEscapeStates.end());
+    It->second.forEachPointeeDo(Obj, Action);
+  }
 
 private:
   // Types of object escaping states
@@ -291,7 +292,7 @@ class EscapeAnalysisGlobalInfo {
 
   /// Bottom-top traversal of SCCs of the callgraph, do local analysis,
   /// fill FuncEscapeInfo, IPAFuncEscInfo
-  bool bottomTopIPATraversal(CallGraph &CG,
+  bool traverseCGBottomTop(CallGraph &CG,
                                  const SmallPtrSetImpl<const Function *> &
                                  RecursiveFuncs,
                                  SmallVector<std::vector<CallGraphNode *> > &
@@ -310,7 +311,7 @@ class EscapeAnalysisGlobalInfo {
   bool isFuncPassedToObjCSelector(const Function *F);
 
   /// Compute escape status for the function argument based on call instructions
-  void topDownIPATraversal(
+  void traverseCGTopDown(
       const SmallVectorImpl<std::vector<CallGraphNode *>> &SCCList,
       const DenseMap<const Function *, SmallVector<const CallBase *>>
           &FuncCallSites,
@@ -319,7 +320,7 @@ class EscapeAnalysisGlobalInfo {
   void printArgEscStatus();
 
   /// Compute escape status for the function argument based on call instructions
-  void evalFuncArgEscStatus(
+  void evalTopDownArgEscStatus(
       const DenseMap<const Function *, SmallVector<const CallBase *>>
           &FuncCallSites,
       const Function *F) const;
@@ -347,6 +348,7 @@ public:
 
       if (UnderlObj.Loaded) {
         // dbgs() << "Loaded: " << *UnderlObj.Obj << "\n";
+        // TODO use function forEachPointeeDo from EAI class
         const auto It = FEIIt->second.BBEscapeStates.find(BB);
         assert(It != FEIIt->second.BBEscapeStates.end());
         bool IsEscaped = false;

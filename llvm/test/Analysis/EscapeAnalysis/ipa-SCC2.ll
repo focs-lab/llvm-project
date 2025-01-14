@@ -7,9 +7,9 @@
 define dso_local void @caller() #0 {
 ; CHECK: Printing analysis 'Escape Analysis' for function 'caller':
 ; CHECK-NEXT: Escaping objects for BB entry:
-; CHECK-DAG:  %z = alloca i32, align 4
-; CHECK-DAG:  %y = alloca i32, align 4
 ; CHECK-DAG:  %x = alloca i32, align 4
+; CHECK-DAG:  %y = alloca i32, align 4
+; CHECK-DAG:  %z = alloca i32, align 4
 entry:
   %x = alloca i32, align 4
   %y = alloca i32, align 4
@@ -22,8 +22,8 @@ entry:
 define internal void @func1(ptr noundef %x, ptr noundef %y, ptr noundef %z, ptr noundef %NoEsc) #0 {
 ; CHECK: Printing analysis 'Escape Analysis' for function 'func1':
 ; CHECK-NEXT: Escaping objects for BB entry:
-; CHECK-DAG: ptr %y
 ; CHECK-DAG: ptr %x
+; CHECK-DAG: ptr %y
 ; CHECK-DAG: ptr %z
 entry:
   %x.addr = alloca ptr, align 8
@@ -67,8 +67,8 @@ declare i32 @printf(ptr noundef, ...)
 define internal void @func2(ptr noundef %x, ptr noundef %y, ptr noundef %z) {
 ; CHECK: Printing analysis 'Escape Analysis' for function 'func2':
 ; CHECK: Escaping objects for BB entry:
-; CHECK-DAG: ptr %y
 ; CHECK-DAG: ptr %x
+; CHECK-DAG: ptr %y
 ; CHECK-DAG: ptr %z
 entry:
   %x.addr = alloca ptr, align 8

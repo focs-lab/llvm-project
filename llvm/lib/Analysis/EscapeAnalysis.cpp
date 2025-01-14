@@ -1091,7 +1091,7 @@ EscapeAnalysisGlobalInfo::getFuncToCallSitesMap() {
   return FuncToCallSitesMap;
 }
 
-void EscapeAnalysisGlobalInfo::evalFuncArgEscStatus(
+void EscapeAnalysisGlobalInfo::evalTopDownArgEscStatus(
     const DenseMap<const Function *, SmallVector<const CallBase *>>
         &FuncCallSites,
     const Function *F) const {
@@ -1135,13 +1135,23 @@ void EscapeAnalysisGlobalInfo::evalFuncArgEscStatus(
       const auto EAIIt = FuncEscapeInfo.find(CB->getFunction());
       assert(EAIIt != FuncEscapeInfo.end());
       const EscapeAnalysisInfo &CallEAI = EAIIt->second;
+      const auto *BB = CB->getParent();
 
       for (const auto &UnderlObj : UnderlObjs) {
-        IsArgEscaped[ArgIdx] =
-            CallEAI.isEscapedForBBIPA(CB->getParent(), UnderlObj.Obj);
-        LLVM_DEBUG(dbgs() << "\t\tArg " << ArgIdx
-                          << " (underl obj: " << *UnderlObj.Obj << ") is escaped: "
-                          << (IsArgEscaped[ArgIdx] ? "YES" : "NO") << "\n");
+        auto checkEscapeStatus = [&](const Value *Obj) {
+          IsArgEscaped[ArgIdx] |=
+              CallEAI.isEscapedForBBIPA(BB, Obj);
+          LLVM_DEBUG(dbgs() << "\t\tArg " << ArgIdx << " (underl obj: " << *Obj
+                            << ") is escaped: "
+                            << (IsArgEscaped[ArgIdx] ? "YES" : "NO") << "\n");
+          return IsArgEscaped[ArgIdx];
+        };
+
+        if (UnderlObj.Loaded)
+          CallEAI.forEachPointeeDo(UnderlObj.Obj, BB, checkEscapeStatus);
+        else
+          checkEscapeStatus(UnderlObj.Obj);
+
         if (IsArgEscaped[ArgIdx])
           break;
       }
@@ -1149,7 +1159,7 @@ void EscapeAnalysisGlobalInfo::evalFuncArgEscStatus(
   }
 }
 
-bool EscapeAnalysisGlobalInfo::bottomTopIPATraversal(
+bool EscapeAnalysisGlobalInfo::traverseCGBottomTop(
     CallGraph &CG, const SmallPtrSetImpl<const Function *> &RecursiveFuncs,
     SmallVector<std::vector<CallGraphNode *> > &SCCList) {
   // Main callgraph traversal
@@ -1163,8 +1173,6 @@ bool EscapeAnalysisGlobalInfo::bottomTopIPATraversal(
       Converged = true;
       for (const CallGraphNode *CGN : SCC) {
         const auto *F = CGN->getFunction();
-        // if (!isLocalFunc(F))
-          // continue;
         if (!F || F->isDeclaration())
           continue;
 
@@ -1220,7 +1228,7 @@ bool EscapeAnalysisGlobalInfo::isFuncPassedToObjCSelector(const Function *F) {
   return false;
 }
 
-void EscapeAnalysisGlobalInfo::topDownIPATraversal(
+void EscapeAnalysisGlobalInfo::traverseCGTopDown(
     const SmallVectorImpl<std::vector<CallGraphNode *>> &SCCList,
     const DenseMap<const Function *, SmallVector<const CallBase *>>
         &FuncCallSites,
@@ -1231,27 +1239,48 @@ void EscapeAnalysisGlobalInfo::topDownIPATraversal(
   for (auto It = SCCList.rbegin(); It != SCCList.rend(); ++It) {
     const std::vector<CallGraphNode *> &SCC = *It;
 
-    for (CallGraphNode *CGN : SCC) {
-      const Function *F = CGN->getFunction();
+    bool Converged = false;
+    while (!Converged) {
+      Converged = true;
+      for (CallGraphNode *CGN : SCC) {
+        const Function *F = CGN->getFunction();
 
-      // We consider only localy defined, static functions
-      if (!isLocalAndExactFunc(F) || !F->hasLocalLinkage() ||
-          // For now, conservatively skip all ObjC methods
-          isFuncPassedToObjCSelector(F))
-        continue;
+        // We consider only localy defined, static functions
+        if (!isLocalAndExactFunc(F) || !F->hasLocalLinkage() ||
+            // For now, conservatively skip all ObjC methods
+            isFuncPassedToObjCSelector(F))
+          continue;
 
-      LLVM_DEBUG(dbgs() << "\nFunc: " << F->getName() << "\n");
-      evalFuncArgEscStatus(FuncCallSites, F);
+        LLVM_DEBUG(dbgs() << "\nFunc: " << F->getName() << "\n");
 
-      // Build escape summary for a function
-      FuncEscapeInfo.erase(F);
+        // For non-recursive functions, no need to iterate until convergence
+        if ((SCC.size() == 1) && !RecursiveFuncs.contains(F)) {
+          evalTopDownArgEscStatus(FuncCallSites, F);
+          FuncEscapeInfo.erase(F);
+          FuncEscapeInfo.try_emplace(F,
+                                     EscapeAnalysisInfo(*F, IPABottomTopEscInfo,
+                                                        IPATopDownArgEscInfo));
+          break;
+        }
 
-      // const auto Res =
+        // Unless, check convergence
+        const auto PrevIPAFuncInfoIt = IPATopDownArgEscInfo->find(F);
+        SmallVector<bool> PrevIPAFuncInfo;
+        if (PrevIPAFuncInfoIt != IPATopDownArgEscInfo->end())
+          PrevIPAFuncInfo = PrevIPAFuncInfoIt->second;
+        else
+          Converged = false;
+
+        // Build escape summary for a function
+        evalTopDownArgEscStatus(FuncCallSites, F);
+        FuncEscapeInfo.erase(F);
         FuncEscapeInfo.try_emplace(
-          F, EscapeAnalysisInfo(*F, IPABottomTopEscInfo, IPATopDownArgEscInfo));
-      // const auto &EAI = Res.first->second;
-      // if ((SCC.size() == 1) && !RecursiveFuncs.contains(F))
-        // break;
+            F,
+            EscapeAnalysisInfo(*F, IPABottomTopEscInfo, IPATopDownArgEscInfo));
+
+        if (Converged && (PrevIPAFuncInfo != (*IPATopDownArgEscInfo)[F]))
+          Converged = false;
+      }
     }
   }
 }
@@ -1271,7 +1300,7 @@ EscapeAnalysisGlobalInfo::EscapeAnalysisGlobalInfo(CallGraph &CG, Module &M_)
   // We need it to traverse call graph in reverse (top-bottom) order later
   SmallVector<std::vector<CallGraphNode *>> SCCList;
 
-  bottomTopIPATraversal(CG, RecursiveFuncs, SCCList);
+  traverseCGBottomTop(CG, RecursiveFuncs, SCCList);
 
   LLVM_DEBUG(dbgs() << "###################################################\n");
   LLVM_DEBUG(dbgs() << "######## IPA Bottom-Top Escape Analysis Done ##### \n");
@@ -1281,7 +1310,7 @@ EscapeAnalysisGlobalInfo::EscapeAnalysisGlobalInfo(CallGraph &CG, Module &M_)
   const auto FuncCallSites = getFuncToCallSitesMap();
 
   // Compute how arguments escape from passing escaped parameters in calls
-  topDownIPATraversal(SCCList, FuncCallSites, RecursiveFuncs);
+  traverseCGTopDown(SCCList, FuncCallSites, RecursiveFuncs);
 
   LLVM_DEBUG(printArgEscStatus(););
   LLVM_DEBUG(dbgs() << "\n");
@@ -1456,10 +1485,10 @@ SmallVector<UnderlObjInfo> EscapeAnalysisInfo::getUnderlyingMayEscObjs(
   getUnderlyingObjectsForCodeGenWithoutPHIInvCheck(V, UnderlObjs, MaxLookup,
                                                    IPAFuncEscInfo);
 
-  LLVM_DEBUG(dbgs() << "\tgetUnderlyingMayEscObjects for " << *V << "\n");
-  LLVM_DEBUG(if (!UnderlObjs.empty()) {
-  dbgs() << "\tgetUnderlyingMayEscObjects:";
-  for (const auto &Obj : UnderlObjs) dbgs() << "\t\t" << *Obj.Obj << "\n"; }
-  else dbgs() << "\tgetUnderlyingMayEscObjects -- empty\n"; );
+  // LLVM_DEBUG(dbgs() << "\tgetUnderlyingMayEscObjects for " << *V << "\n");
+  // LLVM_DEBUG(if (!UnderlObjs.empty()) {
+  // dbgs() << "\tgetUnderlyingMayEscObjects:";
+  // for (const auto &Obj : UnderlObjs) dbgs() << "\t\t" << *Obj.Obj << "\n"; }
+  // else dbgs() << "\tgetUnderlyingMayEscObjects -- empty\n"; );
   return UnderlObjs;
 }
