@@ -167,7 +167,9 @@ private:
   void initialize(Module &M, const TargetLibraryInfo &TLI);
   bool instrumentLoadOrStore(const InstructionInfo &II, const DataLayout &DL);
   bool instrumentAtomic(Instruction *I, const DataLayout &DL);
-  bool instrumentMemIntrinsic(Instruction *I);
+  bool
+  instrumentMemIntrinsic(Instruction *I,
+                         std::optional<EscapeAnalysisGlobalInfo *> EAIGlobal);
   void chooseInstructionsToInstrument(
       SmallVectorImpl<Instruction *> &Local,
       SmallVectorImpl<InstructionInfo> &All, const DataLayout &DL,
@@ -557,26 +559,12 @@ void ThreadSanitizer::chooseInstructionsToInstrument(
         continue;
       }
     } else if (EAIGlobal.has_value()) {
-      bool InstrOmitted = false;
-      for (const UnderlObjInfo &UnderlObj :
-           EscapeAnalysisInfo::getUnderlyingMayEscObjs(Addr)) {
-        LLVM_DEBUG(dbgs() << "EscapeAnalysisInfo " << *UnderlObj.Obj << " -- ");
-        EscReasonTy EscReason;
-        const bool IsEscaped = EAIGlobal.value()->isEscapedForBBInFuncTSan(
-          I->getFunction(), I->getParent(), UnderlObj, EscReason);
-
-        if (IsEscaped) {
-          LLVM_DEBUG(dbgs() << "escaped\n");
-          updateEscapeStatistics(EscReason);
-          InstrOmitted = false;
-          break;
-        }
-        LLVM_DEBUG(dbgs() << "not escaped\n");
-        InstrOmitted = true;
-      }
-      if (InstrOmitted) {
+      EscReasonTy EscReason;
+      if (!EAIGlobal.value()->isEscapedUndrlObjOrPointee(Addr, I->getParent(),
+                                                         EscReason)) {
         LLVM_DEBUG(dbgs() << "Instruction omitted\n");
         NumOmittedNonEscaped++;
+        updateEscapeStatistics(EscReason);
         continue;
       }
       LLVM_DEBUG(dbgs() << "Instruction instrumented\n");
@@ -695,7 +683,7 @@ bool ThreadSanitizer::sanitizeFunction(
 
   if (ClInstrumentMemIntrinsics && SanitizeFunction)
     for (auto *Inst : MemIntrinCalls) {
-      Res |= instrumentMemIntrinsic(Inst);
+      Res |= instrumentMemIntrinsic(Inst, EAIGlobal);
     }
 
   if (F.hasFnAttribute("sanitize_thread_no_checking_at_run_time")) {
@@ -813,7 +801,9 @@ static ConstantInt *createOrdering(IRBuilder<> *IRB, AtomicOrdering ord) {
   return IRB->getInt32(v);
 }
 
-// If a memset intrinsic gets inlined by the code gen, we will miss races on it.
+/**
+ *
+ */
 // So, we either need to ensure the intrinsic is not inlined, or instrument it.
 // We do not instrument memset/memmove/memcpy intrinsics (too complicated),
 // instead we simply replace them with regular function calls, which are then
@@ -821,11 +811,28 @@ static ConstantInt *createOrdering(IRBuilder<> *IRB, AtomicOrdering ord) {
 // Since tsan is running after everyone else, the calls should not be
 // replaced back with intrinsics. If that becomes wrong at some point,
 // we will need to call e.g. __tsan_memset to avoid the intrinsics.
-bool ThreadSanitizer::instrumentMemIntrinsic(Instruction *I) {
+bool ThreadSanitizer::instrumentMemIntrinsic(Instruction *I,
+   std::optional<EscapeAnalysisGlobalInfo*> EAIGlobal) {
   InstrumentationIRBuilder IRB(I);
+
+  auto isPointerEscaped = [&EAIGlobal, &I](Value *Ptr) -> bool {
+    if (EAIGlobal.has_value()) {
+      EscReasonTy EscReason;
+      return EAIGlobal.value()->isEscapedUndrlObjOrPointee(Ptr, I->getParent(),
+                                                           EscReason);
+    }
+    return true;
+  };
+
   if (MemSetInst *M = dyn_cast<MemSetInst>(I)) {
-    Value *Cast1 = IRB.CreateIntCast(M->getArgOperand(1), IRB.getInt32Ty(), false);
+    Value *Cast1 =
+        IRB.CreateIntCast(M->getArgOperand(1), IRB.getInt32Ty(), false);
     Value *Cast2 = IRB.CreateIntCast(M->getArgOperand(2), IntptrTy, false);
+
+    // Check if pointer is not escape
+    if (!isPointerEscaped(M->getArgOperand(0)))
+      return false;
+
     IRB.CreateCall(
         MemsetFn,
         {M->getArgOperand(0),
@@ -833,6 +840,10 @@ bool ThreadSanitizer::instrumentMemIntrinsic(Instruction *I) {
          Cast2});
     I->eraseFromParent();
   } else if (MemTransferInst *M = dyn_cast<MemTransferInst>(I)) {
+    // Check if pointers are not escape
+    if (!isPointerEscaped(M->getArgOperand(0)) && !isPointerEscaped(M->getArgOperand(1)))
+      return false;
+
     IRB.CreateCall(
         isa<MemCpyInst>(M) ? MemcpyFn : MemmoveFn,
         {M->getArgOperand(0),

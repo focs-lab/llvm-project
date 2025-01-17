@@ -38,6 +38,7 @@ class EscapeAnalysisInfo {
 public:
   /// Reasons of escaping for objects
   enum EscReasonBits {
+    NO_ESCAPE        = 0,
     GPTR_ALIASING    = 1,
     PTR_ARG_ALIASING = 1 << 1,
     PASSING_TO_CALL  = 1 << 2,
@@ -218,6 +219,9 @@ private:
   /// Merges the escape analysis states from multiple incoming blocks.
   EscapeState mergePredEscapeStates(const BasicBlock *BB);
 
+  /// Check if it's non-constant global variable (which can be modified)
+  static bool isNonConstGV(const Value *V);
+
   /// Check if that's the object is "already escaped":
   /// e.g. pointer function argument or global variable.
   EscReasonTy getExtObjStatusWithArgLookup(const Value *V) const;
@@ -336,33 +340,15 @@ public:
   explicit EscapeAnalysisGlobalInfo(CallGraph &CG, Module &M);
   void print(Module &M, raw_ostream &O) const;
 
-  /// Is Value V is escaping in some path from Entry to BB in the function F
-  bool isEscapedForBBInFuncTSan(const Function *F, const BasicBlock *BB,
-                                const UnderlObjInfo &UnderlObj,
-                                EscapeAnalysisInfo::EscReasonTy &EscReason) const {
-    if (auto FEIIt = FuncEscapeInfo.find(F); FEIIt != FuncEscapeInfo.end()) {
-      // if (FEIIt->second.isEscapedForBB(BB, UnderlObj.Obj, &EscReason))
-        // return true;
-      if (isa<GlobalVariable>(UnderlObj.Obj))
-        return true;
+  /// For given pointer, get underlying objects, and get escape status for them
+  bool
+  isEscapedUndrlObjOrPointee(const Value *Addr, const BasicBlock *BB,
+                             EscapeAnalysisInfo::EscReasonTy &EscReason);
 
-      if (UnderlObj.Loaded) {
-        // dbgs() << "Loaded: " << *UnderlObj.Obj << "\n";
-        // TODO use function forEachPointeeDo from EAI class
-        const auto It = FEIIt->second.BBEscapeStates.find(BB);
-        assert(It != FEIIt->second.BBEscapeStates.end());
-        bool IsEscaped = false;
-        It->second.forEachPointeeDo(UnderlObj.Obj, [&](const Value *V) {
-          // dbgs() << "forEach: " << *V << "\n";
-          if (FEIIt->second.isEscapedForBBIPA(BB, V, &EscReason))
-            IsEscaped = true;
-        });
-        return IsEscaped;
-      }
-      return FEIIt->second.isEscapedForBBIPA(BB, UnderlObj.Obj, &EscReason);
-    }
-    return true;
-  }
+  /// Is Value V is escaping in some path from Entry to BB in the function F
+  bool isEscapedForBBTSan(const Function *F, const BasicBlock *BB,
+                          const UnderlObjInfo &UnderlObj,
+                          EscapeAnalysisInfo::EscReasonTy &EscReason);
 
   /// This is needed for using with OuterAnalysisManagerProxy
   bool invalidate(Module &, const PreservedAnalyses &,
