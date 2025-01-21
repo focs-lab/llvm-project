@@ -47,6 +47,8 @@ THREADLOCAL u32 __tsan_channel_idx;
 SANITIZER_INTERFACE_ATTRIBUTE
 THREADLOCAL u8 __tsan_sampling;
 
+u32* __tsan_counters;
+
 namespace __tsan {
 
 #if !SANITIZER_GO
@@ -748,6 +750,8 @@ void Initialize(ThreadState *thr) {
     MaybeSpawnBackgroundThread();
 #endif
   ctx->initialized = true;
+
+  __tsan_counters = reinterpret_cast<u32*>(CreateCountersArray());
 
   if (flags()->stop_on_start) {
     Printf("ThreadSanitizer is suspended at startup (pid %d)."

@@ -57,6 +57,8 @@ extern THREADLOCAL u64* __tsan_channel_ptr;
 extern THREADLOCAL u32 __tsan_channel_idx;
 extern THREADLOCAL u8 __tsan_sampling;
 
+extern u32* __tsan_counters;
+
 namespace __tsan {
 
 #if !SANITIZER_GO

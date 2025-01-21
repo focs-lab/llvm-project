@@ -927,7 +927,7 @@ bool GCOVProfiler::emitProfileNotes(
           if (Options.Atomic) {
             Inst = Builder.CreateAtomicRMW(AtomicRMWInst::Add, V,
                                            Builder.getInt64(1), MaybeAlign(),
-                                           AtomicOrdering::Monotonic);
+                                           AtomicOrdering::SequentiallyConsistent);
           } else {
             LoadInst *OldCount =
                 Builder.CreateLoad(Builder.getInt64Ty(), V, "gcov_ctr");
