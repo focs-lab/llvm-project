@@ -60,6 +60,8 @@ using namespace llvm;
 #define MONITOR_CALL_LOGGER 1
 #define MONITOR_SAVE_INFO_FOR_CALLS 0
 #define MONITOR_SAMPLING 1
+#define MONITOR_DEBUG 0
+#define MONITOR_USE_LOCAL_IDX 0
 
 static cl::opt<bool> ClInstrumentMemoryAccesses(
     "tsan-instrument-memory-accesses", cl::init(true),
@@ -158,8 +160,15 @@ private:
   GlobalVariable *TsanSampling;
   Value *Channel;
   Value *Sampling;
+#if MONITOR_USE_LOCAL_IDX
   AllocaInst *LocalIdx;
+#endif
   uint64_t TotalIdxsPromoted;
+
+#if MONITOR_DEBUG
+  // For debugging
+  GlobalVariable *EventFormatString;
+#endif
 
   Type *IntptrTy;
   FunctionCallee TsanFuncEntry;
@@ -237,6 +246,7 @@ void ThreadSanitizer::initialize(Module &M, const TargetLibraryInfo &TLI) {
     return GV;
   });
   TsanChannelIdx = cast<GlobalVariable>(ChannelIdx);
+#if MONITOR_SAMPLING
   auto *Sampling = M.getOrInsertGlobal("__tsan_sampling", IRB.getInt8Ty(), [&] {
     auto *GV = new GlobalVariable(M, IRB.getInt8Ty(), /*isConstant=*/false,
                                   GlobalValue::ExternalLinkage, nullptr,
@@ -246,6 +256,22 @@ void ThreadSanitizer::initialize(Module &M, const TargetLibraryInfo &TLI) {
     return GV;
   });
   TsanSampling = cast<GlobalVariable>(Sampling);
+#endif
+#if MONITOR_DEBUG
+  // Create a global string for our printf format
+  Constant *EventFormatStrC = ConstantDataArray::getString(
+    M.getContext(),
+    "Event: %p %x\n"
+  );
+  EventFormatString = new GlobalVariable(
+    M,
+    EventFormatStrC->getType(),
+    true,
+    GlobalValue::PrivateLinkage,
+    EventFormatStrC,
+    "event format string"
+  );
+#endif
 
   AttributeList Attr;
   Attr = Attr.addFnAttribute(Ctx, Attribute::NoUnwind);
@@ -545,7 +571,9 @@ void ThreadSanitizer::InsertRuntimeIgnores(Function &F) {
 
 void ThreadSanitizer::InsertEventSend(IRBuilder<> &IRB) {
   // Check if sampling
+#if MONITOR_SAMPLING
   auto* IsSampling = IRB.CreateICmpNE(Sampling, IRB.getInt8(0));
+#endif
 
   // // Split the basic block for conditionally logging. Taken from BoundsChecking.cpp
   // BasicBlock::iterator SplitI = IRB.GetInsertPoint();
@@ -562,11 +590,16 @@ void ThreadSanitizer::InsertEventSend(IRBuilder<> &IRB) {
   // IRB.CreateCondBr(IsSampling, LogBB, Cont);
 
   // Split the basic block for conditionally logging. Taken from AddressSanitizer.cpp
+#if MONITOR_SAMPLING
   auto *LogBB =
     SplitBlockAndInsertIfThen(IsSampling, IRB.GetInsertPoint(), false,
                               MDBuilder(IRB.getContext()).createUnlikelyBranchWeights());
+#endif
 
   {
+#if MONITOR_SAMPLING
+    // For restoring the original insert point after this scope ends.
+    // Though it is probably not actually necessary.
     IRBuilder<>::InsertPointGuard Guard(IRB);
 
     // dwslim: Enable later, to only have 1 BB
@@ -575,12 +608,17 @@ void ThreadSanitizer::InsertEventSend(IRBuilder<> &IRB) {
 
     // Create the new BB just before the split point
     IRB.SetInsertPoint(LogBB);
+#endif
 
     // Insert instructions for logging as per normal
 
     // if (!Channel)
     //   Channel = IRB.CreateLoad(TsanChannelPtr->getValueType(), TsanChannelPtr);
+#if MONITOR_USE_LOCAL_IDX
     auto *Idx = IRB.CreateLoad(LocalIdx->getAllocatedType(), LocalIdx);
+#else
+    auto *Idx = IRB.CreateLoad(TsanChannelIdx->getValueType(), TsanChannelIdx);
+#endif
     auto *Trunc = IRB.CreateAnd(Idx, IRB.getInt32(0xff));     // cannot use CreateTrunc because that performs sign extend
     // Perform the GEP to get the element pointer: Channel[Idx]
     auto *Ptr = IRB.CreateGEP(
@@ -595,7 +633,34 @@ void ThreadSanitizer::InsertEventSend(IRBuilder<> &IRB) {
     // );
     auto *Inc = IRB.CreateAdd(Idx, IRB.getInt32(1));
     IRB.CreateStore(Idx, Ptr);
+#if MONITOR_USE_LOCAL_IDX
     IRB.CreateStore(Inc, LocalIdx);
+#else
+    IRB.CreateStore(Inc, TsanChannelIdx);
+#endif
+
+#if MONITOR_DEBUG
+    // Declare printf if it's not already declared
+    Module* M = IRB.GetInsertBlock()->getParent()->getParent();
+    FunctionCallee Printf = M->getOrInsertFunction(
+      "printf",
+      FunctionType::get(
+        IntegerType::getInt32Ty(M->getContext()),
+        PointerType::get(Type::getInt8Ty(M->getContext()), 0),
+        true /* this is vararg */
+      )
+    );
+
+    // Create printf arguments
+    Value *Args[] = {
+      EventFormatString,
+      Channel,
+      Idx
+    };
+
+    // Create the printf call
+    IRB.CreateCall(Printf, Args);
+#endif
   }
 }
 
@@ -658,14 +723,18 @@ bool ThreadSanitizer::sanitizeFunction(Function &F,
   // FIXME: many of these accesses do not need to be checked for races
   // (e.g. variables that do not escape, etc).
 
-  // Load the channel ptr just once
+  // Load the necessary values before doing instrumentation.
   InstrumentationIRBuilder IRB(F.getEntryBlock().getFirstNonPHI());
   Channel = IRB.CreateLoad(TsanChannelPtr->getValueType(), TsanChannelPtr);
   auto *Idx = IRB.CreateLoad(TsanChannelIdx->getValueType(), TsanChannelIdx);
+#if MONITOR_USE_LOCAL_IDX
   LocalIdx = IRB.CreateAlloca(Idx->getType());
   IRB.CreateStore(Idx, LocalIdx);
+#endif
 
+#if MONITOR_SAMPLING
   Sampling = IRB.CreateLoad(TsanSampling->getValueType(), TsanSampling);
+#endif
 
   // Instrument memory accesses only if we want to report bugs in the function.
   if (ClInstrumentMemoryAccesses && SanitizeFunction)
@@ -691,68 +760,76 @@ bool ThreadSanitizer::sanitizeFunction(Function &F,
       InsertRuntimeIgnores(F);
   }
 
+#if MONITOR_USE_LOCAL_IDX && MONITOR_SAVE_INFO_FOR_CALLS
   // Before each function call, we need to update the ChannelIdx global variable.
   // After each function call we also need to load from it.
   // If did not instrument any accesses, then LocalIdx is not used.
   if (Res) {
-#if MONITOR_SAVE_INFO_FOR_CALLS
     for (const auto &CI : Calls) {
       InstrumentationIRBuilder IRB(CI);
+      // Save the local index
       auto *Load1 = IRB.CreateLoad(LocalIdx->getAllocatedType(), LocalIdx);
       IRB.CreateStore(Load1, TsanChannelIdx);
 
+      // No need to restore local index for tail calls since the function is gonna return already
       if (isa<CallInst>(CI) && dyn_cast<CallInst>(CI)->isTailCall())
         continue;
       if (isa<InvokeInst>(CI) && dyn_cast<InvokeInst>(CI)->isTailCall())
         continue;
 
       auto Next = std::next(CI->getIterator());
-      if (Next == CI->getParent()->end()) {
-        if (!CI->isTerminator())
-          IRB.SetInsertPoint(CI->getParent());
-        // TODO(dwslim): fix this! probably just insert to the next basic block
-        // but if it is a terminator, shouldn't it have been a tail call?
-        // IRB.SetInsertPoint(CI->getParent());
-        else
-          continue;
-      }
-      else
-        IRB.SetInsertPoint(CI->getParent(), Next);
+      // if (Next == CI->getParent()->end()) {
+      //   if (!CI->isTerminator())
+      //     IRB.SetInsertPoint(CI->getParent());
+      //   // TODO(dwslim): fix this! probably just insert to the next basic block
+      //   // but if it is a terminator, shouldn't it have been a tail call?
+      //   // IRB.SetInsertPoint(CI->getParent());
+      //   else
+      //     continue;
+      // }
+      // else
+      //   IRB.SetInsertPoint(CI->getParent(), Next);
+
+      // Update the local index
+      IRB.SetInsertPoint(Next);
       auto *Load2 = IRB.CreateLoad(TsanChannelIdx->getValueType(), TsanChannelIdx);
       IRB.CreateStore(Load2, LocalIdx);
     }
-#endif
 
     EscapeEnumerator EE(F, "tsan_cleanup", ClHandleCxxExceptions);
     while (IRBuilder<> *AtExit = EE.Next()) {
       InstrumentationIRBuilder::ensureDebugInfo(*AtExit, F);
       // AtExit->CreateCall(TsanFuncExit, {});
       // dwslim: Store the global idx before exiting the function
-#if MONITOR_SAVE_INFO_FOR_CALLS
       auto *Load = AtExit->CreateLoad(LocalIdx->getAllocatedType(), LocalIdx);
       AtExit->CreateStore(Load, TsanChannelIdx);
-#endif
     }
   }
+#endif
 
   // Instrument function entry/exit points if there were instrumented accesses.
   if ((Res || HasCalls) && ClInstrumentFuncEntryExit) {
     // // Monitor: Bye bye
     // InstrumentationIRBuilder IRB(F.getEntryBlock().getFirstNonPHI());
-    // Value *ReturnAddress = IRB.CreateCall(
-    //     Intrinsic::getDeclaration(F.getParent(), Intrinsic::returnaddress),
-    //     IRB.getInt32(0));
+    // Reuse IRB from earlier, so that the event sending code comes after loading
+    // the channel pointer and index.
+    Value *ReturnAddress = IRB.CreateCall(
+        Intrinsic::getDeclaration(F.getParent(), Intrinsic::returnaddress),
+        IRB.getInt32(0));
     // IRB.CreateCall(TsanFuncEntry, ReturnAddress);
+    InsertEventSend(IRB);
 
     // // Monitor: Bye bye
-    // EscapeEnumerator EE(F, "tsan_cleanup", ClHandleCxxExceptions);
-    // while (IRBuilder<> *AtExit = EE.Next()) {
-    //   InstrumentationIRBuilder::ensureDebugInfo(*AtExit, F);
-    //   // AtExit->CreateCall(TsanFuncExit, {});
-    // }
+    EscapeEnumerator EE(F, "tsan_cleanup", ClHandleCxxExceptions);
+    while (IRBuilder<> *AtExit = EE.Next()) {
+      InstrumentationIRBuilder::ensureDebugInfo(*AtExit, F);
+      // AtExit->CreateCall(TsanFuncExit, {});
+      InsertEventSend(*AtExit);
+    }
     Res = true;
   }
 
+#if MONITOR_USE_LOCAL_IDX
   // dwslim: I had to put this check because in some cases it is not promotable.
   // We need to find out if this is acceptable or how to circumvent this.
   // errs() << "Is alloca promotable: " << isAllocaPromotable(LocalIdx) << "\n";
@@ -763,6 +840,7 @@ bool ThreadSanitizer::sanitizeFunction(Function &F,
     auto &AC = FAM.getResult<AssumptionAnalysis>(F);
     PromoteMemToReg(Allocas, DT, &AC);
   }
+#endif
 
   return Res;
 }
