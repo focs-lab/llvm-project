@@ -609,9 +609,11 @@ void ThreadSanitizer::InsertAtomicEventLock(IRBuilder<> &IRB, Value *Addr) {
   // If I just pass `Success` directly and call SplitBlockAndInsertIfElse,
   // it generates jne; jmp instead of just one je.
   auto *LoopBB = SplitBlock(IRB.GetInsertBlock(), BeforeCmpXchg);
+  auto ContPoint = IRB.GetInsertPoint();
   SplitBlockAndInsertIfThen(Fail, IRB.GetInsertPoint(), false,
                             nullptr, nullptr, nullptr,  // not sure what branch weights are good
                             LoopBB);
+  IRB.SetInsertPoint(ContPoint);
 }
 
 void ThreadSanitizer::InsertAtomicEventUnlock(IRBuilder<> &IRB, Value *Addr) {
@@ -706,24 +708,11 @@ void ThreadSanitizer::InsertEventSend(IRBuilder<> &IRB, Value *Event) {
   auto *LogBB =
     SplitBlockAndInsertIfThen(IsSampling, IRB.GetInsertPoint(), false,
                               MDBuilder(IRB.getContext()).createUnlikelyBranchWeights());
+  IRB.SetInsertPoint(LogBB);
 #endif
 
   {
-#if MONITOR_SAMPLING
-    // For restoring the original insert point after this scope ends.
-    // Though it is probably not actually necessary.
-    IRBuilder<>::InsertPointGuard Guard(IRB);
-
-    // dwslim: Enable later, to only have 1 BB
-    // if (TrapBB && SingleTrapBB && !DebugTrapBB)
-    //   return TrapBB;
-
-    // Create the new BB just before the split point
-    IRB.SetInsertPoint(LogBB);
-#endif
-
     // Insert instructions for logging as per normal
-
     // if (!Channel)
     //   Channel = IRB.CreateLoad(TsanChannelPtr->getValueType(), TsanChannelPtr);
 #if MONITOR_USE_LOCAL_IDX
