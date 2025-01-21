@@ -154,7 +154,7 @@ void ThreadStart(ThreadState *thr, Tid tid, tid_t os_id,
   if (UNLIKELY(!__tsan_channel_ptr)) {
     __tsan_channel_ptr = reinterpret_cast<u64*>(CreateSlotFile(tid + 1000));
     __tsan_channel_idx = 0;
-    __tsan_sampling = 0;
+    __tsan_sampling = 1;
   }
   ctx->thread_registry.StartThread(tid, os_id, thread_type, thr);
   if (!thr->ignore_sync) {
