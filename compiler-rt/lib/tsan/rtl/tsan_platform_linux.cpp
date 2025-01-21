@@ -235,6 +235,18 @@ uptr CreateSlotFile(int tid) {
 	return mem;
 }
 
+uptr CreateCountersArray() {
+  uptr mem = internal_mmap(
+		NULL,
+	  0x100000*8,
+		PROT_READ | PROT_WRITE,
+		MAP_ANON | MAP_PRIVATE | MAP_NORESERVE,
+		0,
+	  0
+  );
+	return mem;
+}
+
 void InitializeShadowMemoryPlatform() {
   char buffer[256];  // Keep in a different frame.
   MapRodata(buffer, sizeof(buffer));

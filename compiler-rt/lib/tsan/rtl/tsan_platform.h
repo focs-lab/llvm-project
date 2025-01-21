@@ -1039,6 +1039,7 @@ void DestroyThreadState();
 void PlatformCleanUpThreadState(ThreadState *thr);
 
 uptr CreateSlotFile(int tid);
+uptr CreateCountersArray();
 
 }  // namespace __tsan
 
