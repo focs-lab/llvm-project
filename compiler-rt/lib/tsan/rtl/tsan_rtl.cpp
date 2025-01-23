@@ -47,6 +47,7 @@ THREADLOCAL u32 __tsan_channel_idx;
 SANITIZER_INTERFACE_ATTRIBUTE
 THREADLOCAL u8 __tsan_sampling;
 
+__attribute__((visibility("default")))
 u32* __tsan_counters;
 
 namespace __tsan {

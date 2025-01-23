@@ -597,23 +597,36 @@ void ThreadSanitizer::InsertAtomicEventLock(IRBuilder<> &IRB, Value *Addr) {
   );
 
   auto BeforeCmpXchg = IRB.GetInsertPoint();
+  auto *LoopBB = SplitBlock(IRB.GetInsertBlock(), BeforeCmpXchg);
+  // this is important! the insert point remains the same but the insert block has changed and is wrong!
+  IRB.SetInsertPoint(BeforeCmpXchg);
+
   // dwslim: Need to confirm if the ordering is ok.
   // cmp 0 - check if it is unlocked
   // new 1 - set to lock
+  // InsertEventSend(IRB, IRB.getInt64(0xdeaddead));
   auto *Result = IRB.CreateAtomicCmpXchg(Ptr, IRB.getInt32(0), IRB.getInt32(1), MaybeAlign(),
                                          AtomicOrdering::AcquireRelease, AtomicOrdering::Acquire);
   auto *Success = IRB.CreateExtractValue(Result, /*Idxs=*/1);
   // TODO(dwslim): LLVM generates `setne al; test al, 0x1` but I think we actually only need 1 instruction
-  auto *Fail = IRB.CreateICmpEQ(Success, IRB.getInt8(0));
-  // It may look stupid that I'm doing this, but otherwise LLVM will do some even more stupid (or am I stupid?).
+  auto *Fail = IRB.CreateICmpEQ(Success, IRB.getInt1(0));
+  // It may look stupid that I'm doing this extra negation step, but otherwise LLVM will do some even more stupid (or am I stupid?).
   // If I just pass `Success` directly and call SplitBlockAndInsertIfElse,
   // it generates jne; jmp instead of just one je.
-  auto *LoopBB = SplitBlock(IRB.GetInsertBlock(), BeforeCmpXchg);
+
   auto ContPoint = IRB.GetInsertPoint();
-  SplitBlockAndInsertIfThen(Fail, IRB.GetInsertPoint(), false,
+  auto *ContBB = SplitBlockAndInsertIfThen(Fail, IRB.GetInsertPoint(), false,
                             nullptr, nullptr, nullptr,  // not sure what branch weights are good
                             LoopBB);
+  // this is important! the insert point remains the same but the insert block has changed and is wrong!
   IRB.SetInsertPoint(ContPoint);
+
+  // errs () << "----- Atomic ----\n";
+  // errs() << "InsertBlock: " << IRB.GetInsertBlock() << "  LoopBB: " << LoopBB << "  Parent: " << IRB.GetInsertPoint()->getParent() << "\n";
+  // errs() << *IRB.GetInsertBlock();
+  // errs () << "\n--\n";
+  // errs() << *(IRB.GetInsertPoint()->getParent());
+  // errs () << "\n----\n";
 }
 
 void ThreadSanitizer::InsertAtomicEventUnlock(IRBuilder<> &IRB, Value *Addr) {
@@ -740,7 +753,8 @@ void ThreadSanitizer::InsertEventSend(IRBuilder<> &IRB, Value *Event) {
     // );
     auto *Inc = IRB.CreateAdd(Idx, IRB.getInt32(1));
     // IRB.CreateStore(Idx, Ptr);
-    IRB.CreateStore(Event, Ptr);
+    auto *EventCast = IRB.CreateCast(Instruction::ZExt, Event, IRB.getInt64Ty());
+    IRB.CreateStore(EventCast, Ptr);
 #if MONITOR_USE_LOCAL_IDX
     IRB.CreateStore(Inc, LocalIdx);
 #else
