@@ -59,7 +59,7 @@ using namespace llvm;
 #define MONITOR_CALL_ATOMIC_HANDLERS 0
 #define MONITOR_CALL_LOGGER 1
 #define MONITOR_SAVE_INFO_FOR_CALLS 0
-#define MONITOR_SAMPLING 1
+#define MONITOR_SAMPLING 0
 #define MONITOR_DEBUG 0
 #define MONITOR_USE_LOCAL_IDX 0
 
@@ -649,19 +649,23 @@ Value* ThreadSanitizer::FetchAndUpdateCounter(IRBuilder<> &IRB, Value *Addr) {
 
 void ThreadSanitizer::InsertAtomicEventSend(IRBuilder<> &IRB, uint8_t Eid, Value *Addr) {
   auto *Id = IRB.CreateShl(IRB.getInt64(Eid), 56);
-  auto *Event = IRB.CreateOr(Id, Addr);
+  auto *AddrCast = IRB.CreateCast(Instruction::PtrToInt, Addr, IRB.getInt64Ty());
+  auto *Event = IRB.CreateOr(Id, AddrCast);
   auto *Count = FetchAndUpdateCounter(IRB, Addr);
   InsertEventSend(IRB, Event);
-  InsertEventSend(IRB, IRB.CreateCast(Instruction::ZExt, IRB.CreateAdd(IRB.getInt32(0xcafe0000), Count), IRB.getInt64Ty()));
+  // InsertEventSend(IRB, IRB.CreateCast(Instruction::ZExt, IRB.CreateAdd(IRB.getInt32(0xcafe0000), Count), IRB.getInt64Ty()));
+  // InsertEventSend(IRB, IRB.CreateCast(Instruction::ZExt, Count, IRB.getInt64Ty()));
+  InsertEventSend(IRB, Count);
 }
 
 void ThreadSanitizer::InsertAtomicEventSend(IRBuilder<> &IRB, uint8_t Eid, Value *Addr, Value *Val) {
   auto *Id = IRB.CreateShl(IRB.getInt64(Eid), 56);
-  auto *Event = IRB.CreateOr(Id, Addr);
+  auto *AddrCast = IRB.CreateCast(Instruction::PtrToInt, Addr, IRB.getInt64Ty());
+  auto *Event = IRB.CreateOr(Id, AddrCast);
   auto *Count = FetchAndUpdateCounter(IRB, Addr);
   InsertEventSend(IRB, Event);
-  InsertEventSend(IRB, Val);
   InsertEventSend(IRB, Count);
+  InsertEventSend(IRB, Val);
 }
 
 void ThreadSanitizer::InsertEventSend(IRBuilder<> &IRB, uint8_t Eid) {
@@ -671,13 +675,15 @@ void ThreadSanitizer::InsertEventSend(IRBuilder<> &IRB, uint8_t Eid) {
 
 void ThreadSanitizer::InsertEventSend(IRBuilder<> &IRB, uint8_t Eid, Value *Addr) {
   auto *Id = IRB.CreateShl(IRB.getInt64(Eid), 56);
-  auto *Event = IRB.CreateOr(Id, Addr);
+  auto *AddrCast = IRB.CreateCast(Instruction::PtrToInt, Addr, IRB.getInt64Ty());
+  auto *Event = IRB.CreateOr(Id, AddrCast);
   InsertEventSend(IRB, Event);
 }
 
 void ThreadSanitizer::InsertEventSend(IRBuilder<> &IRB, uint8_t Eid, Value *Addr, Value *Val) {
   auto *Id = IRB.CreateShl(IRB.getInt64(Eid), 56);
-  auto *Event = IRB.CreateOr(Id, Addr);
+  auto *AddrCast = IRB.CreateCast(Instruction::PtrToInt, Addr, IRB.getInt64Ty());
+  auto *Event = IRB.CreateOr(Id, AddrCast);
   InsertEventSend(IRB, Event);
   InsertEventSend(IRB, Val);
 }
