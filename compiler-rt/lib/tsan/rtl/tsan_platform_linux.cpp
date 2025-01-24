@@ -207,32 +207,40 @@ static NOINLINE void MapRodata(char* buffer, uptr size) {
   internal_close(fd);
 }
 
-uptr CreateSlotFile(int tid) {
-	// Open a new file descriptor, creating the file if it does not exist
-	// 0666 = read + write access for user, group and world
-  char file_name[64];
-  internal_snprintf(file_name, 64, "/tmp/tsan_slots/%d", tid);
-	int fd = internal_open(file_name, O_RDWR | O_CREAT, 0666);
-	if (fd < 0) {
-		Printf("Error opening file!\n");
+uptr CreateLogFile(Tid tid, uptr* out_fd) {
+  // Open a new file descriptor, creating the file if it does not exist
+  // 0666 = read + write access for user, group and world
+  char dir_name[64], file_name[64];
+  internal_snprintf(dir_name, 64, "/tmp/tsan.slots.%d", internal_getpid());
+  mkdir(dir_name, 0755);
+  internal_snprintf(file_name, 64, "/tmp/tsan.slots.%d/%d", internal_getpid(), tid);
+  int fd = internal_open(file_name, O_RDWR | O_CREAT, 0666);
+  if (fd < 0) {
+    Printf("Error opening file %s!\n", file_name);
     Die();
-	}
-	// Ensure that the file will hold enough space
-	internal_lseek(fd, 65536*32, SEEK_SET);
-	if (internal_write(fd, "", 1) < 1) {
-		Printf("Error writing a single byte to file.\n");
+  }
+  *out_fd = fd;
+
+  // Ensure that the file will hold enough space
+  internal_lseek(fd, 65536*32, SEEK_SET);
+  if (internal_write(fd, "", 1) < 1) {
+    Printf("Error writing a single byte to file %s.\n", file_name);
     Die();
-	}
-	internal_lseek(fd, 0, SEEK_SET);
+  }
+  internal_lseek(fd, 0, SEEK_SET);
   uptr mem = internal_mmap(
-		NULL,
-	  65536*32,
-		PROT_READ | PROT_WRITE,
-		MAP_SHARED,
-		fd,
-	  0
-	 );
-	return mem;
+    NULL,
+    65536*32,
+    PROT_READ | PROT_WRITE,
+    MAP_SHARED,
+    fd,
+    0
+  );
+  return mem;
+}
+
+void CloseLogFile(uptr fd) {
+  internal_close(fd);
 }
 
 uptr CreateCountersArray() {

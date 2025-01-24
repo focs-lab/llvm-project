@@ -747,11 +747,11 @@ TSAN_INTERCEPTOR(void, cfree, void *p) {
   REAL(free)(p);
 }
 
-TSAN_INTERCEPTOR(uptr, malloc_usable_size, void *p) {
-  // SCOPED_INTERCEPTOR_RAW(malloc_usable_size, p);
-  // return user_alloc_usable_size(p);
-  return REAL(malloc_usable_size)(p);
-}
+// TSAN_INTERCEPTOR(uptr, malloc_usable_size, void *p) {
+//   SCOPED_INTERCEPTOR_RAW(malloc_usable_size, p);
+//   return user_alloc_usable_size(p);
+//   // return REAL(malloc_usable_size)(p);
+// }
 #endif
 
 TSAN_INTERCEPTOR(char *, strcpy, char *dst, const char *src) {
@@ -830,13 +830,13 @@ TSAN_INTERCEPTOR(void*, memalign, uptr align, uptr sz) {
 #endif
 
 #if !SANITIZER_APPLE
-TSAN_INTERCEPTOR(void*, aligned_alloc, uptr align, uptr sz) {
-  if (in_symbolizer())
-    return InternalAlloc(sz, nullptr, align);
-  // SCOPED_INTERCEPTOR_RAW(aligned_alloc, align, sz);
-  // return user_aligned_alloc(thr, pc, align, sz);
-  return REAL(aligned_alloc)(align, sz);
-}
+// TSAN_INTERCEPTOR(void*, aligned_alloc, uptr align, uptr sz) {
+//   if (in_symbolizer())
+//     return InternalAlloc(sz, nullptr, align);
+//   // SCOPED_INTERCEPTOR_RAW(aligned_alloc, align, sz);
+//   // return user_aligned_alloc(thr, pc, align, sz);
+//   return REAL(aligned_alloc)(align, sz);
+// }
 
 TSAN_INTERCEPTOR(void*, valloc, uptr sz) {
   if (in_symbolizer())

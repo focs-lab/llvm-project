@@ -152,7 +152,7 @@ struct OnStartedArgs {
 void ThreadStart(ThreadState *thr, Tid tid, tid_t os_id,
                  ThreadType thread_type) {
   if (UNLIKELY(!__tsan_channel_ptr)) {
-    __tsan_channel_ptr = reinterpret_cast<u64*>(CreateSlotFile(tid + 1000));
+    __tsan_channel_ptr = reinterpret_cast<u64*>(CreateLogFile(tid, &thr->log_fd));
     __tsan_channel_idx = 0;
     __tsan_sampling = 1;
   }
@@ -252,6 +252,9 @@ void ThreadFinish(ThreadState *thr) {
     ctx->dd->DestroyLogicalThread(thr->dd_lt);
   SlotDetach(thr);
   ctx->thread_registry.FinishThread(thr->tid);
+
+  CloseLogFile(thr->log_fd);
+
   thr->~ThreadState();
 }
 

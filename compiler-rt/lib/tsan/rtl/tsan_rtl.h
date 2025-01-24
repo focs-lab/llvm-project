@@ -240,6 +240,10 @@ struct ThreadState {
 
   const ReportDesc *current_report;
 
+  // for logging
+  // uptr log_id;
+  uptr log_fd;
+
   explicit ThreadState(Tid tid);
 } ALIGNED(SANITIZER_CACHE_LINE_SIZE);
 
