@@ -206,6 +206,8 @@ private:
   FunctionCallee TsanVptrUpdate;
   FunctionCallee TsanVptrLoad;
   FunctionCallee MemmoveFn, MemcpyFn, MemsetFn;
+
+  GlobalVariable *InterceptorEnabled;
 };
 
 void insertModuleCtor(Module &M) {
@@ -403,6 +405,12 @@ void ThreadSanitizer::initialize(Module &M, const TargetLibraryInfo &TLI) {
       "__tsan_memset",
       TLI.getAttrList(&Ctx, {1}, /*Signed=*/true, /*Ret=*/false, Attr),
       IRB.getPtrTy(), IRB.getPtrTy(), IRB.getInt32Ty(), IntptrTy);
+
+  // Declare a global variable InterceptorEnabled in the LLVM module
+  InterceptorEnabled =
+      new GlobalVariable(M, Type::getInt1Ty(Ctx), /*isConstant=*/false,
+                         GlobalValue::ExternalLinkage,
+                         ConstantInt::getTrue(Ctx), "InterceptorEnabled");
 }
 
 static bool isVtableAccess(Instruction *I) {
@@ -830,8 +838,9 @@ bool ThreadSanitizer::instrumentMemIntrinsic(Instruction *I,
     Value *Cast2 = IRB.CreateIntCast(M->getArgOperand(2), IntptrTy, false);
 
     // Check if pointer is not escape
-    if (!isPointerEscaped(M->getArgOperand(0)))
+    if (!isPointerEscaped(M->getArgOperand(0))) {
       return false;
+    }
 
     IRB.CreateCall(
         MemsetFn,
