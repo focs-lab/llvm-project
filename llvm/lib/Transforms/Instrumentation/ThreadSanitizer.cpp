@@ -123,6 +123,8 @@ const char kTsanInitName[] = "__tsan_init";
 
 namespace {
 
+GlobalVariable *InterceptorEnabled;
+
 /// ThreadSanitizer: instrument the code in module to find races.
 ///
 /// Instantiating ThreadSanitizer inserts the tsan runtime library API function
@@ -167,6 +169,7 @@ private:
   void initialize(Module &M, const TargetLibraryInfo &TLI);
   bool instrumentLoadOrStore(const InstructionInfo &II, const DataLayout &DL);
   bool instrumentAtomic(Instruction *I, const DataLayout &DL);
+  void disableInterceptorForInstr(Instruction *I, InstrumentationIRBuilder &IRB);
   bool
   instrumentMemIntrinsic(Instruction *I,
                          std::optional<EscapeAnalysisGlobalInfo *> EAIGlobal);
@@ -206,8 +209,6 @@ private:
   FunctionCallee TsanVptrUpdate;
   FunctionCallee TsanVptrLoad;
   FunctionCallee MemmoveFn, MemcpyFn, MemsetFn;
-
-  GlobalVariable *InterceptorEnabled;
 };
 
 void insertModuleCtor(Module &M) {
@@ -256,6 +257,12 @@ PreservedAnalyses ModuleThreadSanitizerPass::run(Module &M,
     MAM.getResult<EscapeAnalysisGlobal>(M);
 
   insertModuleCtor(M);
+
+  // Declare an external global variable InterceptorEnabled in the module
+  InterceptorEnabled = new GlobalVariable(
+      M, Type::getInt1Ty(M.getContext()), /*isConstant=*/false,
+      GlobalValue::ExternalLinkage, nullptr, "InterceptorEnabled");
+
   return PreservedAnalyses::none();
 }
 
@@ -405,12 +412,6 @@ void ThreadSanitizer::initialize(Module &M, const TargetLibraryInfo &TLI) {
       "__tsan_memset",
       TLI.getAttrList(&Ctx, {1}, /*Signed=*/true, /*Ret=*/false, Attr),
       IRB.getPtrTy(), IRB.getPtrTy(), IRB.getInt32Ty(), IntptrTy);
-
-  // Declare a global variable InterceptorEnabled in the LLVM module
-  InterceptorEnabled =
-      new GlobalVariable(M, Type::getInt1Ty(Ctx), /*isConstant=*/false,
-                         GlobalValue::ExternalLinkage,
-                         ConstantInt::getTrue(Ctx), "InterceptorEnabled");
 }
 
 static bool isVtableAccess(Instruction *I) {
@@ -809,9 +810,15 @@ static ConstantInt *createOrdering(IRBuilder<> *IRB, AtomicOrdering ord) {
   return IRB->getInt32(v);
 }
 
-/**
- *
- */
+void ThreadSanitizer::disableInterceptorForInstr(
+    Instruction *I, InstrumentationIRBuilder &IRB) {
+  // Disable interceptors for this call
+  IRB.CreateStore(IRB.getInt1(false), InterceptorEnabled);
+  // After MemsetFn, set the InterceptorEnabled back to true
+  IRB.SetInsertPoint(++BasicBlock::iterator(I));
+  IRB.CreateStore(IRB.getInt1(true), InterceptorEnabled);
+}
+
 // So, we either need to ensure the intrinsic is not inlined, or instrument it.
 // We do not instrument memset/memmove/memcpy intrinsics (too complicated),
 // instead we simply replace them with regular function calls, which are then
@@ -839,6 +846,7 @@ bool ThreadSanitizer::instrumentMemIntrinsic(Instruction *I,
 
     // Check if pointer is not escape
     if (!isPointerEscaped(M->getArgOperand(0))) {
+      disableInterceptorForInstr(I, IRB);
       return false;
     }
 
@@ -850,8 +858,11 @@ bool ThreadSanitizer::instrumentMemIntrinsic(Instruction *I,
     I->eraseFromParent();
   } else if (MemTransferInst *M = dyn_cast<MemTransferInst>(I)) {
     // Check if pointers are not escape
-    if (!isPointerEscaped(M->getArgOperand(0)) && !isPointerEscaped(M->getArgOperand(1)))
+    if (!isPointerEscaped(M->getArgOperand(0)) &&
+        !isPointerEscaped(M->getArgOperand(1))) {
+      disableInterceptorForInstr(I, IRB);
       return false;
+    }
 
     IRB.CreateCall(
         isa<MemCpyInst>(M) ? MemcpyFn : MemmoveFn,
