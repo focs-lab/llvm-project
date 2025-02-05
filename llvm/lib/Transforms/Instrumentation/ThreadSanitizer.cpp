@@ -840,12 +840,10 @@ void ThreadSanitizer::disableInterceptorForInstr(
 static bool
 isPointerEscaped(Value *Ptr, Instruction *I,
                  std::optional<EscapeAnalysisGlobalInfo *> EAIGlobal) {
-  dbgs() << "isPointerEscaped: " << *Ptr << "\n";
   if (EAIGlobal.has_value()) {
     EscReasonTy EscReason;
     auto res = EAIGlobal.value()->isEscapedUndrlObjOrPointee(Ptr, I->getParent(),
                                                          EscReason);
-    dbgs() << "isPointerEscaped: " << res << "\n";
     return res;
   }
   return true;
@@ -854,8 +852,6 @@ isPointerEscaped(Value *Ptr, Instruction *I,
 bool ThreadSanitizer::instrumentInterceptedCalls(
     CallInst *CI, std::optional<EscapeAnalysisGlobalInfo *> EAIGlobal) {
   // Check which intercepted function is being called
-  dbgs() << "\ninstrumentInterceptedCalls: " << *CI << "\n";
-
   Function *Callee = CI->getCalledFunction();
   bool ArePointersEscaped = true;
 
@@ -872,9 +868,8 @@ bool ThreadSanitizer::instrumentInterceptedCalls(
 
   // If none of the arguments escape, disable the interceptor
   if (!ArePointersEscaped) {
-    // dbgs() << "Disable interceptor for " << *CI << "\n";
-    // InstrumentationIRBuilder IRB(CI);
-    // disableInterceptorForInstr(CI, IRB);
+    InstrumentationIRBuilder IRB(CI);
+    disableInterceptorForInstr(CI, IRB);
     return false;
   }
   return true;

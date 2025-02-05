@@ -697,8 +697,11 @@ EscapeAnalysisInfo::getEscInfoCall(const Use &U, const Instruction *I) const {
           return {EscKindTy::MAY_ALIASING, getUnderlyingMayEscObjs(Dst)};
   }
 
-  if (isSafeExternalCall(Call->getCalledFunction()->getName()))
-    return {EscKindTy::NO_ESCAPE, std::nullopt};
+  if (const Function *CalledFunc = Call->getCalledFunction()) {
+    // Some functions can be taken as safe external calls
+    if (isSafeExternalCall(CalledFunc->getName()))
+      return {EscKindTy::NO_ESCAPE, std::nullopt};
+  }
 
   // Calling a function pointer does not in itself cause the pointer to
   // be captured.  This is a subtle point considering that (for example)
