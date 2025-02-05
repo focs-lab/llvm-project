@@ -170,6 +170,8 @@ private:
   bool instrumentLoadOrStore(const InstructionInfo &II, const DataLayout &DL);
   bool instrumentAtomic(Instruction *I, const DataLayout &DL);
   void disableInterceptorForInstr(Instruction *I, InstrumentationIRBuilder &IRB);
+  bool instrumentInterceptedCalls(
+      CallInst *CI, std::optional<EscapeAnalysisGlobalInfo *> EAIGlobal);
   bool
   instrumentMemIntrinsic(Instruction *I,
                          std::optional<EscapeAnalysisGlobalInfo *> EAIGlobal);
@@ -640,6 +642,8 @@ bool ThreadSanitizer::sanitizeFunction(
   SmallVector<Instruction*, 8> LocalLoadsAndStores;
   SmallVector<Instruction*, 8> AtomicAccesses;
   SmallVector<Instruction*, 8> MemIntrinCalls;
+  SmallVector<CallInst*, 8> InterceptedCalls;
+
   bool Res = false;
   bool HasCalls = false;
   bool SanitizeFunction = F.hasFnAttribute(Attribute::SanitizeThread);
@@ -664,6 +668,17 @@ bool ThreadSanitizer::sanitizeFunction(
           maybeMarkSanitizerLibraryCallNoBuiltin(CI, &TLI);
         if (isa<MemIntrinsic>(Inst))
           MemIntrinCalls.push_back(&Inst);
+
+        if (auto *CI = dyn_cast<CallInst>(&Inst)) {
+          if (Function *Callee = CI->getCalledFunction()) {
+            if (Callee->getName() == "strcmp" ||
+                Callee->getName() == "memchr" ||
+                Callee->getName() == "strlen") {
+              InterceptedCalls.push_back(CI);
+            }
+          }
+        }
+
         HasCalls = true;
         chooseInstructionsToInstrument(LocalLoadsAndStores, AllLoadsAndStores,
                                        DL, EAI, EAIGlobal);
@@ -694,6 +709,9 @@ bool ThreadSanitizer::sanitizeFunction(
     for (auto *Inst : MemIntrinCalls) {
       Res |= instrumentMemIntrinsic(Inst, EAIGlobal);
     }
+
+  for (CallInst *CI: InterceptedCalls)
+    Res |= instrumentInterceptedCalls(CI, EAIGlobal);
 
   if (F.hasFnAttribute("sanitize_thread_no_checking_at_run_time")) {
     assert(!F.hasFnAttribute(Attribute::SanitizeThread));
@@ -819,6 +837,49 @@ void ThreadSanitizer::disableInterceptorForInstr(
   IRB.CreateStore(IRB.getInt1(true), InterceptorEnabled);
 }
 
+static bool
+isPointerEscaped(Value *Ptr, Instruction *I,
+                 std::optional<EscapeAnalysisGlobalInfo *> EAIGlobal) {
+  dbgs() << "isPointerEscaped: " << *Ptr << "\n";
+  if (EAIGlobal.has_value()) {
+    EscReasonTy EscReason;
+    auto res = EAIGlobal.value()->isEscapedUndrlObjOrPointee(Ptr, I->getParent(),
+                                                         EscReason);
+    dbgs() << "isPointerEscaped: " << res << "\n";
+    return res;
+  }
+  return true;
+}
+
+bool ThreadSanitizer::instrumentInterceptedCalls(
+    CallInst *CI, std::optional<EscapeAnalysisGlobalInfo *> EAIGlobal) {
+  // Check which intercepted function is being called
+  dbgs() << "\ninstrumentInterceptedCalls: " << *CI << "\n";
+
+  Function *Callee = CI->getCalledFunction();
+  bool ArePointersEscaped = true;
+
+  // Check if pointers passed to the function escape
+  if (Callee->getName() == "strcmp" || Callee->getName() == "memchr") {
+    if (!isPointerEscaped(CI->getArgOperand(0), CI, EAIGlobal) &&
+        !isPointerEscaped(CI->getArgOperand(1), CI, EAIGlobal)) {
+      ArePointersEscaped = false;
+    }
+  } else if (Callee->getName() == "strlen") {
+    if (!isPointerEscaped(CI->getArgOperand(0), CI, EAIGlobal))
+      ArePointersEscaped = false;
+  }
+
+  // If none of the arguments escape, disable the interceptor
+  if (!ArePointersEscaped) {
+    // dbgs() << "Disable interceptor for " << *CI << "\n";
+    // InstrumentationIRBuilder IRB(CI);
+    // disableInterceptorForInstr(CI, IRB);
+    return false;
+  }
+  return true;
+}
+
 // So, we either need to ensure the intrinsic is not inlined, or instrument it.
 // We do not instrument memset/memmove/memcpy intrinsics (too complicated),
 // instead we simply replace them with regular function calls, which are then
@@ -830,22 +891,13 @@ bool ThreadSanitizer::instrumentMemIntrinsic(Instruction *I,
    std::optional<EscapeAnalysisGlobalInfo*> EAIGlobal) {
   InstrumentationIRBuilder IRB(I);
 
-  auto isPointerEscaped = [&EAIGlobal, &I](Value *Ptr) -> bool {
-    if (EAIGlobal.has_value()) {
-      EscReasonTy EscReason;
-      return EAIGlobal.value()->isEscapedUndrlObjOrPointee(Ptr, I->getParent(),
-                                                           EscReason);
-    }
-    return true;
-  };
-
   if (MemSetInst *M = dyn_cast<MemSetInst>(I)) {
     Value *Cast1 =
         IRB.CreateIntCast(M->getArgOperand(1), IRB.getInt32Ty(), false);
     Value *Cast2 = IRB.CreateIntCast(M->getArgOperand(2), IntptrTy, false);
 
     // Check if pointer is not escape
-    if (!isPointerEscaped(M->getArgOperand(0))) {
+    if (!isPointerEscaped(M->getArgOperand(0), I, EAIGlobal)) {
       disableInterceptorForInstr(I, IRB);
       return false;
     }
@@ -858,8 +910,8 @@ bool ThreadSanitizer::instrumentMemIntrinsic(Instruction *I,
     I->eraseFromParent();
   } else if (MemTransferInst *M = dyn_cast<MemTransferInst>(I)) {
     // Check if pointers are not escape
-    if (!isPointerEscaped(M->getArgOperand(0)) &&
-        !isPointerEscaped(M->getArgOperand(1))) {
+    if (!isPointerEscaped(M->getArgOperand(0), I, EAIGlobal) &&
+        !isPointerEscaped(M->getArgOperand(1), I, EAIGlobal)) {
       disableInterceptorForInstr(I, IRB);
       return false;
     }

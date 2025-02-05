@@ -383,6 +383,12 @@ static bool getIPAFuncRetEscStatus(
   return false;
 }
 
+static bool isSafeExternalCall(StringRef FuncName) {
+  return (FuncName == "malloc" || FuncName == "calloc" ||
+          FuncName == "realloc" || FuncName == "strlen" ||
+          FuncName == "strcmp" || FuncName == "memchr");
+}
+
 /// Check if it's a function call which can escape
 static bool isCallMayEscape(const Value *V,
                             std::shared_ptr<EscapeAnalysisInfo::IPABottomTopMap>
@@ -395,8 +401,7 @@ static bool isCallMayEscape(const Value *V,
     // Check if the call is to a known memory allocation function.
     if (const Function *F = CB->getCalledFunction()) {
       if (F->isDeclaration()) {
-        if (F->getName() == "malloc" || F->getName() == "calloc" ||
-            F->getName() == "realloc")
+        if (isSafeExternalCall(F->getName()))
           return false; // Memory allocation functions do not escape.
 
         // TODO Demangle the function name before comparison
@@ -539,7 +544,7 @@ void EscapeAnalysisInfo::compBBEscapeState(const BasicBlock *BB,
   for (const Instruction &I : *BB) {
     LLVM_DEBUG(dbgs() << "\nI " << I << "\n");
     for (const Use &Opnd : I.operands()) {
-      // LLVM_DEBUG(dbgPrintOpnd(Opnd););
+      LLVM_DEBUG(dbgPrintOpnd(Opnd););
 
       const auto [EscKind, EscDetails] = getEscInfoForOpnd(Opnd);
 
@@ -691,6 +696,9 @@ EscapeAnalysisInfo::getEscInfoCall(const Use &U, const Instruction *I) const {
             StructTy && structContainsPointerType(StructTy))
           return {EscKindTy::MAY_ALIASING, getUnderlyingMayEscObjs(Dst)};
   }
+
+  if (isSafeExternalCall(Call->getCalledFunction()->getName()))
+    return {EscKindTy::NO_ESCAPE, std::nullopt};
 
   // Calling a function pointer does not in itself cause the pointer to
   // be captured.  This is a subtle point considering that (for example)
