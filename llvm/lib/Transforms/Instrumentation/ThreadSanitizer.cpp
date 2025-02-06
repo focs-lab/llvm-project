@@ -852,6 +852,8 @@ isPointerEscaped(Value *Ptr, Instruction *I,
 bool ThreadSanitizer::instrumentInterceptedCalls(
     CallInst *CI, std::optional<EscapeAnalysisGlobalInfo *> EAIGlobal) {
   // Check which intercepted function is being called
+  LLVM_DEBUG(dbgs() << "Check " << *CI << "\n");
+
   Function *Callee = CI->getCalledFunction();
   bool ArePointersEscaped = true;
 
@@ -868,6 +870,7 @@ bool ThreadSanitizer::instrumentInterceptedCalls(
 
   // If none of the arguments escape, disable the interceptor
   if (!ArePointersEscaped) {
+    LLVM_DEBUG(dbgs() << "Call does not escape any pointers\n");
     InstrumentationIRBuilder IRB(CI);
     disableInterceptorForInstr(CI, IRB);
     return false;

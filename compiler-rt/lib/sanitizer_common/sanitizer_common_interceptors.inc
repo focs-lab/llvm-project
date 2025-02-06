@@ -44,6 +44,8 @@
 #include "sanitizer_symbolizer.h"
 #include "sanitizer_tls_get_addr.h"
 
+extern "C" bool InterceptorEnabled;
+
 #if SANITIZER_INTERCEPTOR_HOOKS
 #define CALL_WEAK_INTERCEPTOR_HOOK(f, ...) f(__VA_ARGS__);
 #define DECLARE_WEAK_INTERCEPTOR_HOOK(f, ...) \
@@ -378,6 +380,9 @@ UNUSED static void DeleteInterceptorMetadata(void *addr) {
 
 #if SANITIZER_INTERCEPT_STRLEN
 INTERCEPTOR(SIZE_T, strlen, const char *s) {
+  if (!InterceptorEnabled)
+    return REAL(strlen)(s);
+
   // Sometimes strlen is called prior to InitializeCommonInterceptors,
   // in which case the REAL(strlen) typically used in
   // COMMON_INTERCEPTOR_ENTER will fail.  We use internal_strlen here
@@ -457,6 +462,10 @@ DECLARE_WEAK_INTERCEPTOR_HOOK(__sanitizer_weak_hook_strcmp, uptr called_pc,
                               const char *s1, const char *s2, int result)
 
 INTERCEPTOR(int, strcmp, const char *s1, const char *s2) {
+  // Enabling escape analysis based optimization
+  if (!InterceptorEnabled)
+    return REAL(strcmp)(s1, s2);
+
   void *ctx;
   COMMON_INTERCEPTOR_ENTER(ctx, strcmp, s1, s2);
   unsigned char c1, c2;
@@ -866,6 +875,10 @@ INTERCEPTOR(int, bcmp, const void *a1, const void *a2, uptr size) {
 
 #if SANITIZER_INTERCEPT_MEMCHR
 INTERCEPTOR(void*, memchr, const void *s, int c, SIZE_T n) {
+  // Enabling escape analysis based optimization
+  if (!InterceptorEnabled)
+    return REAL(memchr)(s, c, n);
+
   if (COMMON_INTERCEPTOR_NOTHING_IS_INITIALIZED)
     return internal_memchr(s, c, n);
   void *ctx;

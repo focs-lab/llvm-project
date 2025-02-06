@@ -113,19 +113,15 @@ inline bool MustIgnoreInterceptor(ThreadState *thr) {
 #define COMMON_INTERCEPTOR_NOTHING_IS_INITIALIZED \
   (!cur_thread_init()->is_inited)
 
-extern "C" bool InterceptorEnabled;
-
 #define COMMON_INTERCEPTOR_WRITE_RANGE(ctx, ptr, size)                    \
-  do { if (InterceptorEnabled) {                                          \
   MemoryAccessRange(((TsanInterceptorContext *)ctx)->thr,                 \
                     ((TsanInterceptorContext *)ctx)->pc, (uptr)ptr, size, \
-                    true); } } while (0)
+                    true)
 
 #define COMMON_INTERCEPTOR_READ_RANGE(ctx, ptr, size)                       \
-  do { if (InterceptorEnabled) {                                            \
   MemoryAccessRange(((TsanInterceptorContext *) ctx)->thr,                  \
                     ((TsanInterceptorContext *) ctx)->pc, (uptr) ptr, size, \
-                    false); } } while (0)
+                    false)
 
 #define COMMON_INTERCEPTOR_ENTER(ctx, func, ...) \
   SCOPED_TSAN_INTERCEPTOR(func, __VA_ARGS__);    \
