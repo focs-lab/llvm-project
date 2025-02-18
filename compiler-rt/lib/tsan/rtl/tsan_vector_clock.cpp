@@ -34,6 +34,7 @@ void VectorClock::Reset() {
 }
 
 void VectorClock::Acquire(const VectorClock* src) {
+  return;
   if (!src)
     return;
 #if !TSAN_VECTORIZE
@@ -58,11 +59,13 @@ static VectorClock* AllocClock(VectorClock** dstp) {
 }
 
 void VectorClock::Release(VectorClock** dstp) const {
+  return;
   VectorClock* dst = AllocClock(dstp);
   dst->Acquire(this);
 }
 
 void VectorClock::ReleaseStore(VectorClock** dstp) const {
+  return;
   VectorClock* dst = AllocClock(dstp);
   *dst = *this;
 }
@@ -83,6 +86,7 @@ VectorClock& VectorClock::operator=(const VectorClock& other) {
 }
 
 void VectorClock::ReleaseStoreAcquire(VectorClock** dstp) {
+  return;
   VectorClock* dst = AllocClock(dstp);
 #if !TSAN_VECTORIZE
   for (uptr i = 0; i < kThreadSlotCount; i++) {
@@ -104,6 +108,7 @@ void VectorClock::ReleaseStoreAcquire(VectorClock** dstp) {
 }
 
 void VectorClock::ReleaseAcquire(VectorClock** dstp) {
+  return;
   VectorClock* dst = AllocClock(dstp);
 #if !TSAN_VECTORIZE
   for (uptr i = 0; i < kThreadSlotCount; i++) {

@@ -18,6 +18,7 @@ namespace __tsan {
 ALWAYS_INLINE USED bool TryTraceMemoryAccess(ThreadState* thr, uptr pc,
                                              uptr addr, uptr size,
                                              AccessType typ) {
+  return true;
   DCHECK(size == 1 || size == 2 || size == 4 || size == 8);
   if (!kCollectHistory)
     return true;
@@ -56,6 +57,7 @@ ALWAYS_INLINE USED bool TryTraceMemoryAccess(ThreadState* thr, uptr pc,
 ALWAYS_INLINE
 bool TryTraceMemoryAccessRange(ThreadState* thr, uptr pc, uptr addr, uptr size,
                                AccessType typ) {
+  return true;
   if (!kCollectHistory)
     return true;
   EventAccessRange* ev;
@@ -77,6 +79,7 @@ bool TryTraceMemoryAccessRange(ThreadState* thr, uptr pc, uptr addr, uptr size,
 
 void TraceMemoryAccessRange(ThreadState* thr, uptr pc, uptr addr, uptr size,
                             AccessType typ) {
+  return;
   if (LIKELY(TryTraceMemoryAccessRange(thr, pc, addr, size, typ)))
     return;
   TraceSwitchPart(thr);
@@ -85,6 +88,7 @@ void TraceMemoryAccessRange(ThreadState* thr, uptr pc, uptr addr, uptr size,
 }
 
 void TraceFunc(ThreadState* thr, uptr pc) {
+  return;
   if (LIKELY(TryTraceFunc(thr, pc)))
     return;
   TraceSwitchPart(thr);
@@ -93,17 +97,20 @@ void TraceFunc(ThreadState* thr, uptr pc) {
 }
 
 NOINLINE void TraceRestartFuncEntry(ThreadState* thr, uptr pc) {
+  return;
   TraceSwitchPart(thr);
   FuncEntry(thr, pc);
 }
 
 NOINLINE void TraceRestartFuncExit(ThreadState* thr) {
+  return;
   TraceSwitchPart(thr);
   FuncExit(thr);
 }
 
 void TraceMutexLock(ThreadState* thr, EventType type, uptr pc, uptr addr,
                     StackID stk) {
+  return;
   DCHECK(type == EventType::kLock || type == EventType::kRLock);
   if (!kCollectHistory)
     return;
@@ -120,6 +127,7 @@ void TraceMutexLock(ThreadState* thr, EventType type, uptr pc, uptr addr,
 }
 
 void TraceMutexUnlock(ThreadState* thr, uptr addr) {
+  return;
   if (!kCollectHistory)
     return;
   EventUnlock ev;
@@ -132,6 +140,7 @@ void TraceMutexUnlock(ThreadState* thr, uptr addr) {
 }
 
 void TraceTime(ThreadState* thr) {
+  return;
   if (!kCollectHistory)
     return;
   FastState fast_state = thr->fast_state;
@@ -194,6 +203,7 @@ bool ContainsSameAccess(RawShadow* s, Shadow cur, int unused0, int unused1,
 ALWAYS_INLINE
 bool CheckRaces(ThreadState* thr, RawShadow* shadow_mem, Shadow cur,
                 int unused0, int unused1, AccessType typ) {
+  return false;
   bool stored = false;
   for (uptr idx = 0; idx < kShadowCnt; idx++) {
     RawShadow* sp = &shadow_mem[idx];
@@ -305,6 +315,7 @@ ALWAYS_INLINE
 bool CheckRaces(ThreadState* thr, RawShadow* shadow_mem, Shadow cur,
                 m128 shadow, m128 access, AccessType typ) {
   // Note: empty/zero slots don't intersect with any access.
+  return false;
   const m128 zero = _mm_setzero_si128();
   const m128 mask_access = _mm_set1_epi32(0x000000ff);
   const m128 mask_sid = _mm_set1_epi32(0x0000ff00);
@@ -387,6 +398,7 @@ SHARED:
 #endif
 
 char* DumpShadow(char* buf, RawShadow raw) {
+  return buf;
   if (raw == Shadow::kEmpty) {
     internal_snprintf(buf, 64, "0");
     return buf;
@@ -419,6 +431,7 @@ NOINLINE void TraceRestartMemoryAccess(ThreadState* thr, uptr pc, uptr addr,
 
 ALWAYS_INLINE USED void MemoryAccess(ThreadState* thr, uptr pc, uptr addr,
                                      uptr size, AccessType typ) {
+  return;
   RawShadow* shadow_mem = MemToShadow(addr);
   UNUSED char memBuf[4][64];
   DPrintf2("#%d: Access: %d@%d %p/%zd typ=0x%x {%s, %s, %s, %s}\n", thr->tid,
@@ -447,12 +460,14 @@ void MemoryAccess16(ThreadState* thr, uptr pc, uptr addr, AccessType typ);
 NOINLINE
 void RestartMemoryAccess16(ThreadState* thr, uptr pc, uptr addr,
                            AccessType typ) {
+  return;
   TraceSwitchPart(thr);
   MemoryAccess16(thr, pc, addr, typ);
 }
 
 ALWAYS_INLINE USED void MemoryAccess16(ThreadState* thr, uptr pc, uptr addr,
                                        AccessType typ) {
+  return;
   const uptr size = 16;
   FastState fast_state = thr->fast_state;
   if (UNLIKELY(fast_state.GetIgnoreBit()))
@@ -483,6 +498,7 @@ SECOND:
 NOINLINE
 void RestartUnalignedMemoryAccess(ThreadState* thr, uptr pc, uptr addr,
                                   uptr size, AccessType typ) {
+  return;
   TraceSwitchPart(thr);
   UnalignedMemoryAccess(thr, pc, addr, size, typ);
 }
@@ -490,6 +506,7 @@ void RestartUnalignedMemoryAccess(ThreadState* thr, uptr pc, uptr addr,
 ALWAYS_INLINE USED void UnalignedMemoryAccess(ThreadState* thr, uptr pc,
                                               uptr addr, uptr size,
                                               AccessType typ) {
+  return;
   DCHECK_LE(size, 8);
   FastState fast_state = thr->fast_state;
   if (UNLIKELY(fast_state.GetIgnoreBit()))
@@ -523,6 +540,7 @@ SECOND:
 }
 
 void ShadowSet(RawShadow* p, RawShadow* end, RawShadow v) {
+  return;
   DCHECK_LE(p, end);
   DCHECK(IsShadowMem(p));
   DCHECK(IsShadowMem(end));
@@ -545,6 +563,7 @@ void ShadowSet(RawShadow* p, RawShadow* end, RawShadow v) {
 }
 
 static void MemoryRangeSet(uptr addr, uptr size, RawShadow val) {
+  return;
   if (size == 0)
     return;
   DCHECK_EQ(addr % kShadowCell, 0);
@@ -581,6 +600,7 @@ static void MemoryRangeSet(uptr addr, uptr size, RawShadow val) {
 }
 
 void MemoryResetRange(ThreadState* thr, uptr pc, uptr addr, uptr size) {
+  return;
   uptr addr1 = RoundDown(addr, kShadowCell);
   uptr size1 = RoundUp(size + addr - addr1, kShadowCell);
   MemoryRangeSet(addr1, size1, Shadow::kEmpty);
@@ -595,6 +615,7 @@ void MemoryRangeFreed(ThreadState* thr, uptr pc, uptr addr, uptr size) {
   // if it happens to match a real free in the thread trace,
   // but the heap block was reallocated before the current memory access,
   // so it's still good to access. It's not the case with data races.
+  return;
   DCHECK(thr->slot_locked);
   DCHECK_EQ(addr % kShadowCell, 0);
   size = RoundUp(size, kShadowCell);
@@ -631,6 +652,7 @@ void MemoryRangeFreed(ThreadState* thr, uptr pc, uptr addr, uptr size) {
 }
 
 void MemoryRangeImitateWrite(ThreadState* thr, uptr pc, uptr addr, uptr size) {
+  return;
   DCHECK_EQ(addr % kShadowCell, 0);
   size = RoundUp(size, kShadowCell);
   TraceMemoryAccessRange(thr, pc, addr, size, kAccessWrite);
@@ -640,6 +662,7 @@ void MemoryRangeImitateWrite(ThreadState* thr, uptr pc, uptr addr, uptr size) {
 
 void MemoryRangeImitateWriteOrResetRange(ThreadState* thr, uptr pc, uptr addr,
                                          uptr size) {
+  return;
   if (thr->ignore_reads_and_writes == 0)
     MemoryRangeImitateWrite(thr, pc, addr, size);
   else
@@ -649,6 +672,7 @@ void MemoryRangeImitateWriteOrResetRange(ThreadState* thr, uptr pc, uptr addr,
 ALWAYS_INLINE
 bool MemoryAccessRangeOne(ThreadState* thr, RawShadow* shadow_mem, Shadow cur,
                           AccessType typ) {
+  return false;
   LOAD_CURRENT_SHADOW(cur, shadow_mem);
   if (LIKELY(ContainsSameAccess(shadow_mem, cur, shadow, access, typ)))
     return false;
@@ -658,12 +682,14 @@ bool MemoryAccessRangeOne(ThreadState* thr, RawShadow* shadow_mem, Shadow cur,
 template <bool is_read>
 NOINLINE void RestartMemoryAccessRange(ThreadState* thr, uptr pc, uptr addr,
                                        uptr size) {
+  return;
   TraceSwitchPart(thr);
   MemoryAccessRangeT<is_read>(thr, pc, addr, size);
 }
 
 template <bool is_read>
 void MemoryAccessRangeT(ThreadState* thr, uptr pc, uptr addr, uptr size) {
+  return;
   const AccessType typ =
       (is_read ? kAccessRead : kAccessWrite) | kAccessNoRodata;
   RawShadow* shadow_mem = MemToShadow(addr);
