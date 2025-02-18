@@ -480,11 +480,11 @@ static bool isTsanAtomic(const Instruction *I) {
 
 void ThreadSanitizer::InsertRuntimeIgnores(Function &F) {
   InstrumentationIRBuilder IRB(F.getEntryBlock().getFirstNonPHI());
-  IRB.CreateCall(TsanIgnoreBegin);
+  // IRB.CreateCall(TsanIgnoreBegin);
   EscapeEnumerator EE(F, "tsan_ignore_cleanup", ClHandleCxxExceptions);
   while (IRBuilder<> *AtExit = EE.Next()) {
     InstrumentationIRBuilder::ensureDebugInfo(*AtExit, F);
-    AtExit->CreateCall(TsanIgnoreEnd);
+    // AtExit->CreateCall(TsanIgnoreEnd);
   }
 }
 
@@ -570,16 +570,16 @@ bool ThreadSanitizer::sanitizeFunction(Function &F,
   // Instrument function entry/exit points if there were instrumented accesses.
   if ((Res || HasCalls) && ClInstrumentFuncEntryExit) {
     InstrumentationIRBuilder IRB(F.getEntryBlock().getFirstNonPHI());
-    Value *ReturnAddress =
-        IRB.CreateIntrinsic(Intrinsic::returnaddress, {}, IRB.getInt32(0));
-    IRB.CreateCall(TsanFuncEntry, ReturnAddress);
+    // Value *ReturnAddress =
+    //     IRB.CreateIntrinsic(Intrinsic::returnaddress, {}, IRB.getInt32(0));
+    // IRB.CreateCall(TsanFuncEntry, ReturnAddress);
 
-    EscapeEnumerator EE(F, "tsan_cleanup", ClHandleCxxExceptions);
-    while (IRBuilder<> *AtExit = EE.Next()) {
-      InstrumentationIRBuilder::ensureDebugInfo(*AtExit, F);
-      AtExit->CreateCall(TsanFuncExit, {});
-    }
-    Res = true;
+    // EscapeEnumerator EE(F, "tsan_cleanup", ClHandleCxxExceptions);
+    // while (IRBuilder<> *AtExit = EE.Next()) {
+    //   InstrumentationIRBuilder::ensureDebugInfo(*AtExit, F);
+    //   AtExit->CreateCall(TsanFuncExit, {});
+    // }
+    // Res = true;
   }
   return Res;
 }
@@ -613,12 +613,12 @@ bool ThreadSanitizer::instrumentLoadOrStore(const InstructionInfo &II,
     if (StoredValue->getType()->isIntegerTy())
       StoredValue = IRB.CreateIntToPtr(StoredValue, IRB.getPtrTy());
     // Call TsanVptrUpdate.
-    IRB.CreateCall(TsanVptrUpdate, {Addr, StoredValue});
+    // IRB.CreateCall(TsanVptrUpdate, {Addr, StoredValue});
     NumInstrumentedVtableWrites++;
     return true;
   }
   if (!IsWrite && isVtableAccess(II.Inst)) {
-    IRB.CreateCall(TsanVptrLoad, Addr);
+    // IRB.CreateCall(TsanVptrLoad, Addr);
     NumInstrumentedVtableReads++;
     return true;
   }
@@ -633,24 +633,24 @@ bool ThreadSanitizer::instrumentLoadOrStore(const InstructionInfo &II,
   assert((!IsVolatile || !IsCompoundRW) && "Compound volatile invalid!");
 
   const uint32_t TypeSize = DL.getTypeStoreSizeInBits(OrigTy);
-  FunctionCallee OnAccessFunc = nullptr;
-  if (Alignment >= Align(8) || (Alignment.value() % (TypeSize / 8)) == 0) {
-    if (IsCompoundRW)
-      OnAccessFunc = TsanCompoundRW[Idx];
-    else if (IsVolatile)
-      OnAccessFunc = IsWrite ? TsanVolatileWrite[Idx] : TsanVolatileRead[Idx];
-    else
-      OnAccessFunc = IsWrite ? TsanWrite[Idx] : TsanRead[Idx];
-  } else {
-    if (IsCompoundRW)
-      OnAccessFunc = TsanUnalignedCompoundRW[Idx];
-    else if (IsVolatile)
-      OnAccessFunc = IsWrite ? TsanUnalignedVolatileWrite[Idx]
-                             : TsanUnalignedVolatileRead[Idx];
-    else
-      OnAccessFunc = IsWrite ? TsanUnalignedWrite[Idx] : TsanUnalignedRead[Idx];
-  }
-  IRB.CreateCall(OnAccessFunc, Addr);
+  // FunctionCallee OnAccessFunc = nullptr;
+  // if (Alignment >= Align(8) || (Alignment.value() % (TypeSize / 8)) == 0) {
+  //   if (IsCompoundRW)
+  //     OnAccessFunc = TsanCompoundRW[Idx];
+  //   else if (IsVolatile)
+  //     OnAccessFunc = IsWrite ? TsanVolatileWrite[Idx] : TsanVolatileRead[Idx];
+  //   else
+  //     OnAccessFunc = IsWrite ? TsanWrite[Idx] : TsanRead[Idx];
+  // } else {
+  //   if (IsCompoundRW)
+  //     OnAccessFunc = TsanUnalignedCompoundRW[Idx];
+  //   else if (IsVolatile)
+  //     OnAccessFunc = IsWrite ? TsanUnalignedVolatileWrite[Idx]
+  //                            : TsanUnalignedVolatileRead[Idx];
+  //   else
+  //     OnAccessFunc = IsWrite ? TsanUnalignedWrite[Idx] : TsanUnalignedRead[Idx];
+  // }
+  // IRB.CreateCall(OnAccessFunc, Addr);
   if (IsCompoundRW || IsWrite)
     NumInstrumentedWrites++;
   if (IsCompoundRW || !IsWrite)
@@ -686,21 +686,21 @@ static ConstantInt *createOrdering(IRBuilder<> *IRB, AtomicOrdering ord) {
 bool ThreadSanitizer::instrumentMemIntrinsic(Instruction *I) {
   InstrumentationIRBuilder IRB(I);
   if (MemSetInst *M = dyn_cast<MemSetInst>(I)) {
-    Value *Cast1 = IRB.CreateIntCast(M->getArgOperand(1), IRB.getInt32Ty(), false);
-    Value *Cast2 = IRB.CreateIntCast(M->getArgOperand(2), IntptrTy, false);
-    IRB.CreateCall(
-        MemsetFn,
-        {M->getArgOperand(0),
-         Cast1,
-         Cast2});
-    I->eraseFromParent();
+    // Value *Cast1 = IRB.CreateIntCast(M->getArgOperand(1), IRB.getInt32Ty(), false);
+    // Value *Cast2 = IRB.CreateIntCast(M->getArgOperand(2), IntptrTy, false);
+    // IRB.CreateCall(
+    //     MemsetFn,
+    //     {M->getArgOperand(0),
+    //      Cast1,
+    //      Cast2});
+    // I->eraseFromParent();
   } else if (MemTransferInst *M = dyn_cast<MemTransferInst>(I)) {
-    IRB.CreateCall(
-        isa<MemCpyInst>(M) ? MemcpyFn : MemmoveFn,
-        {M->getArgOperand(0),
-         M->getArgOperand(1),
-         IRB.CreateIntCast(M->getArgOperand(2), IntptrTy, false)});
-    I->eraseFromParent();
+    // IRB.CreateCall(
+    //     isa<MemCpyInst>(M) ? MemcpyFn : MemmoveFn,
+    //     {M->getArgOperand(0),
+    //      M->getArgOperand(1),
+    //      IRB.CreateIntCast(M->getArgOperand(2), IntptrTy, false)});
+    // I->eraseFromParent();
   }
   return false;
 }
@@ -718,85 +718,85 @@ bool ThreadSanitizer::instrumentAtomic(Instruction *I, const DataLayout &DL) {
   if (LoadInst *LI = dyn_cast<LoadInst>(I)) {
     Value *Addr = LI->getPointerOperand();
     Type *OrigTy = LI->getType();
-    int Idx = getMemoryAccessFuncIndex(OrigTy, Addr, DL);
-    if (Idx < 0)
-      return false;
-    Value *Args[] = {Addr,
-                     createOrdering(&IRB, LI->getOrdering())};
-    Value *C = IRB.CreateCall(TsanAtomicLoad[Idx], Args);
-    Value *Cast = IRB.CreateBitOrPointerCast(C, OrigTy);
-    I->replaceAllUsesWith(Cast);
+    // int Idx = getMemoryAccessFuncIndex(OrigTy, Addr, DL);
+    // if (Idx < 0)
+    //   return false;
+    // Value *Args[] = {Addr,
+    //                  createOrdering(&IRB, LI->getOrdering())};
+    // Value *C = IRB.CreateCall(TsanAtomicLoad[Idx], Args);
+    // Value *Cast = IRB.CreateBitOrPointerCast(C, OrigTy);
+    // I->replaceAllUsesWith(Cast);
   } else if (StoreInst *SI = dyn_cast<StoreInst>(I)) {
     Value *Addr = SI->getPointerOperand();
-    int Idx =
-        getMemoryAccessFuncIndex(SI->getValueOperand()->getType(), Addr, DL);
-    if (Idx < 0)
-      return false;
-    const unsigned ByteSize = 1U << Idx;
-    const unsigned BitSize = ByteSize * 8;
-    Type *Ty = Type::getIntNTy(IRB.getContext(), BitSize);
-    Value *Args[] = {Addr,
-                     IRB.CreateBitOrPointerCast(SI->getValueOperand(), Ty),
-                     createOrdering(&IRB, SI->getOrdering())};
-    IRB.CreateCall(TsanAtomicStore[Idx], Args);
-    SI->eraseFromParent();
+    // int Idx =
+    //     getMemoryAccessFuncIndex(SI->getValueOperand()->getType(), Addr, DL);
+    // if (Idx < 0)
+    //   return false;
+    // const unsigned ByteSize = 1U << Idx;
+    // const unsigned BitSize = ByteSize * 8;
+    // Type *Ty = Type::getIntNTy(IRB.getContext(), BitSize);
+    // Value *Args[] = {Addr,
+    //                  IRB.CreateBitOrPointerCast(SI->getValueOperand(), Ty),
+    //                  createOrdering(&IRB, SI->getOrdering())};
+    // IRB.CreateCall(TsanAtomicStore[Idx], Args);
+    // SI->eraseFromParent();
   } else if (AtomicRMWInst *RMWI = dyn_cast<AtomicRMWInst>(I)) {
     Value *Addr = RMWI->getPointerOperand();
-    int Idx =
-        getMemoryAccessFuncIndex(RMWI->getValOperand()->getType(), Addr, DL);
-    if (Idx < 0)
-      return false;
-    FunctionCallee F = TsanAtomicRMW[RMWI->getOperation()][Idx];
-    if (!F)
-      return false;
-    const unsigned ByteSize = 1U << Idx;
-    const unsigned BitSize = ByteSize * 8;
-    Type *Ty = Type::getIntNTy(IRB.getContext(), BitSize);
-    Value *Val = RMWI->getValOperand();
-    Value *Args[] = {Addr, IRB.CreateBitOrPointerCast(Val, Ty),
-                     createOrdering(&IRB, RMWI->getOrdering())};
-    Value *C = IRB.CreateCall(F, Args);
-    I->replaceAllUsesWith(IRB.CreateBitOrPointerCast(C, Val->getType()));
-    I->eraseFromParent();
+    // int Idx =
+    //     getMemoryAccessFuncIndex(RMWI->getValOperand()->getType(), Addr, DL);
+    // if (Idx < 0)
+    //   return false;
+    // FunctionCallee F = TsanAtomicRMW[RMWI->getOperation()][Idx];
+    // if (!F)
+    //   return false;
+    // const unsigned ByteSize = 1U << Idx;
+    // const unsigned BitSize = ByteSize * 8;
+    // Type *Ty = Type::getIntNTy(IRB.getContext(), BitSize);
+    // Value *Val = RMWI->getValOperand();
+    // Value *Args[] = {Addr, IRB.CreateBitOrPointerCast(Val, Ty),
+    //                  createOrdering(&IRB, RMWI->getOrdering())};
+    // Value *C = IRB.CreateCall(F, Args);
+    // I->replaceAllUsesWith(IRB.CreateBitOrPointerCast(C, Val->getType()));
+    // I->eraseFromParent();
   } else if (AtomicCmpXchgInst *CASI = dyn_cast<AtomicCmpXchgInst>(I)) {
     Value *Addr = CASI->getPointerOperand();
     Type *OrigOldValTy = CASI->getNewValOperand()->getType();
-    int Idx = getMemoryAccessFuncIndex(OrigOldValTy, Addr, DL);
-    if (Idx < 0)
-      return false;
-    const unsigned ByteSize = 1U << Idx;
-    const unsigned BitSize = ByteSize * 8;
-    Type *Ty = Type::getIntNTy(IRB.getContext(), BitSize);
-    Value *CmpOperand =
-      IRB.CreateBitOrPointerCast(CASI->getCompareOperand(), Ty);
-    Value *NewOperand =
-      IRB.CreateBitOrPointerCast(CASI->getNewValOperand(), Ty);
-    Value *Args[] = {Addr,
-                     CmpOperand,
-                     NewOperand,
-                     createOrdering(&IRB, CASI->getSuccessOrdering()),
-                     createOrdering(&IRB, CASI->getFailureOrdering())};
-    CallInst *C = IRB.CreateCall(TsanAtomicCAS[Idx], Args);
-    Value *Success = IRB.CreateICmpEQ(C, CmpOperand);
-    Value *OldVal = C;
-    if (Ty != OrigOldValTy) {
-      // The value is a pointer, so we need to cast the return value.
-      OldVal = IRB.CreateIntToPtr(C, OrigOldValTy);
-    }
-
-    Value *Res =
-      IRB.CreateInsertValue(PoisonValue::get(CASI->getType()), OldVal, 0);
-    Res = IRB.CreateInsertValue(Res, Success, 1);
-
-    I->replaceAllUsesWith(Res);
-    I->eraseFromParent();
+    // int Idx = getMemoryAccessFuncIndex(OrigOldValTy, Addr, DL);
+    // if (Idx < 0)
+    //   return false;
+    // const unsigned ByteSize = 1U << Idx;
+    // const unsigned BitSize = ByteSize * 8;
+    // Type *Ty = Type::getIntNTy(IRB.getContext(), BitSize);
+    // Value *CmpOperand =
+    //   IRB.CreateBitOrPointerCast(CASI->getCompareOperand(), Ty);
+    // Value *NewOperand =
+    //   IRB.CreateBitOrPointerCast(CASI->getNewValOperand(), Ty);
+    // Value *Args[] = {Addr,
+    //                  CmpOperand,
+    //                  NewOperand,
+    //                  createOrdering(&IRB, CASI->getSuccessOrdering()),
+    //                  createOrdering(&IRB, CASI->getFailureOrdering())};
+    // CallInst *C = IRB.CreateCall(TsanAtomicCAS[Idx], Args);
+    // Value *Success = IRB.CreateICmpEQ(C, CmpOperand);
+    // Value *OldVal = C;
+    // if (Ty != OrigOldValTy) {
+    //   // The value is a pointer, so we need to cast the return value.
+    //   OldVal = IRB.CreateIntToPtr(C, OrigOldValTy);
+    // }
+    //
+    // Value *Res =
+    //   IRB.CreateInsertValue(PoisonValue::get(CASI->getType()), OldVal, 0);
+    // Res = IRB.CreateInsertValue(Res, Success, 1);
+    //
+    // I->replaceAllUsesWith(Res);
+    // I->eraseFromParent();
   } else if (FenceInst *FI = dyn_cast<FenceInst>(I)) {
-    Value *Args[] = {createOrdering(&IRB, FI->getOrdering())};
-    FunctionCallee F = FI->getSyncScopeID() == SyncScope::SingleThread
-                           ? TsanAtomicSignalFence
-                           : TsanAtomicThreadFence;
-    IRB.CreateCall(F, Args);
-    FI->eraseFromParent();
+    // Value *Args[] = {createOrdering(&IRB, FI->getOrdering())};
+    // FunctionCallee F = FI->getSyncScopeID() == SyncScope::SingleThread
+    //                        ? TsanAtomicSignalFence
+    //                        : TsanAtomicThreadFence;
+    // IRB.CreateCall(F, Args);
+    // FI->eraseFromParent();
   }
   return true;
 }
