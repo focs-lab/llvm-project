@@ -211,6 +211,10 @@ private:
   FunctionCallee TsanVptrUpdate;
   FunctionCallee TsanVptrLoad;
   FunctionCallee MemmoveFn, MemcpyFn, MemsetFn;
+
+  // Instrinsics for disabling/enabling instrumentation
+  // for specific code section
+  FunctionCallee TsanDisableFn, TsanEnableFn;
 };
 
 void insertModuleCtor(Module &M) {
@@ -414,6 +418,12 @@ void ThreadSanitizer::initialize(Module &M, const TargetLibraryInfo &TLI) {
       "__tsan_memset",
       TLI.getAttrList(&Ctx, {1}, /*Signed=*/true, /*Ret=*/false, Attr),
       IRB.getPtrTy(), IRB.getPtrTy(), IRB.getInt32Ty(), IntptrTy);
+
+  /////////////////////////////////////////////////////////////////////////////
+  // This code is for disabling/enabling instrumentation
+  // for specific code section
+  TsanEnableFn = M.getOrInsertFunction("__tsan_enable", Attr, IRB.getVoidTy());
+  TsanDisableFn = M.getOrInsertFunction("__tsan_disable", Attr, IRB.getVoidTy());
 }
 
 static bool isVtableAccess(Instruction *I) {
@@ -649,11 +659,42 @@ bool ThreadSanitizer::sanitizeFunction(
   bool SanitizeFunction = F.hasFnAttribute(Attribute::SanitizeThread);
   const DataLayout &DL = F.getParent()->getDataLayout();
 
+  ///////////////////////////////////////////////////////////////////////////////
+  // List of instructions (function calls) to delete
+  SmallVector<CallInst*, 8> EnableDisableFuncToDelete;
+
+  // Counter for considering nesting __tsan_disable/__tsan_enable
+  int disableEnableNesting = 0;
+
   // Traverse all instructions, collect loads/stores/returns, check for calls.
   for (auto &BB : F) {
     LLVM_DEBUG(dbgs() << "\nInstrumenting BB: " << BB.getName() << "\n");
     for (auto &Inst : BB) {
       LLVM_DEBUG(dbgs() << "Instrumenting I: " << Inst << "\n");
+            ///////////////////////////////////////////////////////////////////////////////
+      // This code is for disabling/enabling instrumentation
+      // for specific code section
+      //
+      // Check whether we encountered TSan disable/enable intrinsics
+      if (auto *CI = dyn_cast<CallInst>(&Inst)) {
+        Function *CalledFunc = CI->getCalledFunction();
+        if (CalledFunc) {
+          // errs() << "CalledFunc: " << CalledFunc->getName() << "\n";
+          if (CalledFunc->getName() == "__tsan_disable") {
+            disableEnableNesting++;
+            EnableDisableFuncToDelete.push_back(CI);
+            continue;
+          } else if (CalledFunc->getName() == "__tsan_enable") {
+            disableEnableNesting--;
+            EnableDisableFuncToDelete.push_back(CI);
+            continue;
+          }
+        }
+      }
+
+      if (disableEnableNesting > 0)
+        continue;
+      ///////////////////////////////////////////////////////////////////////////////
 
       // Skip instructions inserted by another instrumentation.
       if (Inst.hasMetadata(LLVMContext::MD_nosanitize))
@@ -687,6 +728,22 @@ bool ThreadSanitizer::sanitizeFunction(
     chooseInstructionsToInstrument(LocalLoadsAndStores, AllLoadsAndStores, DL,
                                    EAI, EAIGlobal);
   }
+
+  //////////////////////////////////////////////////////////////////////////////
+  // This is for disabling/enabling TSan instrumentation
+  // Disable for now check of matching
+  /*
+  if (disableEnableNesting != 0) {
+    // Error: __tsan_enable without __tsan_disable
+    report_fatal_error("Unmatched __tsan_enable__ call in function " +
+                       F.getName());
+  }
+  */
+
+  // Erase all __tsan_disable/enable functions
+  for (auto *CI: EnableDisableFuncToDelete)
+    CI->eraseFromParent();
+  //////////////////////////////////////////////////////////////////////////////
 
   // We have collected all loads and stores.
   // FIXME: many of these accesses do not need to be checked for races
