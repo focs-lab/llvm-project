@@ -188,3 +188,9 @@ void __tsan_read_range_pc(void *addr, uptr size, void *pc) {
 void __tsan_write_range_pc(void *addr, uptr size, void *pc) {
   MemoryAccessRange(cur_thread(), STRIP_PAC_PC(pc), (uptr)addr, size, true);
 }
+
+///////////////////////////////////////////////////////////////////////////////
+// This is for disabling/enabling TSan instrumentation
+int GV;
+SANITIZER_INTERFACE_ATTRIBUTE void __tsan_disable() { GV++; };
+SANITIZER_INTERFACE_ATTRIBUTE void __tsan_enable() { GV++; };

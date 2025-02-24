@@ -437,6 +437,10 @@ SANITIZER_INTERFACE_ATTRIBUTE
 void __tsan_go_atomic64_compare_exchange(ThreadState *thr, uptr cpc, uptr pc,
                                          u8 *a);
 
+// Functions for disabling/enabling instrumentation
+// for specific code section
+SANITIZER_INTERFACE_ATTRIBUTE void __tsan_disable();
+SANITIZER_INTERFACE_ATTRIBUTE void __tsan_enable();
 }  // extern "C"
 
 }  // namespace __tsan

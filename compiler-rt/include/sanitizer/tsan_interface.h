@@ -309,6 +309,12 @@ int SANITIZER_CDECL __tsan_get_report_unique_tid(void *report,
 /// \returns An opaque pointer to the current report. Otherwise returns NULL.
 void *SANITIZER_CDECL __tsan_get_current_report();
 
+/////////////////////////////////////////////////////////////////////////////
+// This code is for disabling/enabling instrumentation
+// for specific code section
+void SANITIZER_CDECL __tsan_enable();
+void SANITIZER_CDECL __tsan_disable();
+
 #ifdef __cplusplus
 } // extern "C"
 #endif
