@@ -15,167 +15,168 @@
 #include "tsan_rtl.h"
 
 #include <unistd.h>
+#include <stdint.h>
 
 #define CALLERPC ((uptr)__builtin_return_address(0))
 
 using namespace __tsan;
 
-void __tsan_read1(void *addr) {
+void __tsan_read1(void *addr, uint32_t line) {
   MemoryAccess(cur_thread(), CALLERPC, (uptr)addr, 1, kAccessRead);
-  Printf(" > read %p %d %d\n", addr, 1, gettid());
+  Printf(" > read %p %d %d %u\n", addr, 1, gettid(), line);
 }
 
-void __tsan_read2(void *addr) {
+void __tsan_read2(void *addr, uint32_t line) {
   MemoryAccess(cur_thread(), CALLERPC, (uptr)addr, 2, kAccessRead);
-  Printf(" > read %p %d %d\n", addr, 2, gettid());
+  Printf(" > read %p %d %d %u\n", addr, 2, gettid(), line);
 }
 
-void __tsan_read4(void *addr) {
+void __tsan_read4(void *addr, uint32_t line) {
   MemoryAccess(cur_thread(), CALLERPC, (uptr)addr, 4, kAccessRead);
-  Printf(" > read %p %d %d\n", addr, 4, gettid());
+  Printf(" > read %p %d %d %u\n", addr, 4, gettid(), line);
 }
 
-void __tsan_read8(void *addr) {
+void __tsan_read8(void *addr, uint32_t line) {
   MemoryAccess(cur_thread(), CALLERPC, (uptr)addr, 8, kAccessRead);
-  Printf(" > read %p %d %d\n", addr, 8, gettid());
+  Printf(" > read %p %d %d %u\n", addr, 8, gettid(), line);
 }
 
-void __tsan_read16(void *addr) {
+void __tsan_read16(void *addr, uint32_t line) {
   MemoryAccess16(cur_thread(), CALLERPC, (uptr)addr, kAccessRead);
-  Printf(" > read %p %d %d\n", addr, 16, gettid());
+  Printf(" > read %p %d %d %u\n", addr, 16, gettid(), line);
 }
 
-void __tsan_write1(void *addr) {
+void __tsan_write1(void *addr, uint32_t line) {
   MemoryAccess(cur_thread(), CALLERPC, (uptr)addr, 1, kAccessWrite);
-  Printf(" > write %p %d %d\n", addr, 1, gettid());
+  Printf(" > write %p %d %d %u\n", addr, 1, gettid(), line);
 }
 
-void __tsan_write2(void *addr) {
+void __tsan_write2(void *addr, uint32_t line) {
   MemoryAccess(cur_thread(), CALLERPC, (uptr)addr, 2, kAccessWrite);
-  Printf(" > write %p %d %d\n", addr, 2, gettid());
+  Printf(" > write %p %d %d %u\n", addr, 2, gettid(), line);
 }
 
-void __tsan_write4(void *addr) {
+void __tsan_write4(void *addr, uint32_t line) {
   MemoryAccess(cur_thread(), CALLERPC, (uptr)addr, 4, kAccessWrite);
-  Printf(" > write %p %d %d\n", addr, 4, gettid());
+  Printf(" > write %p %d %d %u\n", addr, 4, gettid(), line);
 }
 
-void __tsan_write8(void *addr) {
+void __tsan_write8(void *addr, uint32_t line) {
   MemoryAccess(cur_thread(), CALLERPC, (uptr)addr, 8, kAccessWrite);
-  Printf(" > write %p %d %d\n", addr, 8, gettid());
+  Printf(" > write %p %d %d %u\n", addr, 8, gettid(), line);
 }
 
-void __tsan_write16(void *addr) {
+void __tsan_write16(void *addr, uint32_t line) {
   MemoryAccess16(cur_thread(), CALLERPC, (uptr)addr, kAccessWrite);
-  Printf(" > write %p %d %d\n", addr, 16, gettid());
+  Printf(" > write %p %d %d %u\n", addr, 16, gettid(), line);
 }
 
-void __tsan_read1_pc(void *addr, void *pc) {
+void __tsan_read1_pc(void *addr, void *pc, uint32_t line) {
   MemoryAccess(cur_thread(), STRIP_PAC_PC(pc), (uptr)addr, 1, kAccessRead | kAccessExternalPC);
-  Printf(" > read_pc %p %d %d\n", addr, 1, gettid());
+  Printf(" > read_pc %p %d %d %u\n", addr, 1, gettid(), line);
 }
 
-void __tsan_read2_pc(void *addr, void *pc) {
+void __tsan_read2_pc(void *addr, void *pc, uint32_t line) {
   MemoryAccess(cur_thread(), STRIP_PAC_PC(pc), (uptr)addr, 2, kAccessRead | kAccessExternalPC);
-  Printf(" > read_pc %p %d %d\n", addr, 2, gettid());
+  Printf(" > read_pc %p %d %d %u\n", addr, 2, gettid(), line);
 }
 
-void __tsan_read4_pc(void *addr, void *pc) {
+void __tsan_read4_pc(void *addr, void *pc, uint32_t line) {
   MemoryAccess(cur_thread(), STRIP_PAC_PC(pc), (uptr)addr, 4, kAccessRead | kAccessExternalPC);
-  Printf(" > read_pc %p %d %d\n", addr, 4, gettid());
+  Printf(" > read_pc %p %d %d %u\n", addr, 4, gettid(), line);
 }
 
-void __tsan_read8_pc(void *addr, void *pc) {
+void __tsan_read8_pc(void *addr, void *pc, uint32_t line) {
   MemoryAccess(cur_thread(), STRIP_PAC_PC(pc), (uptr)addr, 8, kAccessRead | kAccessExternalPC);
-  Printf(" > read_pc %p %d %d\n", addr, 8, gettid());
+  Printf(" > read_pc %p %d %d %u\n", addr, 8, gettid(), line);
 }
 
-void __tsan_write1_pc(void *addr, void *pc) {
+void __tsan_write1_pc(void *addr, void *pc, uint32_t line) {
   MemoryAccess(cur_thread(), STRIP_PAC_PC(pc), (uptr)addr, 1, kAccessWrite | kAccessExternalPC);
-  Printf(" > write_pc %p %d %d\n", addr, 1, gettid());
+  Printf(" > write_pc %p %d %d %u\n", addr, 1, gettid(), line);
 }
 
-void __tsan_write2_pc(void *addr, void *pc) {
+void __tsan_write2_pc(void *addr, void *pc, uint32_t line) {
   MemoryAccess(cur_thread(), STRIP_PAC_PC(pc), (uptr)addr, 2, kAccessWrite | kAccessExternalPC);
-  Printf(" > write_pc %p %d %d\n", addr, 2, gettid());
+  Printf(" > write_pc %p %d %d %u\n", addr, 2, gettid(), line);
 }
 
-void __tsan_write4_pc(void *addr, void *pc) {
+void __tsan_write4_pc(void *addr, void *pc, uint32_t line) {
   MemoryAccess(cur_thread(), STRIP_PAC_PC(pc), (uptr)addr, 4, kAccessWrite | kAccessExternalPC);
-  Printf(" > write_pc %p %d %d\n", addr, 4, gettid());
+  Printf(" > write_pc %p %d %d %u\n", addr, 4, gettid(), line);
 }
 
-void __tsan_write8_pc(void *addr, void *pc) {
+void __tsan_write8_pc(void *addr, void *pc, uint32_t line) {
   MemoryAccess(cur_thread(), STRIP_PAC_PC(pc), (uptr)addr, 8, kAccessWrite | kAccessExternalPC);
-  Printf(" > write_pc %p %d %d\n", addr, 8, gettid());
+  Printf(" > write_pc %p %d %d %u\n", addr, 8, gettid(), line);
 }
 
-ALWAYS_INLINE USED void __tsan_unaligned_read2(const void *addr) {
+ALWAYS_INLINE USED void __tsan_unaligned_read2(const void *addr, uint32_t line) {
   UnalignedMemoryAccess(cur_thread(), CALLERPC, (uptr)addr, 2, kAccessRead);
-  Printf(" > read_unaligned %p %d %d\n", addr, 2, gettid());
+  Printf(" > read_unaligned %p %d %d %u\n", addr, 2, gettid(), line);
 }
 
-ALWAYS_INLINE USED void __tsan_unaligned_read4(const void *addr) {
+ALWAYS_INLINE USED void __tsan_unaligned_read4(const void *addr, uint32_t line) {
   UnalignedMemoryAccess(cur_thread(), CALLERPC, (uptr)addr, 4, kAccessRead);
-  Printf(" > read_unaligned %p %d %d\n", addr, 4, gettid());
+  Printf(" > read_unaligned %p %d %d %u\n", addr, 4, gettid(), line);
 }
 
-ALWAYS_INLINE USED void __tsan_unaligned_read8(const void *addr) {
+ALWAYS_INLINE USED void __tsan_unaligned_read8(const void *addr, uint32_t line) {
   UnalignedMemoryAccess(cur_thread(), CALLERPC, (uptr)addr, 8, kAccessRead);
-  Printf(" > read_unaligned %p %d %d\n", addr, 8, gettid());
+  Printf(" > read_unaligned %p %d %d %u\n", addr, 8, gettid(), line);
 }
 
-ALWAYS_INLINE USED void __tsan_unaligned_write2(void *addr) {
+ALWAYS_INLINE USED void __tsan_unaligned_write2(void *addr, uint32_t line) {
   UnalignedMemoryAccess(cur_thread(), CALLERPC, (uptr)addr, 2, kAccessWrite);
-  Printf(" > write_unaligned %p %d %d\n", addr, 2, gettid());
+  Printf(" > write_unaligned %p %d %d %u\n", addr, 2, gettid(), line);
 }
 
-ALWAYS_INLINE USED void __tsan_unaligned_write4(void *addr) {
+ALWAYS_INLINE USED void __tsan_unaligned_write4(void *addr, uint32_t line) {
   UnalignedMemoryAccess(cur_thread(), CALLERPC, (uptr)addr, 4, kAccessWrite);
-  Printf(" > write_unaligned %p %d %d\n", addr, 4, gettid());
+  Printf(" > write_unaligned %p %d %d %u\n", addr, 4, gettid(), line);
 }
 
-ALWAYS_INLINE USED void __tsan_unaligned_write8(void *addr) {
+ALWAYS_INLINE USED void __tsan_unaligned_write8(void *addr, uint32_t line) {
   UnalignedMemoryAccess(cur_thread(), CALLERPC, (uptr)addr, 8, kAccessWrite);
-  Printf(" > write_unaligned %p %d %d\n", addr, 8, gettid());
+  Printf(" > write_unaligned %p %d %d %u\n", addr, 8, gettid(), line);
 }
 
 extern "C" {
 // __sanitizer_unaligned_load/store are for user instrumentation.
 SANITIZER_INTERFACE_ATTRIBUTE
-u16 __sanitizer_unaligned_load16(const uu16 *addr) {
-  __tsan_unaligned_read2(addr);
+u16 __sanitizer_unaligned_load16(const uu16 *addr, uint32_t line) {
+  __tsan_unaligned_read2(addr, line);
   return *addr;
 }
 
 SANITIZER_INTERFACE_ATTRIBUTE
-u32 __sanitizer_unaligned_load32(const uu32 *addr) {
-  __tsan_unaligned_read4(addr);
+u32 __sanitizer_unaligned_load32(const uu32 *addr, uint32_t line) {
+  __tsan_unaligned_read4(addr, line);
   return *addr;
 }
 
 SANITIZER_INTERFACE_ATTRIBUTE
-u64 __sanitizer_unaligned_load64(const uu64 *addr) {
-  __tsan_unaligned_read8(addr);
+u64 __sanitizer_unaligned_load64(const uu64 *addr, uint32_t line) {
+  __tsan_unaligned_read8(addr, line);
   return *addr;
 }
 
 SANITIZER_INTERFACE_ATTRIBUTE
-void __sanitizer_unaligned_store16(uu16 *addr, u16 v) {
+void __sanitizer_unaligned_store16(uu16 *addr, u16 v, uint32_t line) {
   *addr = v;
-  __tsan_unaligned_write2(addr);
+  __tsan_unaligned_write2(addr, line);
 }
 
 SANITIZER_INTERFACE_ATTRIBUTE
-void __sanitizer_unaligned_store32(uu32 *addr, u32 v) {
+void __sanitizer_unaligned_store32(uu32 *addr, u32 v, uint32_t line) {
   *addr = v;
-  __tsan_unaligned_write4(addr);
+  __tsan_unaligned_write4(addr, line);
 }
 
 SANITIZER_INTERFACE_ATTRIBUTE
-void __sanitizer_unaligned_store64(uu64 *addr, u64 v) {
+void __sanitizer_unaligned_store64(uu64 *addr, u64 v, uint32_t line) {
   *addr = v;
-  __tsan_unaligned_write8(addr);
+  __tsan_unaligned_write8(addr, line);
 }
 }
 
@@ -199,22 +200,22 @@ void __tsan_ignore_thread_begin() { ThreadIgnoreBegin(cur_thread(), CALLERPC); }
 
 void __tsan_ignore_thread_end() { ThreadIgnoreEnd(cur_thread()); }
 
-void __tsan_read_range(void *addr, uptr size) {
+void __tsan_read_range(void *addr, uptr size, uint32_t line) {
   MemoryAccessRange(cur_thread(), CALLERPC, (uptr)addr, size, false);
-  Printf(" > read_range %p %zu %d\n", addr, size, gettid());
+  Printf(" > read_range %p %zu %d %u\n", addr, size, gettid(), line);
 }
 
-void __tsan_write_range(void *addr, uptr size) {
+void __tsan_write_range(void *addr, uptr size, uint32_t line) {
   MemoryAccessRange(cur_thread(), CALLERPC, (uptr)addr, size, true);
-  Printf(" > write_range %p %zu %d\n", addr, size, gettid());
+  Printf(" > write_range %p %zu %d %u\n", addr, size, gettid(), line);
 }
 
-void __tsan_read_range_pc(void *addr, uptr size, void *pc) {
+void __tsan_read_range_pc(void *addr, uptr size, void *pc, uint32_t line) {
   MemoryAccessRange(cur_thread(), STRIP_PAC_PC(pc), (uptr)addr, size, false);
-  Printf(" > read_range_pc %p %zu %d\n", addr, size, gettid());
+  Printf(" > read_range_pc %p %zu %d %u\n", addr, size, gettid(), line);
 }
 
-void __tsan_write_range_pc(void *addr, uptr size, void *pc) {
+void __tsan_write_range_pc(void *addr, uptr size, void *pc, uint32_t line) {
   MemoryAccessRange(cur_thread(), STRIP_PAC_PC(pc), (uptr)addr, size, true);
-  Printf(" > write_range_pc %p %zu %d\n", addr, size, gettid());
+  Printf(" > write_range_pc %p %zu %d %u\n", addr, size, gettid(), line);
 }

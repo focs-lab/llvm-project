@@ -293,46 +293,54 @@ void ThreadSanitizer::initialize(Module &M, const TargetLibraryInfo &TLI) {
     std::string BitSizeStr = utostr(BitSize);
     SmallString<32> ReadName("__tsan_read" + ByteSizeStr);
     TsanRead[i] = M.getOrInsertFunction(ReadName, Attr, IRB.getVoidTy(),
-                                        IRB.getPtrTy());
+                                        IRB.getPtrTy(), IRB.getInt32Ty());
 
     SmallString<32> WriteName("__tsan_write" + ByteSizeStr);
     TsanWrite[i] = M.getOrInsertFunction(WriteName, Attr, IRB.getVoidTy(),
-                                         IRB.getPtrTy());
+                                         IRB.getPtrTy(), IRB.getInt32Ty());
 
     SmallString<64> UnalignedReadName("__tsan_unaligned_read" + ByteSizeStr);
-    TsanUnalignedRead[i] = M.getOrInsertFunction(
-        UnalignedReadName, Attr, IRB.getVoidTy(), IRB.getPtrTy());
+    TsanUnalignedRead[i] =
+        M.getOrInsertFunction(UnalignedReadName, Attr, IRB.getVoidTy(),
+                              IRB.getPtrTy(), IRB.getInt32Ty());
 
     SmallString<64> UnalignedWriteName("__tsan_unaligned_write" + ByteSizeStr);
-    TsanUnalignedWrite[i] = M.getOrInsertFunction(
-        UnalignedWriteName, Attr, IRB.getVoidTy(), IRB.getPtrTy());
+    TsanUnalignedWrite[i] =
+        M.getOrInsertFunction(UnalignedWriteName, Attr, IRB.getVoidTy(),
+                              IRB.getPtrTy(), IRB.getInt32Ty());
 
     SmallString<64> VolatileReadName("__tsan_volatile_read" + ByteSizeStr);
-    TsanVolatileRead[i] = M.getOrInsertFunction(
-        VolatileReadName, Attr, IRB.getVoidTy(), IRB.getPtrTy());
+    TsanVolatileRead[i] =
+        M.getOrInsertFunction(VolatileReadName, Attr, IRB.getVoidTy(),
+                              IRB.getPtrTy(), IRB.getInt32Ty());
 
     SmallString<64> VolatileWriteName("__tsan_volatile_write" + ByteSizeStr);
-    TsanVolatileWrite[i] = M.getOrInsertFunction(
-        VolatileWriteName, Attr, IRB.getVoidTy(), IRB.getPtrTy());
+    TsanVolatileWrite[i] =
+        M.getOrInsertFunction(VolatileWriteName, Attr, IRB.getVoidTy(),
+                              IRB.getPtrTy(), IRB.getInt32Ty());
 
     SmallString<64> UnalignedVolatileReadName("__tsan_unaligned_volatile_read" +
                                               ByteSizeStr);
-    TsanUnalignedVolatileRead[i] = M.getOrInsertFunction(
-        UnalignedVolatileReadName, Attr, IRB.getVoidTy(), IRB.getPtrTy());
+    TsanUnalignedVolatileRead[i] =
+        M.getOrInsertFunction(UnalignedVolatileReadName, Attr, IRB.getVoidTy(),
+                              IRB.getPtrTy(), IRB.getInt32Ty());
 
     SmallString<64> UnalignedVolatileWriteName(
         "__tsan_unaligned_volatile_write" + ByteSizeStr);
-    TsanUnalignedVolatileWrite[i] = M.getOrInsertFunction(
-        UnalignedVolatileWriteName, Attr, IRB.getVoidTy(), IRB.getPtrTy());
+    TsanUnalignedVolatileWrite[i] =
+        M.getOrInsertFunction(UnalignedVolatileWriteName, Attr, IRB.getVoidTy(),
+                              IRB.getPtrTy(), IRB.getInt32Ty());
 
     SmallString<64> CompoundRWName("__tsan_read_write" + ByteSizeStr);
-    TsanCompoundRW[i] = M.getOrInsertFunction(
-        CompoundRWName, Attr, IRB.getVoidTy(), IRB.getPtrTy());
+    TsanCompoundRW[i] =
+        M.getOrInsertFunction(CompoundRWName, Attr, IRB.getVoidTy(),
+                              IRB.getPtrTy(), IRB.getInt32Ty());
 
     SmallString<64> UnalignedCompoundRWName("__tsan_unaligned_read_write" +
                                             ByteSizeStr);
-    TsanUnalignedCompoundRW[i] = M.getOrInsertFunction(
-        UnalignedCompoundRWName, Attr, IRB.getVoidTy(), IRB.getPtrTy());
+    TsanUnalignedCompoundRW[i] =
+        M.getOrInsertFunction(UnalignedCompoundRWName, Attr, IRB.getVoidTy(),
+                              IRB.getPtrTy(), IRB.getInt32Ty());
 
     Type *Ty = Type::getIntNTy(Ctx, BitSize);
     Type *PtrTy = PointerType::get(Ctx, 0);
@@ -803,7 +811,18 @@ bool ThreadSanitizer::instrumentLoadOrStore(const InstructionInfo &II,
     else
       OnAccessFunc = IsWrite ? TsanUnalignedWrite[Idx] : TsanUnalignedRead[Idx];
   }
-  IRB.CreateCall(OnAccessFunc, Addr);
+
+  // Get the line number of the instrumented instruction
+  unsigned LineNumber = 0;
+  if (DILocation *Loc = II.Inst->getDebugLoc())
+    LineNumber = Loc->getLine();
+
+  // Pass the line number as an additional argument to OnAccessFunc
+  IRB.CreateCall(OnAccessFunc, {Addr, IRB.getInt32(LineNumber)});
+
+  // Original
+  // IRB.CreateCall(OnAccessFunc, Addr);
+
   if (IsCompoundRW || IsWrite)
     NumInstrumentedWrites++;
   if (IsCompoundRW || !IsWrite)
