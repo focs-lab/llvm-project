@@ -41,11 +41,13 @@ void __tsan_test_only_on_fork() {}
 
 using namespace __sanitizer;
 SANITIZER_INTERFACE_ATTRIBUTE
-THREADLOCAL u64* __tsan_channel_ptr;
+THREADLOCAL atomic_uint64_t* __tsan_channel_ptr;
 SANITIZER_INTERFACE_ATTRIBUTE
 THREADLOCAL u32 __tsan_channel_idx;
 SANITIZER_INTERFACE_ATTRIBUTE
 THREADLOCAL u8 __tsan_sampling;
+constexpr u64 kMonitorReady = 0xcafebeef;
+constexpr u64 kProgramEnded = 0xdeaddead;
 
 __attribute__((visibility("default")))
 u32* __tsan_counters;
@@ -753,6 +755,22 @@ void Initialize(ThreadState *thr) {
   ctx->initialized = true;
 
   __tsan_counters = reinterpret_cast<u32*>(CreateCountersArray());
+  int monitor_pid = StartMonitor();
+  ctx->monitor_pid = monitor_pid;
+
+  // need to let the monitor process start up before continuing
+  Printf("[+] Waiting for monitor to get ready\n");
+  int monitor_wait_count = 0;
+  constexpr int monitor_wait_threshold = 10;
+  while(atomic_load_relaxed(__tsan_channel_ptr) != kMonitorReady && monitor_wait_count < monitor_wait_threshold) {
+    SleepForSeconds(1);
+    monitor_wait_count++;
+  }
+  if (monitor_wait_count == monitor_wait_threshold)
+    Printf("[!] Monitor did not signal ready. Resuming program regardless.\n");
+  else
+    Printf("[+] Monitor Ready\n");
+  __tsan_channel_idx++;
 
   if (flags()->stop_on_start) {
     Printf("ThreadSanitizer is suspended at startup (pid %d)."
@@ -808,6 +826,9 @@ int Finalize(ThreadState *thr) {
     Printf("Found %d data race(s)\n", ctx->nreported);
 #endif
   }
+
+  // KillMonitor(ctx->monitor_pid);
+  atomic_store_relaxed(&__tsan_channel_ptr[__tsan_channel_idx & 0xfff], kProgramEnded);
 
   if (common_flags()->print_suppressions)
     PrintMatchedSuppressions();

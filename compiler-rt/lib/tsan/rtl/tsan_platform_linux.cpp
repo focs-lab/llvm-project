@@ -207,7 +207,43 @@ static NOINLINE void MapRodata(char* buffer, uptr size) {
   internal_close(fd);
 }
 
+int StartMonitor() {
+  Printf("StartMonitor\n");
+  const char* monitor_path = flags()->monitor_path;
+  if (!monitor_path || !monitor_path[0]) {
+    return -1;
+  }
+
+  char my_monitor_path[1024];
+  internal_strncpy(my_monitor_path, monitor_path, 1024);
+  char pid_s[16];
+  internal_snprintf(pid_s, 16, "%d", internal_getpid());
+  char* const args[] = {
+    my_monitor_path,
+    pid_s,
+    0
+  };
+
+  int pid = internal_fork();
+  if (pid == 0) {   // child process
+    int err = execve(my_monitor_path, args, GetEnviron());
+    // if fail, print error message and exit
+    perror("Failed to start monitor");
+    internal__exit(0);
+  }
+
+  return pid;
+}
+
+void KillMonitor(int pid) {
+  if (pid == -1) return;
+  kill(pid, SIGKILL);
+}
+
 uptr CreateLogFile(Tid tid, uptr* out_fd) {
+  // put this somewhere global
+  constexpr int LOGFILE_SIZE = 0x1000 * 64;
+
   // Open a new file descriptor, creating the file if it does not exist
   // 0666 = read + write access for user, group and world
   char dir_name[64], file_name[64];
@@ -222,7 +258,7 @@ uptr CreateLogFile(Tid tid, uptr* out_fd) {
   *out_fd = fd;
 
   // Ensure that the file will hold enough space
-  internal_lseek(fd, 65536*32, SEEK_SET);
+  internal_lseek(fd, LOGFILE_SIZE, SEEK_SET);
   if (internal_write(fd, "", 1) < 1) {
     Printf("Error writing a single byte to file %s.\n", file_name);
     Die();
@@ -230,7 +266,7 @@ uptr CreateLogFile(Tid tid, uptr* out_fd) {
   internal_lseek(fd, 0, SEEK_SET);
   uptr mem = internal_mmap(
     NULL,
-    65536*32,
+    LOGFILE_SIZE,
     PROT_READ | PROT_WRITE,
     MAP_SHARED,
     fd,

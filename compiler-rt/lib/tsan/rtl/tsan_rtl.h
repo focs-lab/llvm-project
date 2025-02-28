@@ -53,7 +53,7 @@
 #endif
 
 using namespace __sanitizer;
-extern THREADLOCAL u64* __tsan_channel_ptr;
+extern THREADLOCAL atomic_uint64_t* __tsan_channel_ptr;
 extern THREADLOCAL u32 __tsan_channel_idx;
 extern THREADLOCAL u8 __tsan_sampling;
 
@@ -389,6 +389,8 @@ struct Context {
   uptr mapped_shadow_begin;
   uptr mapped_shadow_end;
 #endif
+
+  int monitor_pid;
 };
 
 extern Context *ctx;  // The one and the only global runtime context.
