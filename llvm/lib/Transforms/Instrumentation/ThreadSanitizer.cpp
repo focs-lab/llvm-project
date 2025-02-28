@@ -112,6 +112,29 @@ const char kTsanInitName[] = "__tsan_init";
 
 namespace {
 
+enum EventType : uint8_t {
+  kEventClear = 0,    // cannot use 0 for events, this is used to mark a cleared entry in the channel
+
+  kEventRead = 1,
+  kEventWrite = 2,
+
+  kEventVptrUpdate = 3,
+  kEventVptrLoad = 4,
+
+  kEventMemset = 5,
+  kEventMemcpy = 6,
+
+  kEventAtomicLoad = 7,
+  kEventAtomicStore = 8,
+  kEventAtomicRMW = 9,
+  kEventAtomicCAS = 10,
+  kEventAtomicFence = 11,
+
+  kEventReturn = 12,
+  kEventAtExit = 13,
+  kEventIgnore = 0xff
+};
+
 /// ThreadSanitizer: instrument the code in module to find races.
 ///
 /// Instantiating ThreadSanitizer inserts the tsan runtime library API function
@@ -154,14 +177,14 @@ private:
   bool addrPointsToConstantData(Value *Addr);
   int getMemoryAccessFuncIndex(Type *OrigTy, Value *Addr, const DataLayout &DL);
   void InsertRuntimeIgnores(Function &F);
-  void InsertAtomicEventSend(IRBuilder<> &IRB, uint8_t Eid, Value *Addr);
-  void InsertAtomicEventSend(IRBuilder<> &IRB, uint8_t Eid, Value *Addr, Value *Val);
+  void InsertAtomicEventSend(IRBuilder<> &IRB, EventType Eid, Value *Addr);
+  void InsertAtomicEventSend(IRBuilder<> &IRB, EventType Eid, Value *Addr, Value *Val);
   void InsertAtomicEventLock(IRBuilder<> &IRB, Value *Addr);
   void InsertAtomicEventUnlock(IRBuilder<> &IRB, Value *Addr);
-  void InsertEventSend(IRBuilder<> &IRB, uint8_t Eid);
-  void InsertEventSend(IRBuilder<> &IRB, uint8_t Eid, Value *Addr);
-  void InsertEventSend(IRBuilder<> &IRB, uint8_t Eid, Value *Addr, Value *Val);
-  void InsertEventSend(IRBuilder<> &IRB, Value *Event);
+  void InsertEventSend(IRBuilder<> &IRB, EventType Eid);
+  void InsertEventSend(IRBuilder<> &IRB, EventType Eid, Value *Addr);
+  void InsertEventSend(IRBuilder<> &IRB, EventType Eid, Value *Addr, Value *Val);
+  void InsertEventSend(IRBuilder<> &IRB, Value *Event, Value **Values, int Count);
   Value* FetchAndUpdateCounter(IRBuilder<> &IRB, Value *Addr);
   void PromoteIdxLoadStores(Function &F);
   GlobalVariable *TsanChannelPtr;
@@ -577,7 +600,7 @@ void ThreadSanitizer::InsertRuntimeIgnores(Function &F) {
   IRB.CreateCall(TsanIgnoreBegin);
 #endif
 #if MONITOR_CALL_LOGGER
-  InsertEventSend(IRB, 0xff);
+  InsertEventSend(IRB, kEventIgnore);
 #endif
   EscapeEnumerator EE(F, "tsan_ignore_cleanup", ClHandleCxxExceptions);
   while (IRBuilder<> *AtExit = EE.Next()) {
@@ -586,7 +609,7 @@ void ThreadSanitizer::InsertRuntimeIgnores(Function &F) {
     AtExit->CreateCall(TsanIgnoreEnd);
 #endif
 #if MONITOR_CALL_LOGGER
-    InsertEventSend(*AtExit, 0xff);
+    InsertEventSend(*AtExit, kEventIgnore);
 #endif
   }
 }
@@ -664,66 +687,53 @@ Value* ThreadSanitizer::FetchAndUpdateCounter(IRBuilder<> &IRB, Value *Addr) {
   return Count;
 }
 
-void ThreadSanitizer::InsertAtomicEventSend(IRBuilder<> &IRB, uint8_t Eid, Value *Addr) {
+void ThreadSanitizer::InsertAtomicEventSend(IRBuilder<> &IRB, EventType Eid, Value *Addr) {
   auto *Id = IRB.CreateShl(IRB.getInt64(Eid), 56);
   auto *AddrCast = IRB.CreateCast(Instruction::PtrToInt, Addr, IRB.getInt64Ty());
   auto *Event = IRB.CreateOr(Id, AddrCast);
   auto *Count = FetchAndUpdateCounter(IRB, Addr);
-  InsertEventSend(IRB, Event);
-  // InsertEventSend(IRB, IRB.CreateCast(Instruction::ZExt, IRB.CreateAdd(IRB.getInt32(0xcafe0000), Count), IRB.getInt64Ty()));
-  // InsertEventSend(IRB, IRB.CreateCast(Instruction::ZExt, Count, IRB.getInt64Ty()));
-  InsertEventSend(IRB, Count);
+  Value* Args[] = { Count };
+  constexpr int NumArgs = sizeof(Args) / sizeof(Value*);
+  InsertEventSend(IRB, Event, Args, NumArgs);
 }
 
-void ThreadSanitizer::InsertAtomicEventSend(IRBuilder<> &IRB, uint8_t Eid, Value *Addr, Value *Val) {
+void ThreadSanitizer::InsertAtomicEventSend(IRBuilder<> &IRB, EventType Eid, Value *Addr, Value *Val) {
   auto *Id = IRB.CreateShl(IRB.getInt64(Eid), 56);
   auto *AddrCast = IRB.CreateCast(Instruction::PtrToInt, Addr, IRB.getInt64Ty());
   auto *Event = IRB.CreateOr(Id, AddrCast);
   auto *Count = FetchAndUpdateCounter(IRB, Addr);
-  InsertEventSend(IRB, Event);
-  InsertEventSend(IRB, Count);
-  InsertEventSend(IRB, Val);
+
+  Value* Args[] = { Count, Val };
+  constexpr int NumArgs = sizeof(Args) / sizeof(Value*);
+  InsertEventSend(IRB, Event, Args, NumArgs);
 }
 
-void ThreadSanitizer::InsertEventSend(IRBuilder<> &IRB, uint8_t Eid) {
+void ThreadSanitizer::InsertEventSend(IRBuilder<> &IRB, EventType Eid) {
   auto *Event = IRB.CreateShl(IRB.getInt64(Eid), 56);
-  InsertEventSend(IRB, Event);
+  InsertEventSend(IRB, Event, {}, 0);
 }
 
-void ThreadSanitizer::InsertEventSend(IRBuilder<> &IRB, uint8_t Eid, Value *Addr) {
+void ThreadSanitizer::InsertEventSend(IRBuilder<> &IRB, EventType Eid, Value *Addr) {
   auto *Id = IRB.CreateShl(IRB.getInt64(Eid), 56);
   auto *AddrCast = IRB.CreateCast(Instruction::PtrToInt, Addr, IRB.getInt64Ty());
   auto *Event = IRB.CreateOr(Id, AddrCast);
-  InsertEventSend(IRB, Event);
+  InsertEventSend(IRB, Event, {}, 0);
 }
 
-void ThreadSanitizer::InsertEventSend(IRBuilder<> &IRB, uint8_t Eid, Value *Addr, Value *Val) {
+void ThreadSanitizer::InsertEventSend(IRBuilder<> &IRB, EventType Eid, Value *Addr, Value *Val) {
   auto *Id = IRB.CreateShl(IRB.getInt64(Eid), 56);
   auto *AddrCast = IRB.CreateCast(Instruction::PtrToInt, Addr, IRB.getInt64Ty());
   auto *Event = IRB.CreateOr(Id, AddrCast);
-  InsertEventSend(IRB, Event);
-  InsertEventSend(IRB, Val);
+  Value* Args[] = { Val };
+  constexpr int NumArgs = sizeof(Args) / sizeof(Value*);
+  InsertEventSend(IRB, Event, Args, NumArgs);
 }
 
-void ThreadSanitizer::InsertEventSend(IRBuilder<> &IRB, Value *Event) {
+void ThreadSanitizer::InsertEventSend(IRBuilder<> &IRB, Value *Event, Value **Args, int NumArgs) {
   // Check if sampling
 #if MONITOR_SAMPLING
   auto *IsSampling = IRB.CreateICmpNE(Sampling, IRB.getInt8(0));
 #endif
-
-  // // Split the basic block for conditionally logging. Taken from BoundsChecking.cpp
-  // BasicBlock::iterator SplitI = IRB.GetInsertPoint();
-  // BasicBlock *OldBB = SplitI->getParent();
-  // BasicBlock *Cont = OldBB->splitBasicBlock(SplitI);
-
-  // // Create the basic block that contains the logging instructions.
-  // Function *Fn = IRB.GetInsertBlock()->getParent();
-  // LLVMContext& Context = Fn->getContext();
-  // auto *LogBB = BasicBlock::Create(Context, "log", Fn, Cont);
-
-  // // Rewire the old BB
-  // OldBB->getTerminator()->eraseFromParent();
-  // IRB.CreateCondBr(IsSampling, LogBB, Cont);
 
   // Split the basic block for conditionally logging. Taken from AddressSanitizer.cpp
 #if MONITOR_SAMPLING
@@ -735,34 +745,46 @@ void ThreadSanitizer::InsertEventSend(IRBuilder<> &IRB, Value *Event) {
 #endif
 
   {
-    // Insert instructions for logging as per normal
-    // if (!Channel)
-    //   Channel = IRB.CreateLoad(TsanChannelPtr->getValueType(), TsanChannelPtr);
 #if MONITOR_USE_LOCAL_IDX
     auto *Idx = IRB.CreateLoad(LocalIdx->getAllocatedType(), LocalIdx);
 #else
     auto *Idx = IRB.CreateLoad(TsanChannelIdx->getValueType(), TsanChannelIdx);
 #endif
-    auto *Trunc = IRB.CreateAnd(Idx, IRB.getInt32(0xff));     // cannot use CreateTrunc because that performs sign extend
+    auto *Idx64 = IRB.CreateCast(Instruction::ZExt, Idx, IRB.getInt64Ty());
+    auto *LapNumber = IRB.CreateLShr(Idx64, 12);
+    auto *LapNumberShift = IRB.CreateShl(LapNumber, 60);
+    auto *EventCast = IRB.CreateCast(Instruction::ZExt, Event, IRB.getInt64Ty());
+    auto *EventFull = IRB.CreateOr(EventCast, LapNumberShift);
+
+    // Store the args before the event
+    for (int i = 0; i < NumArgs; ++i) {
+      auto *ArgIdx = IRB.CreateAdd(Idx, IRB.getInt32(1+i));
+      auto *ArgTrunc = IRB.CreateAnd(Idx, IRB.getInt32(0xfff));     // cannot use CreateTrunc because that performs sign extend
+      auto *ArgPtr = IRB.CreateGEP(
+        IRB.getInt64Ty(),           // The type of elements in the array
+        Channel,                    // The pointer to the start of the array
+        ArgTrunc                    // The index to access
+      );
+      auto *ArgStore = IRB.CreateStore(Args[i], ArgPtr);
+    }
+
+    // Now store the event
     // Perform the GEP to get the element pointer: Channel[Idx]
+    auto *Trunc = IRB.CreateAnd(Idx, IRB.getInt32(0xfff));     // cannot use CreateTrunc because that performs sign extend
     auto *Ptr = IRB.CreateGEP(
       IRB.getInt64Ty(),           // The type of elements in the array
       Channel,                    // The pointer to the start of the array
       Trunc                        // The index to access
     );
-    // auto *Ptr = IRB.CreateGEP(
-    //   IRB.getInt64Ty(),           // The type of elements in the array
-    //   Channel,                    // The pointer to the start of the array
-    //   IRB.getInt16(0)                        // The index to access
-    // );
-    auto *Inc = IRB.CreateAdd(Idx, IRB.getInt32(1));
-    // IRB.CreateStore(Idx, Ptr);
-    auto *EventCast = IRB.CreateCast(Instruction::ZExt, Event, IRB.getInt64Ty());
-    IRB.CreateStore(EventCast, Ptr);
+    auto* EventStore = IRB.CreateStore(EventFull, Ptr);
+    EventStore->setAtomic(AtomicOrdering::Release);   // actually atomic might not be needed but do so for now
+
+    // Update idx
+    auto *NextIndx = IRB.CreateAdd(Idx, IRB.getInt32(1+NumArgs));
 #if MONITOR_USE_LOCAL_IDX
-    IRB.CreateStore(Inc, LocalIdx);
+    IRB.CreateStore(NextIndx, LocalIdx);
 #else
-    IRB.CreateStore(Inc, TsanChannelIdx);
+    IRB.CreateStore(NextIndx, TsanChannelIdx);
 #endif
 
 #if MONITOR_DEBUG
@@ -948,14 +970,14 @@ bool ThreadSanitizer::sanitizeFunction(Function &F,
         Intrinsic::getDeclaration(F.getParent(), Intrinsic::returnaddress),
         IRB.getInt32(0));
     // IRB.CreateCall(TsanFuncEntry, ReturnAddress);
-    InsertEventSend(IRB, 0, ReturnAddress);
+    InsertEventSend(IRB, kEventReturn, ReturnAddress);
 
     // // Monitor: Bye bye
     EscapeEnumerator EE(F, "tsan_cleanup", ClHandleCxxExceptions);
     while (IRBuilder<> *AtExit = EE.Next()) {
       InstrumentationIRBuilder::ensureDebugInfo(*AtExit, F);
       // AtExit->CreateCall(TsanFuncExit, {});
-      InsertEventSend(*AtExit, 1);
+      InsertEventSend(*AtExit, kEventAtExit);
     }
     Res = true;
   }
@@ -1009,7 +1031,7 @@ bool ThreadSanitizer::instrumentLoadOrStore(const InstructionInfo &II,
     IRB.CreateCall(TsanVptrUpdate, {Addr, StoredValue});
 #endif
 #if MONITOR_CALL_LOGGER
-    InsertEventSend(IRB, 2, Addr, StoredValue);
+    InsertEventSend(IRB, kEventVptrUpdate, Addr, StoredValue);
 #endif
     NumInstrumentedVtableWrites++;
     return true;
@@ -1019,7 +1041,7 @@ bool ThreadSanitizer::instrumentLoadOrStore(const InstructionInfo &II,
     IRB.CreateCall(TsanVptrLoad, Addr);
 #endif
 #if MONITOR_CALL_LOGGER
-    InsertEventSend(IRB, 3, Addr);
+    InsertEventSend(IRB, kEventVptrLoad, Addr);
 #endif
     NumInstrumentedVtableReads++;
     return true;
@@ -1056,7 +1078,10 @@ bool ThreadSanitizer::instrumentLoadOrStore(const InstructionInfo &II,
   IRB.CreateCall(OnAccessFunc, Addr);
 #endif
 #if MONITOR_CALL_LOGGER
-  InsertEventSend(IRB, 4, Addr);
+  if (IsWrite)
+    InsertEventSend(IRB, kEventWrite, Addr);
+  else
+    InsertEventSend(IRB, kEventRead, Addr);
 #endif
   if (IsCompoundRW || IsWrite)
     NumInstrumentedWrites++;
@@ -1104,7 +1129,7 @@ bool ThreadSanitizer::instrumentMemIntrinsic(Instruction *I) {
     I->eraseFromParent();
 #endif
 #if MONITOR_CALL_LOGGER
-  InsertEventSend(IRB, 5);
+  InsertEventSend(IRB, kEventMemset);
 #endif
   } else if (MemTransferInst *M = dyn_cast<MemTransferInst>(I)) {
 #if MONITOR_CALL_HANDLERS
@@ -1116,7 +1141,7 @@ bool ThreadSanitizer::instrumentMemIntrinsic(Instruction *I) {
     I->eraseFromParent();
 #endif
 #if MONITOR_CALL_LOGGER
-  InsertEventSend(IRB, 6);
+  InsertEventSend(IRB, kEventMemcpy);
 #endif
   }
   return false;
@@ -1148,7 +1173,7 @@ bool ThreadSanitizer::instrumentAtomic(Instruction *I, const DataLayout &DL) {
 #if MONITOR_CALL_LOGGER
   // do this after the load
   IRB.SetInsertPoint(I->getNextNode());
-  InsertAtomicEventSend(IRB, 7, Addr);
+  InsertAtomicEventSend(IRB, kEventAtomicLoad, Addr);
 #endif
   } else if (StoreInst *SI = dyn_cast<StoreInst>(I)) {
     Value *Addr = SI->getPointerOperand();
@@ -1167,7 +1192,7 @@ bool ThreadSanitizer::instrumentAtomic(Instruction *I, const DataLayout &DL) {
     SI->eraseFromParent();
 #endif
 #if MONITOR_CALL_LOGGER
-  InsertAtomicEventSend(IRB, 8, Addr);
+  InsertAtomicEventSend(IRB, kEventAtomicStore, Addr);
 #endif
   } else if (AtomicRMWInst *RMWI = dyn_cast<AtomicRMWInst>(I)) {
     Value *Addr = RMWI->getPointerOperand();
@@ -1191,7 +1216,7 @@ bool ThreadSanitizer::instrumentAtomic(Instruction *I, const DataLayout &DL) {
 #endif
 #if MONITOR_CALL_LOGGER
   InsertAtomicEventLock(IRB, Addr);
-  InsertAtomicEventSend(IRB, 9, Addr);
+  InsertAtomicEventSend(IRB, kEventAtomicRMW, Addr);
   IRB.SetInsertPoint(RMWI->getNextNode());
   InsertAtomicEventUnlock(IRB, Addr);
 #endif
@@ -1231,7 +1256,7 @@ bool ThreadSanitizer::instrumentAtomic(Instruction *I, const DataLayout &DL) {
 #endif
 #if MONITOR_CALL_LOGGER
   InsertAtomicEventLock(IRB, Addr);
-  InsertAtomicEventSend(IRB, 10, Addr);
+  InsertAtomicEventSend(IRB, kEventAtomicCAS, Addr);
   IRB.SetInsertPoint(CASI->getNextNode());
   InsertAtomicEventUnlock(IRB, Addr);
 #endif
@@ -1247,7 +1272,7 @@ bool ThreadSanitizer::instrumentAtomic(Instruction *I, const DataLayout &DL) {
 #if MONITOR_CALL_LOGGER
   // dwslim: tsan doesnt handle fences, i also dont really know what to do with this yet
   // lets see if we even ever need to handle this
-  InsertEventSend(IRB, 11);
+  InsertEventSend(IRB, kEventAtomicFence);
 #endif
   }
   return true;
