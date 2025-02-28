@@ -1038,6 +1038,8 @@ int call_pthread_cancel_with_cleanup(int (*fn)(void *arg),
 void DestroyThreadState();
 void PlatformCleanUpThreadState(ThreadState *thr);
 
+int StartMonitor();
+void KillMonitor(int pid);
 uptr CreateLogFile(Tid tid, uptr* out_fd);
 void CloseLogFile(uptr fd);
 uptr CreateCountersArray();

@@ -152,7 +152,7 @@ struct OnStartedArgs {
 void ThreadStart(ThreadState *thr, Tid tid, tid_t os_id,
                  ThreadType thread_type) {
   if (UNLIKELY(!__tsan_channel_ptr)) {
-    __tsan_channel_ptr = reinterpret_cast<u64*>(CreateLogFile(tid, &thr->log_fd));
+    __tsan_channel_ptr = reinterpret_cast<atomic_uint64_t*>(CreateLogFile(tid, &thr->log_fd));
     __tsan_channel_idx = 0;
     __tsan_sampling = 1;
   }
