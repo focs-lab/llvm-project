@@ -410,7 +410,8 @@ static bool isCallMayEscape(const Value *V,
         // if (DemangledName == "operator new" ||
             // DemangledName == "operator new[]")
           // return false; // Memory allocation functions do not escape.
-        // return true; // Unknown external function.
+
+        return true; // Unknown external function.
       }
 
       // Check if this function returns escaped value
@@ -668,8 +669,24 @@ EscapeAnalysisInfo::getEscInfoCall(const Use &U, const Instruction *I) const {
       Call->getType()->isVoidTy())
     return {EscKindTy::NO_ESCAPE, std::nullopt};
 
-  if (isCallMayEscape(Call, IPABottomTopInfo) && Call->getType()->isPointerTy())
-    return {EscKindTy::MAY_ESCAPE, EscReasonBits::ESCAPED_CALL};
+  if (isCallMayEscape(Call, IPABottomTopInfo)) {
+    dbgs() << "\t\t\t\tCall may escape\n";
+
+    /////////////////////
+    // FIXME: make a function (along with 1070 line)
+    if (const auto *F = dyn_cast<Function>(U.get())) {
+      dbgs() << "F " << F->getName() << "\n";
+      if (IPABottomTopInfo) {
+        for (const auto &Arg : F->args()) {
+          dbgs() << "\t\t\t\t\tArg set: " << Arg.getName() << "\n";
+          (*IPABottomTopInfo)[F].ArgEscapes[Arg.getArgNo()] = OTHER;
+        }
+      }
+    }
+
+    if (Call->getType()->isPointerTy())
+      return {EscKindTy::MAY_ESCAPE, EscReasonBits::ESCAPED_CALL};
+  }
 
   // The pointer is not captured if returned pointer is not captured.
   // NOTE: CaptureTracking users should not assume that only functions
