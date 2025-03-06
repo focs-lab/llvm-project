@@ -50,21 +50,23 @@ public:
   };
   using EscReasonTy = std::bitset<6>;
 
-  struct IPAArgRetInfo {
+  struct IPABottomTopInfoEntry {
     SmallDenseMap<unsigned, EscReasonTy> ArgEscapes; // for each argument
     bool IsRetEscape = false; // whether return value is escaping or not
     bool IsRecursive = false; // whether function is recursive or not
-    bool operator==(const IPAArgRetInfo &Other) const {
+    bool IsPassedAsPtr = false; // whether function is passed as pointer
+                                // to another call or not
+    bool operator==(const IPABottomTopInfoEntry &Other) const {
       return ArgEscapes == Other.ArgEscapes && IsRetEscape == Other.IsRetEscape;
     }
-    bool operator!=(const IPAArgRetInfo &Other) const {
+    bool operator!=(const IPABottomTopInfoEntry &Other) const {
       return !(*this == Other);
     }
   };
 
   bool getIsRetEscape() const { return IsRetEscape; }
 
-  using IPABottomTopMap = DenseMap<const Function *, IPAArgRetInfo>;
+  using IPABottomTopMap = DenseMap<const Function *, IPABottomTopInfoEntry>;
   using IPAArgEscFromCallsMap = DenseMap<const Function *, SmallVector<bool>>;
 
   static void printEscReason(EscReasonTy EscReason);

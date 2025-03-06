@@ -556,8 +556,8 @@ void ThreadSanitizer::chooseInstructionsToInstrument(
       for (const UnderlObjInfo &UnderlObj :
            EscapeAnalysisInfo::getUnderlyingMayEscObjs(Addr)) {
         EscReasonTy EscReason;
-        const bool IsEscaped =
-            EAI.value().isEscapedForBB(I->getParent(), UnderlObj.Obj, &EscReason);
+        const bool IsEscaped = EAI.value().isEscapedForBB(
+            I->getParent(), UnderlObj.Obj, &EscReason);
         if (IsEscaped) {
           InstrOmitted = false;
           break;
@@ -842,9 +842,8 @@ isPointerEscaped(Value *Ptr, Instruction *I,
                  std::optional<EscapeAnalysisGlobalInfo *> EAIGlobal) {
   if (EAIGlobal.has_value()) {
     EscReasonTy EscReason;
-    auto res = EAIGlobal.value()->isEscapedUndrlObjOrPointee(Ptr, I->getParent(),
+    return EAIGlobal.value()->isEscapedUndrlObjOrPointee(Ptr, I->getParent(),
                                                          EscReason);
-    return res;
   }
   return true;
 }
