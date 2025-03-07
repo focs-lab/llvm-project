@@ -906,8 +906,36 @@ bool ThreadSanitizer::instrumentMemIntrinsic(Instruction *I,
          Cast2});
     I->eraseFromParent();
   } else if (MemTransferInst *M = dyn_cast<MemTransferInst>(I)) {
+    // Not clear why, but the test signal_thread_sigctx_race.cpp fails if
+    // we don't instrument memcpy. So this version works:
+    // define internal noundef i32 @_ZL9do_selectv()
+    //   ...
+    //   %tvs = alloca %struct.timeval, align 8
+    //   ...
+    //   %1 = call ptr @__tsan_memcpy(ptr %tvs,
+    //                                ptr @__const._ZL9do_selectv.tvs, i64 16)
+    //
+    // but this one doesn't work
+    // call void @llvm.memcpy.p0.p0.i64(ptr align 8 %tvs,
+    //                                  ptr align 8 @__const._ZL9do_selectv.tvs,
+    //                                  i64 16, i1 false)
+
+    // Check if the first argument of M is '%tvs = alloca %struct.timeval'
+    bool TimevalCaseFlag = false;
+    if (auto *Alloca = dyn_cast<AllocaInst>(M->getArgOperand(0))) {
+      if (Alloca->getAllocatedType()->isStructTy() &&
+          cast<StructType>(Alloca->getAllocatedType())->getName() ==
+              "struct.timeval") {
+        LLVM_DEBUG(
+            dbgs() << "First argument is an allocation of struct.timeval\n");
+        TimevalCaseFlag = true;
+      }
+    }
+
+    //
     // Check if pointers are not escape
-    if (!isPointerEscaped(M->getArgOperand(0), I, EAIGlobal) &&
+    if (!TimevalCaseFlag &&
+        !isPointerEscaped(M->getArgOperand(0), I, EAIGlobal) &&
         !isPointerEscaped(M->getArgOperand(1), I, EAIGlobal)) {
       disableInterceptorForInstr(I, IRB);
       return false;

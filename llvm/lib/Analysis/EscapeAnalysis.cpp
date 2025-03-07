@@ -1379,13 +1379,11 @@ EscapeAnalysisGlobalInfo::EscapeAnalysisGlobalInfo(CallGraph &CG, Module &M_)
 
   ////
   // First need to understand, how arguments can escape in calls. E.g.
-  // void foo(int *x) {
-  //   bar(x);
-  // }
-  // void bar(itn *x) {
-  //   ...
-  // }
-  // Here we callgraph traverse from bar (callee) to foo (caller)
+  //   void foo(int *x) { bar(x); }
+  //   void bar(int *y) { ... }
+  // To understand, how x can escape in foo, we need to investigate
+  // all calls with x as an argument. To this end, we traverse callgraph
+  // from bar (callee) to foo (caller)
   traverseCGBottomTop(CG, RecursiveFuncs, SCCList);
 
   // For each function, get list of instruction calling it
@@ -1395,8 +1393,13 @@ EscapeAnalysisGlobalInfo::EscapeAnalysisGlobalInfo(CallGraph &CG, Module &M_)
   LLVM_DEBUG(dbgs() << "######## IPA Top-Down Escape Analysis        ######\n");
   LLVM_DEBUG(dbgs() << "###################################################\n");
 
-  // Compute how arguments escape from passing escaped parameters in calls
-  
+  ////
+  // Then we try to understand how arguments can escape from functions
+  // _being called_. E.g.
+  // void foo(int *x) { ... }
+  // void bar() { foo(y); }
+  // To understand that, we traverse callgraph from top (callers, i.e. bar)
+  // to bottom (calleee, i.e. foo)
   traverseCGTopDown(SCCList, FuncCallSites, RecursiveFuncs);
 
   LLVM_DEBUG(printArgEscStatus(););
