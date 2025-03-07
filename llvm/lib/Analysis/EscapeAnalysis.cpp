@@ -427,7 +427,6 @@ static bool isCallMayEscape(const Value *V,
 EscapeAnalysisInfo::EscReasonTy
 EscapeAnalysisInfo::getExtObjStatusWithIPA(const Value *V) const {
   const auto EscReason = getExtObjStatus(V);
-
   if (IPATopDownArgEsc && (EscReason == EscReasonBits::PTR_ARG_ALIASING)) {
     const auto *Arg = cast<Argument>(V);
     const auto EscReason =
@@ -504,16 +503,29 @@ EscapeAnalysisInfo::EscapeAnalysisInfo(
 }
 
 void EscapeAnalysisInfo::updRetEscStatus(
-    EscapeState &ES, const SmallVectorImpl<UnderlObjInfo> &UnderlObjs) {
+    EscapeState &ES, const BasicBlock *BB,
+    const SmallVectorImpl<UnderlObjInfo> &UnderlObjs) {
   for (const auto EO : UnderlObjs) {
-    LLVM_DEBUG(dbgs() << "\t\treturn: check: " << *EO.Obj << "\n";
-               print(dbgs()));
+    LLVM_DEBUG(dbgs() << "\t\treturn: check: " << *EO.Obj << "\n";);
     if (isEscapedForFunc(EO.Obj) || ES.getEscReason(EO.Obj).any()) {
-      LLVM_DEBUG(dbgs() << "\t\t\t\treturn: " << *EO.Obj << " is escaped\n");
+      LLVM_DEBUG(dbgs() << "\t\t\t\treturn is escaped\n");
       IsRetEscape = true;
-    } else
-      LLVM_DEBUG(dbgs() << "\t\t\t\treturn: " << *EO.Obj
-                        << " is not escaped\n");
+      return;
+    }
+    LLVM_DEBUG(dbgs() << "\t\t\t\treturn is not escaped\n");
+  }
+
+  // FIXME: make function like in compBBEscapeState
+  for (const auto &[Obj, Loaded] : UnderlObjs) {
+    if (Loaded) {
+      LLVM_DEBUG(dbgs() << "\t\tupdRetEscStatus " << *Obj << " Loaded\n");
+      ES.forEachPointeeDo(Obj, [&](const Value *Pointee) {
+        if (isEscapedForBBIPA(BB, Pointee))
+          IsRetEscape = true;
+      });
+      if (IsRetEscape)
+        return;
+    }
   }
 }
 
@@ -587,7 +599,7 @@ void EscapeAnalysisInfo::compBBEscapeState(const BasicBlock *BB,
         // If that's return instruction, we should check if it can return
         // a pointer to some external object
         if ((I.getOpcode() == Instruction::Ret) && (!IsRetEscape))
-          updRetEscStatus(ES, UnderlObjs);
+          updRetEscStatus(ES, BB, UnderlObjs);
 
         for (const auto &[Obj, Loaded] : UnderlObjs) {
           if (Loaded) {
@@ -1071,24 +1083,23 @@ void EscapeAnalysisGlobalInfo::updIPAFuncEscInfo(
   LLVM_DEBUG(dbgs() << "Upd IPAFuncEscInfo for F '" << F->getName() << "'\n");
   for (const auto &Arg : F->args()) {
     EscapeAnalysisInfo::EscReasonTy ArgEscReason;
-    LLVM_DEBUG(dbgs() << "@@@@@@@@@ ArgEsc: " << Arg << " -- "
+    LLVM_DEBUG(dbgs() << "@@@@@@@@@ ArgEsc: " << Arg << " -- Escape status: "
                       << EAI.isEscapedForFunc(&Arg) << "\n";);
     EAI.isEscapedForFunc(&Arg, std::ref(ArgEscReason));
 
     if (IPABottomTopEscInfo->find(F) != IPABottomTopEscInfo->end()) {
       if ((*IPABottomTopEscInfo)[F].ArgEscapes.find(Arg.getArgNo()) !=
           (*IPABottomTopEscInfo)[F].ArgEscapes.end()) {
-        LLVM_DEBUG(
-            dbgs() << "Existing ArgEscape: ";
-            EscapeAnalysisInfo::printEscReason(
-                (*IPABottomTopEscInfo)[F].ArgEscapes[Arg.getArgNo()]);
-            dbgs() << "\n";);
+        LLVM_DEBUG(dbgs() << "Existing ArgEscape: ";
+                   EscapeAnalysisInfo::printEscReason(
+                       (*IPABottomTopEscInfo)[F].ArgEscapes[Arg.getArgNo()]);
+                   dbgs() << "\n";);
       }
     }
 
     (*IPABottomTopEscInfo)[F].ArgEscapes[Arg.getArgNo()] = ArgEscReason;
   }
-  // LLVM_DEBUG(dbgs() << "@@@@@@@@@ RetEsc: " << EAI.getIsRetEscape() << "\n");
+  LLVM_DEBUG(dbgs() << "@@@@@@@@@ RetEsc: " << EAI.getIsRetEscape() << "\n");
   (*IPABottomTopEscInfo)[F].IsRetEscape = EAI.getIsRetEscape();
 }
 
@@ -1631,6 +1642,5 @@ SmallVector<UnderlObjInfo> EscapeAnalysisInfo::getUnderlyingMayEscObjs(
   // dbgs() << "\tgetUnderlyingMayEscObjects:";
   // for (const auto &Obj : UnderlObjs) dbgs() << "\t\t" << *Obj.Obj << "\n"; }
   // else dbgs() << "\tgetUnderlyingMayEscObjects -- empty\n"; );
-
   return UnderlObjs;
 }

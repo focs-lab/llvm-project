@@ -211,7 +211,7 @@ private:
 
   /// Check if function returns escaped object, and update function return
   /// escape status
-  void updRetEscStatus(EscapeState &ES,
+  void updRetEscStatus(EscapeState &ES, const BasicBlock *BB,
                        const SmallVectorImpl<UnderlObjInfo> &UnderlObjs);
   void addEscapedPtrArgs(EscapeState &ES);
 
