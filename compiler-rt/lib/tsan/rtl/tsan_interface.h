@@ -39,57 +39,67 @@ __tsan_default_options();
 
 SANITIZER_INTERFACE_ATTRIBUTE void __tsan_flush_memory();
 
-SANITIZER_INTERFACE_ATTRIBUTE void __tsan_read1(void *addr, uint32_t line);
-SANITIZER_INTERFACE_ATTRIBUTE void __tsan_read2(void *addr, uint32_t line);
-SANITIZER_INTERFACE_ATTRIBUTE void __tsan_read4(void *addr, uint32_t line);
-SANITIZER_INTERFACE_ATTRIBUTE void __tsan_read8(void *addr, uint32_t line);
-SANITIZER_INTERFACE_ATTRIBUTE void __tsan_read16(void *addr, uint32_t line);
+SANITIZER_INTERFACE_ATTRIBUTE void
+__tsan_read1(void *addr, const char *filename, uint32_t line);
+SANITIZER_INTERFACE_ATTRIBUTE void
+__tsan_read2(void *addr, const char *filename, uint32_t line);
+SANITIZER_INTERFACE_ATTRIBUTE void
+__tsan_read4(void *addr, const char *filename, uint32_t line);
+SANITIZER_INTERFACE_ATTRIBUTE void
+__tsan_read8(void *addr, const char *filename, uint32_t line);
+SANITIZER_INTERFACE_ATTRIBUTE void
+__tsan_read16(void *addr, const char *filename, uint32_t line);
 
-SANITIZER_INTERFACE_ATTRIBUTE void __tsan_write1(void *addr, uint32_t line);
-SANITIZER_INTERFACE_ATTRIBUTE void __tsan_write2(void *addr, uint32_t line);
-SANITIZER_INTERFACE_ATTRIBUTE void __tsan_write4(void *addr, uint32_t line);
-SANITIZER_INTERFACE_ATTRIBUTE void __tsan_write8(void *addr, uint32_t line);
-SANITIZER_INTERFACE_ATTRIBUTE void __tsan_write16(void *addr, uint32_t line);
+SANITIZER_INTERFACE_ATTRIBUTE void
+__tsan_write1(void *addr, const char *filename, uint32_t line);
+SANITIZER_INTERFACE_ATTRIBUTE void
+__tsan_write2(void *addr, const char *filename, uint32_t line);
+SANITIZER_INTERFACE_ATTRIBUTE void
+__tsan_write4(void *addr, const char *filename, uint32_t line);
+SANITIZER_INTERFACE_ATTRIBUTE void
+__tsan_write8(void *addr, const char *filename, uint32_t line);
+SANITIZER_INTERFACE_ATTRIBUTE void
+__tsan_write16(void *addr, const char *filename, uint32_t line);
 
-SANITIZER_INTERFACE_ATTRIBUTE void __tsan_unaligned_read2(const void *addr,
-                                                          uint32_t line);
-SANITIZER_INTERFACE_ATTRIBUTE void __tsan_unaligned_read4(const void *addr,
-                                                          uint32_t line);
-SANITIZER_INTERFACE_ATTRIBUTE void __tsan_unaligned_read8(const void *addr,
-                                                          uint32_t line);
-SANITIZER_INTERFACE_ATTRIBUTE void __tsan_unaligned_read16(const void *addr,
-                                                           uint32_t line);
+SANITIZER_INTERFACE_ATTRIBUTE void
+__tsan_unaligned_read2(const void *addr, const char *filename, uint32_t line);
+SANITIZER_INTERFACE_ATTRIBUTE void
+__tsan_unaligned_read4(const void *addr, const char *filename, uint32_t line);
+SANITIZER_INTERFACE_ATTRIBUTE void
+__tsan_unaligned_read8(const void *addr, const char *filename, uint32_t line);
+SANITIZER_INTERFACE_ATTRIBUTE void
+__tsan_unaligned_read16(const void *addr, const char *filename, uint32_t line);
 
-SANITIZER_INTERFACE_ATTRIBUTE void __tsan_unaligned_write2(void *addr,
-                                                           uint32_t line);
-SANITIZER_INTERFACE_ATTRIBUTE void __tsan_unaligned_write4(void *addr,
-                                                           uint32_t line);
-SANITIZER_INTERFACE_ATTRIBUTE void __tsan_unaligned_write8(void *addr,
-                                                           uint32_t line);
-SANITIZER_INTERFACE_ATTRIBUTE void __tsan_unaligned_write16(void *addr,
-                                                            uint32_t line);
+SANITIZER_INTERFACE_ATTRIBUTE void
+__tsan_unaligned_write2(void *addr, const char *filename, uint32_t line);
+SANITIZER_INTERFACE_ATTRIBUTE void
+__tsan_unaligned_write4(void *addr, const char *filename, uint32_t line);
+SANITIZER_INTERFACE_ATTRIBUTE void
+__tsan_unaligned_write8(void *addr, const char *filename, uint32_t line);
+SANITIZER_INTERFACE_ATTRIBUTE void
+__tsan_unaligned_write16(void *addr, const char *filename, uint32_t line);
 
-SANITIZER_INTERFACE_ATTRIBUTE void __tsan_read1_pc(void *addr, void *pc,
-                                                   uint32_t line);
-SANITIZER_INTERFACE_ATTRIBUTE void __tsan_read2_pc(void *addr, void *pc,
-                                                   uint32_t line);
-SANITIZER_INTERFACE_ATTRIBUTE void __tsan_read4_pc(void *addr, void *pc,
-                                                   uint32_t line);
-SANITIZER_INTERFACE_ATTRIBUTE void __tsan_read8_pc(void *addr, void *pc,
-                                                   uint32_t line);
-SANITIZER_INTERFACE_ATTRIBUTE void __tsan_read16_pc(void *addr, void *pc,
-                                                    uint32_t line);
+SANITIZER_INTERFACE_ATTRIBUTE void
+__tsan_read1_pc(void *addr, void *pc, const char *filename, uint32_t line);
+SANITIZER_INTERFACE_ATTRIBUTE void
+__tsan_read2_pc(void *addr, void *pc, const char *filename, uint32_t line);
+SANITIZER_INTERFACE_ATTRIBUTE void
+__tsan_read4_pc(void *addr, void *pc, const char *filename, uint32_t line);
+SANITIZER_INTERFACE_ATTRIBUTE void
+__tsan_read8_pc(void *addr, void *pc, const char *filename, uint32_t line);
+SANITIZER_INTERFACE_ATTRIBUTE void
+__tsan_read16_pc(void *addr, void *pc, const char *filename, uint32_t line);
 
-SANITIZER_INTERFACE_ATTRIBUTE void __tsan_write1_pc(void *addr, void *pc,
-                                                    uint32_t line);
-SANITIZER_INTERFACE_ATTRIBUTE void __tsan_write2_pc(void *addr, void *pc,
-                                                    uint32_t line);
-SANITIZER_INTERFACE_ATTRIBUTE void __tsan_write4_pc(void *addr, void *pc,
-                                                    uint32_t line);
-SANITIZER_INTERFACE_ATTRIBUTE void __tsan_write8_pc(void *addr, void *pc,
-                                                    uint32_t line);
-SANITIZER_INTERFACE_ATTRIBUTE void __tsan_write16_pc(void *addr, void *pc,
-                                                     uint32_t line);
+SANITIZER_INTERFACE_ATTRIBUTE void
+__tsan_write1_pc(void *addr, void *pc, const char *filename, uint32_t line);
+SANITIZER_INTERFACE_ATTRIBUTE void
+__tsan_write2_pc(void *addr, void *pc, const char *filename, uint32_t line);
+SANITIZER_INTERFACE_ATTRIBUTE void
+__tsan_write4_pc(void *addr, void *pc, const char *filename, uint32_t line);
+SANITIZER_INTERFACE_ATTRIBUTE void
+__tsan_write8_pc(void *addr, void *pc, const char *filename, uint32_t line);
+SANITIZER_INTERFACE_ATTRIBUTE void
+__tsan_write16_pc(void *addr, void *pc, const char *filename, uint32_t line);
 
 SANITIZER_INTERFACE_ATTRIBUTE void __tsan_vptr_read(void **vptr_p);
 SANITIZER_INTERFACE_ATTRIBUTE
