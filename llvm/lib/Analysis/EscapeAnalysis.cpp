@@ -134,7 +134,7 @@ void EscapeAnalysisInfo::EscapeState::checkAndUpdEscStatus(
 
   LLVM_DEBUG(dbgs() << "\tcheckAndUpdEscStatus: " << *CheckedObj << " --> "
                     << *AffectedObj << "\n");
-  if (const auto EscReason = EAI->getExtObjStatusWithIPA(CheckedObj);
+  if (const auto EscReason = EAI->getExtObjStatusIPA(CheckedObj);
       EscReason.any())
     addEscapeObjOrReason(AffectedObj, EscReason);
 
@@ -144,7 +144,7 @@ void EscapeAnalysisInfo::EscapeState::checkAndUpdEscStatus(
     if (const auto It = EscapedObjs.find(AffectedObj); It != EscapedObjs.end())
       addEscapeObjOrReason(CheckedObj, It->second);
 
-    if (const auto EscReason = EAI->getExtObjStatusWithIPA(AffectedObj);
+    if (const auto EscReason = EAI->getExtObjStatusIPA(AffectedObj);
         EscReason.any())
       addEscapeObjOrReason(CheckedObj, EscReason);
   }
@@ -385,6 +385,7 @@ static bool getIPAFuncRetEscStatus(
 }
 
 static bool isSafeExternalCall(StringRef FuncName) {
+  // TODO Demangle the function name before comparison
   return (FuncName == "malloc" || FuncName == "calloc" ||
           FuncName == "realloc" || FuncName == "strlen" ||
           FuncName == "strcmp" || FuncName == "memchr");
@@ -394,45 +395,35 @@ static bool isSafeExternalCall(StringRef FuncName) {
 static bool isCallMayEscape(const Value *V,
                             std::shared_ptr<EscapeAnalysisInfo::IPABottomTopMap>
                                 IPABottomTopEscInfo = nullptr) {
-  if (const auto *CB = dyn_cast<CallBase>(V); CB) {
-    LLVM_DEBUG(dbgs() << "\t\tisCallMayEscape: " << *V << "\n";);
-    if (isa<MemIntrinsic>(V))
-      return false; // Intrinsics do not escape.
+  const auto *CB = dyn_cast<CallBase>(V);
+  if (!CB)
+    return false;
+  LLVM_DEBUG(dbgs() << "\t\tisCallMayEscape: " << *V << "\n";);
+  if (isa<MemIntrinsic>(V))
+    return false; // Intrinsics do not escape.
 
-    // Check if the call is to a known memory allocation function.
-    if (const Function *F = CB->getCalledFunction()) {
-      if (F->isDeclaration()) {
-        if (isSafeExternalCall(F->getName()))
-          return false; // Memory allocation functions do not escape.
-
-        // TODO Demangle the function name before comparison
-        // const auto DemangledName = demangle(F->getName().str());
-        // dbgs() << "\t\t\t\tDemangledName: " << DemangledName << "\n";
-        // if (DemangledName == "operator new" ||
-            // DemangledName == "operator new[]")
-          // return false; // Memory allocation functions do not escape.
-
-        return true; // Unknown external function.
-      }
-
-      // Check if this function returns escaped value
-      if (IPABottomTopEscInfo)
-        return getIPAFuncRetEscStatus(IPABottomTopEscInfo, F);
+  // Check if the call is to a known memory allocation function.
+  if (const Function *F = CB->getCalledFunction()) {
+    if (F->isDeclaration()) {
+      if (isSafeExternalCall(F->getName()))
+        return false; // Memory allocation functions do not escape.
+      return true;    // Unknown external function.
     }
-    return true;
+
+    // Check if this function returns escaped value
+    if (IPABottomTopEscInfo)
+      return getIPAFuncRetEscStatus(IPABottomTopEscInfo, F);
   }
-  return false;
+  return true;
 }
 
 EscapeAnalysisInfo::EscReasonTy
-EscapeAnalysisInfo::getExtObjStatusWithIPA(const Value *V) const {
+EscapeAnalysisInfo::getExtObjStatusIPA(const Value *V) const {
   const auto EscReason = getExtObjStatus(V);
   if (IPATopDownArgEsc && (EscReason == EscReasonBits::PTR_ARG_ALIASING)) {
     const auto *Arg = cast<Argument>(V);
     const auto EscReason =
         getArgEscTopDownIPA(Arg->getArgNo(), Arg->getParent());
-    // LLVM_DEBUG(dbgs() << "\t\t\t\tgetArgEscTopDownIPA: ";
-               // printEscReason(EscReason););
     return EscReason;
   }
 
@@ -515,7 +506,6 @@ void EscapeAnalysisInfo::updRetEscStatus(
     LLVM_DEBUG(dbgs() << "\t\t\t\treturn is not escaped\n");
   }
 
-  // FIXME: make function like in compBBEscapeState
   for (const auto &[Obj, Loaded] : UnderlObjs) {
     if (Loaded) {
       LLVM_DEBUG(dbgs() << "\t\tupdRetEscStatus " << *Obj << " Loaded\n");
@@ -536,7 +526,7 @@ void EscapeAnalysisInfo::addEscapedPtrArgs(EscapeState &ES) {
       continue;
 
     // Check if the argument is escaped using getExtObjStatusWithIPA
-    const auto ArgEscReason = getExtObjStatusWithIPA(&Arg);
+    const auto ArgEscReason = getExtObjStatusIPA(&Arg);
     if (ArgEscReason.any()) {
       LLVM_DEBUG(dbgs() << "Argument " << Arg.getName() << " is escaped: ";
                  printEscReason(ArgEscReason););
@@ -548,12 +538,8 @@ void EscapeAnalysisInfo::addEscapedPtrArgs(EscapeState &ES) {
 /// Compute the resulting escape state for BB
 void EscapeAnalysisInfo::compBBEscapeState(const BasicBlock *BB,
                                            EscapeState &ES) {
-  if (BB->isEntryBlock()) {
-    // if ((IPABottomTopInfo && (*IPABottomTopInfo)[&AnalyzedFunc].IsRecursive))
-      // addEscapedPtrArgs(ES);
-    if (IPABottomTopInfo)
+  if (BB->isEntryBlock() && IPABottomTopInfo)
       addEscapedPtrArgs(ES);
-  }
 
   for (const Instruction &I : *BB) {
     LLVM_DEBUG(dbgs() << "\n\nINSTR " << I << "\n");
@@ -566,16 +552,6 @@ void EscapeAnalysisInfo::compBBEscapeState(const BasicBlock *BB,
         continue;
 
       assert(EscDetails.has_value() && "EscDetails must be set");
-
-      //////////////////////////////////////////
-      // SmallVector<Value *, 8> UObjs;
-      // dbgs() << "\t\tgetUnderlyingObjectsForCodeGen for Opnd: " << *Opnd
-      //        << "\n";
-      // getUnderlyingObjectsForCodeGen(Opnd.get(), UObjs);
-      // if (!UObjs.empty())
-      //   for (const Value *UObj : UObjs)
-      //     dbgs() << "\t\tUObj: " << *UObj << "\n";
-      //////////////////////////////////////////
 
       auto UnderlObjs = getUnderlyingMayEscObjs(
           Opnd.get(), MaxUnderlObjLookup, IPABottomTopInfo);
@@ -675,8 +651,6 @@ EscapeAnalysisInfo::EscInfoTy
 EscapeAnalysisInfo::getEscInfoCall(const Use &U, const Instruction *I) const {
   // LLVM_DEBUG(dbgs() << " -- Call/Invoke\n");
   const auto *Call = cast<CallBase>(I);
-  // if (U.get() == Call->getCalledFunction())
-    // return {EscKindTy::NO_ESCAPE, std::nullopt};
 
   // Not captured if the callee is readonly, doesn't return a copy through
   // its return value and doesn't unwind (a readonly function can leak bits
@@ -686,8 +660,6 @@ EscapeAnalysisInfo::getEscInfoCall(const Use &U, const Instruction *I) const {
     return {EscKindTy::NO_ESCAPE, std::nullopt};
 
   if (isCallMayEscape(Call, IPABottomTopInfo)) {
-    /////////////////////
-    // FIXME: make a function (along with 1070 line)
     const auto *F = dyn_cast<Function>(U.get());
     if (F && (F != Call->getCalledFunction())) {
       if (IPABottomTopInfo)
@@ -936,24 +908,26 @@ bool EscapeAnalysisInfo::isDereferenceableOrNull(const Value *O,
 
 
 EscapeAnalysisInfo::EscReasonTy
-EscapeAnalysisInfo::findObjInBBEscapeState(const BasicBlock *BB,
+EscapeAnalysisInfo::findObjInBBEscState(const BasicBlock *BB,
                                            const Value *V) const {
   const auto It = BBEscapeStates.find(BB);
   assert((It != BBEscapeStates.end()) && "Cannot find BBEscapeState for BB\n");
   return It->second.getEscReason(V);
 }
 
-/// Is Value V is escaping in some path from Entry to BB?
-bool EscapeAnalysisInfo::isEscapedForBB(const BasicBlock *BB, const Value *V,
-                                        EscReasonTy *EscReason) const {
-  const auto ExtStatus = getExtObjStatus(V);
+bool EscapeAnalysisInfo::isEscapedForBBImpl(const BasicBlock *BB,
+                                            const Value *V,
+                                            EscReasonTy *EscReason,
+                                            bool UseIPA) const {
+  const auto ExtStatus = UseIPA ? getExtObjStatusIPA(V) : getExtObjStatus(V);
+
   if (ExtStatus.any()) {
     if (EscReason)
       *EscReason = ExtStatus;
     return true;
   }
 
-  const auto FoundStatus = findObjInBBEscapeState(BB, V);
+  const auto FoundStatus = findObjInBBEscState(BB, V);
   if (FoundStatus.any()) {
     if (EscReason)
       *EscReason = FoundStatus;
@@ -963,35 +937,24 @@ bool EscapeAnalysisInfo::isEscapedForBB(const BasicBlock *BB, const Value *V,
   if (EscReason)
     *EscReason = 0;
   return false;
+}
+
+/// Is Value V is escaping in some path from Entry to BB?
+bool EscapeAnalysisInfo::isEscapedForBB(const BasicBlock *BB, const Value *V,
+                                        EscReasonTy *EscReason) const {
+  return isEscapedForBBImpl(BB, V, EscReason, false);
 }
 
 /// Is Value V is escaping in some path from Entry to BB?
 bool EscapeAnalysisInfo::isEscapedForBBIPA(const BasicBlock *BB, const Value *V,
                                            EscReasonTy *EscReason) const {
-  const auto ExtStatus = getExtObjStatusWithIPA(V);
-
-  if (ExtStatus.any()) {
-    if (EscReason)
-      *EscReason = ExtStatus;
-    return true;
-  }
-
-  const auto FoundStatus = findObjInBBEscapeState(BB, V);
-  if (FoundStatus.any()) {
-    if (EscReason)
-      *EscReason = FoundStatus;
-    return true;
-  }
-
-  if (EscReason)
-    *EscReason = 0;
-  return false;
+  return isEscapedForBBImpl(BB, V, EscReason, true);
 }
 
 /// Return escape reason for V in BB
-EscapeAnalysisInfo::EscReasonTy EscapeAnalysisInfo::getFullEscapedForBBReason(
+EscapeAnalysisInfo::EscReasonTy EscapeAnalysisInfo::getFullEscReasonForBB(
     const BasicBlock *BB, const Value *V) const {
-  return getExtObjStatusWithIPA(V) | findObjInBBEscapeState(BB, V);
+  return getExtObjStatusIPA(V) | findObjInBBEscState(BB, V);
 }
 
 /// Is Value V is escaping somewhere in the function
@@ -1002,7 +965,7 @@ bool EscapeAnalysisInfo::isEscapedForFunc(
   for (const auto &BB : AnalyzedFunc) {
     if (pred_empty(&BB) && !BB.isEntryBlock())
       continue;
-    CombinedEscReason |= getFullEscapedForBBReason(&BB, V);
+    CombinedEscReason |= getFullEscReasonForBB(&BB, V);
   }
 
   if (EscReason.has_value())

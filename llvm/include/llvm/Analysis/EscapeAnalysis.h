@@ -92,13 +92,15 @@ public:
                         std::optional<std::reference_wrapper<EscReasonTy>>
                             EscReason = std::nullopt) const;
 
-  EscReasonTy findObjInBBEscapeState(const BasicBlock *BB,
+  EscReasonTy findObjInBBEscState(const BasicBlock *BB,
                                      const Value *V) const;
 
   /// Return escape reason for V in BB
-  EscReasonTy getFullEscapedForBBReason(const BasicBlock *BB, const Value *V) const;
+  EscReasonTy getFullEscReasonForBB(const BasicBlock *BB, const Value *V) const;
 
   /// Is Value V is escaping in some path from Entry to BB?
+  bool isEscapedForBBImpl(const BasicBlock *BB, const Value *V,
+                          EscReasonTy *EscReason, bool UseIPA) const;
   bool isEscapedForBB(const BasicBlock *BB, const Value *V,
                       EscReasonTy *EscReason = nullptr) const;
   bool isEscapedForBBIPA(const BasicBlock *BB, const Value *V,
@@ -232,7 +234,7 @@ private:
   /// Get escape status of the object and if it's a pointer argument,
   /// lookup in the top-bottom argument escape analysis
   EscReasonTy
-  getExtObjStatusWithIPA(const Value *V) const;
+  getExtObjStatusIPA(const Value *V) const;
 
   /// Determine what kind of escape behaviour V may exhibit.
   struct EscInfoTy {
