@@ -16,6 +16,8 @@
 #include "sanitizer_common/sanitizer_internal_defs.h"
 #include "sanitizer_common/sanitizer_ptrauth.h"
 
+#include <unistd.h>
+
 #define CALLERPC ((uptr)__builtin_return_address(0))
 
 using namespace __tsan;
@@ -26,34 +28,38 @@ void __tsan_flush_memory() {
   FlushShadowMemory();
 }
 
-void __tsan_read16_pc(void *addr, void *pc) {
+void __tsan_read16_pc(void *addr, void *pc, const char *filename, uint32_t line) {
   uptr pc_no_pac = STRIP_PAC_PC(pc);
   ThreadState *thr = cur_thread();
   MemoryAccess(thr, pc_no_pac, (uptr)addr, 8, kAccessRead);
   MemoryAccess(thr, pc_no_pac, (uptr)addr + 8, 8, kAccessRead);
+  Printf(" > read_pc %p %d %d %s:%u\n", addr, 16, gettid(), filename, line);
 }
 
-void __tsan_write16_pc(void *addr, void *pc) {
+void __tsan_write16_pc(void *addr, void *pc, const char *filename, uint32_t line) {
   uptr pc_no_pac = STRIP_PAC_PC(pc);
   ThreadState *thr = cur_thread();
   MemoryAccess(thr, pc_no_pac, (uptr)addr, 8, kAccessWrite);
   MemoryAccess(thr, pc_no_pac, (uptr)addr + 8, 8, kAccessWrite);
+  Printf(" > write_pc %p %d %d %s:%u\n", addr, 16, gettid(), filename, line);
 }
 
 // __tsan_unaligned_read/write calls are emitted by compiler.
 
-void __tsan_unaligned_read16(const void *addr) {
+void __tsan_unaligned_read16(const void *addr, const char *filename, uint32_t line) {
   uptr pc = CALLERPC;
   ThreadState *thr = cur_thread();
   UnalignedMemoryAccess(thr, pc, (uptr)addr, 8, kAccessRead);
   UnalignedMemoryAccess(thr, pc, (uptr)addr + 8, 8, kAccessRead);
+  Printf(" > read %p %d %d %s:%u\n", addr, 16, gettid(), filename, line);
 }
 
-void __tsan_unaligned_write16(void *addr) {
+void __tsan_unaligned_write16(void *addr, const char *filename, uint32_t line) {
   uptr pc = CALLERPC;
   ThreadState *thr = cur_thread();
   UnalignedMemoryAccess(thr, pc, (uptr)addr, 8, kAccessWrite);
   UnalignedMemoryAccess(thr, pc, (uptr)addr + 8, 8, kAccessWrite);
+  Printf(" > write %p %d %d %s:%u\n", addr, 16, gettid(), filename, line);
 }
 
 extern "C" {
