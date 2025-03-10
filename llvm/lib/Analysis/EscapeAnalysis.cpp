@@ -327,22 +327,21 @@ void EscapeAnalysisInfo::EscapeState::mergeEscapedObjects(
 }
 
 EscapeAnalysisInfo::EscReasonTy
-EscapeAnalysisInfo::getArgEscStatus(const unsigned ArgNo,
-                                    const Function *Func) const {
-  if (const auto FuncIt = IPABottomTopInfo->find(Func);
-      FuncIt != IPABottomTopInfo->end()) {
-    if (const auto ArgEscIt = FuncIt->second.ArgEscapes.find(ArgNo);
-        ArgEscIt != FuncIt->second.ArgEscapes.end())
-      return ArgEscIt->second & EscReasonTy(~EscReasonBits::PTR_ARG_ALIASING);
+EscapeAnalysisInfo::getArgEscBottomTopIPA(const unsigned ArgNo,
+                                          const Function *Func) const {
+  if (const auto It = IPABottomTopInfo->find(Func);
+      It != IPABottomTopInfo->end()) {
+    return It->second.ArgEscapes[ArgNo] &
+           EscReasonTy(~EscReasonBits::PTR_ARG_ALIASING);
   }
   return EscReasonBits::PTR_ARG_ALIASING;
 }
 
 EscapeAnalysisInfo::EscReasonTy
-EscapeAnalysisInfo::getArgEscTopDownIPA(
-  const unsigned ArgNo, const Function *Func) const {
-  if (const auto It = IPATopDownArgEsc->find(Func);
-      It != IPATopDownArgEsc->end()) {
+EscapeAnalysisInfo::getArgEscTopDownIPA(const unsigned ArgNo,
+                                        const Function *Func) const {
+  if (const auto It = IPATopDownInfo->find(Func);
+      It != IPATopDownInfo->end()) {
     if (It->second[ArgNo])
       return EscReasonBits::PTR_ARG_ALIASING;
     return 0;
@@ -394,7 +393,7 @@ static bool isSafeExternalCall(StringRef FuncName) {
 /// Check if it's a function call which can escape
 static bool isCallMayEscape(const Value *V,
                             std::shared_ptr<EscapeAnalysisInfo::IPABottomTopMap>
-                                IPABottomTopEscInfo = nullptr) {
+                                IPABottomTopInfo = nullptr) {
   const auto *CB = dyn_cast<CallBase>(V);
   if (!CB)
     return false;
@@ -411,16 +410,17 @@ static bool isCallMayEscape(const Value *V,
     }
 
     // Check if this function returns escaped value
-    if (IPABottomTopEscInfo)
-      return getIPAFuncRetEscStatus(IPABottomTopEscInfo, F);
+    if (IPABottomTopInfo)
+      return getIPAFuncRetEscStatus(IPABottomTopInfo, F);
   }
+
   return true;
 }
 
 EscapeAnalysisInfo::EscReasonTy
 EscapeAnalysisInfo::getExtObjStatusIPA(const Value *V) const {
   const auto EscReason = getExtObjStatus(V);
-  if (IPATopDownArgEsc && (EscReason == EscReasonBits::PTR_ARG_ALIASING)) {
+  if (IPATopDownInfo && (EscReason == EscReasonBits::PTR_ARG_ALIASING)) {
     const auto *Arg = cast<Argument>(V);
     const auto EscReason =
         getArgEscTopDownIPA(Arg->getArgNo(), Arg->getParent());
@@ -445,7 +445,7 @@ EscapeAnalysisInfo::EscapeAnalysisInfo(
     const Function &Fn, std::shared_ptr<IPABottomTopMap> IPABottomTopInfo_,
     std::shared_ptr<IPAArgEscFromCallsMap> IPAArgEscFromCallers_)
   : AnalyzedFunc(Fn), IPABottomTopInfo(IPABottomTopInfo_),
-    IPATopDownArgEsc(IPAArgEscFromCallers_) {
+    IPATopDownInfo(IPAArgEscFromCallers_) {
   LLVM_DEBUG(dbgs() << "\n|||||||||||||||||||||||||||||||||||||||||||||||||||||"
                        "|||||||||||||||||\n"
                        "|||||||||||||||||||| Func "
@@ -498,7 +498,7 @@ void EscapeAnalysisInfo::updRetEscStatus(
     const SmallVectorImpl<UnderlObjInfo> &UnderlObjs) {
   for (const auto EO : UnderlObjs) {
     LLVM_DEBUG(dbgs() << "\t\treturn: check: " << *EO.Obj << "\n";);
-    if (isEscapedForFunc(EO.Obj) || ES.getEscReason(EO.Obj).any()) {
+    if (isEscapedForBBIPA(BB, EO.Obj) || ES.getEscReason(EO.Obj).any()) { // FIXME remove getEscReason??
       LLVM_DEBUG(dbgs() << "\t\t\t\treturn is escaped\n");
       IsRetEscape = true;
       return;
@@ -578,6 +578,7 @@ void EscapeAnalysisInfo::compBBEscapeState(const BasicBlock *BB,
           updRetEscStatus(ES, BB, UnderlObjs);
 
         for (const auto &[Obj, Loaded] : UnderlObjs) {
+          ES.addEscapingObject(Obj, EscReason);
           if (Loaded) {
             LLVM_DEBUG(dbgs() << "\t\tLoaded\n");
             ES.forEachPointeeDo(Obj, [&](const Value *Pointee) {
@@ -678,9 +679,9 @@ EscapeAnalysisInfo::getEscInfoCall(const Use &U, const Instruction *I) const {
   if (isIntrinsicReturningPointerAliasingArgumentWithoutCapturing(Call, true))
     return {EscKindTy::MAY_ALIASING, getUnderlyingMayEscObjs(I)};
 
-  // Volatile operations effectively capture the memory location that they
-  // load and store to.
   if (const auto *MI = dyn_cast<MemIntrinsic>(Call)) {
+    // Volatile operations effectively capture the memory location that they
+    // load and store to.
     if (MI->isVolatile())
       return {EscKindTy::MAY_ESCAPE, EscReasonTy(EscReasonBits::VOLATILE)};
 
@@ -732,7 +733,7 @@ EscapeAnalysisInfo::getEscInfoCall(const Use &U, const Instruction *I) const {
 
     // If called function is local, find argument information in ArgsEscapes
     // provided by IPA callgraph traversal
-    const auto ArgEscReason = getArgEscStatus(ArgNo, Callee);
+    const auto ArgEscReason = getArgEscBottomTopIPA(ArgNo, Callee);
     if (ArgEscReason.any() && (ArgEscReason != EscReasonBits::PTR_ARG_ALIASING))
       return {EscKindTy::MAY_ESCAPE, EscReasonBits::PASSING_TO_CALL};
   }
@@ -1412,12 +1413,9 @@ bool EscapeAnalysisGlobalInfo::isEscapedForBBTSan(
     return true;
 
   if (UnderlObj.Loaded) {
-    bool IsEscaped = false;
     FEIIt->second.forEachPointeeDo(UnderlObj.Obj, BB, [&](const Value *V) {
-      if (FEIIt->second.isEscapedForBBIPA(BB, V, &EscReason))
-        IsEscaped = true;
+      FEIIt->second.isEscapedForBBIPA(BB, V, &EscReason);
     });
-    return IsEscaped;
   }
   return EscReason.any();
 }

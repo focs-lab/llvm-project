@@ -39,7 +39,8 @@ entry:
 
 define dso_local ptr @escape_by_returning_ptr() {
 ; CHECK: Printing analysis 'Escape Analysis' for function 'escape_by_returning_ptr':
-; CHECK-NOT: Escaping objects for BB entry:
+; CHECK-NEXT: Escaping objects for BB entry:
+; CHECK-DAG:  %x = alloca ptr, align 8
 entry:
   %x = alloca ptr, align 8
   %0 = load ptr, ptr %x, align 8

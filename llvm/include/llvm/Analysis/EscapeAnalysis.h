@@ -128,7 +128,7 @@ private:
   std::shared_ptr<IPABottomTopMap> IPABottomTopInfo;
 
   // IPA information about arguments escapes from calls (top-bottom)
-  std::shared_ptr<IPAArgEscFromCallsMap> IPATopDownArgEsc;
+  std::shared_ptr<IPAArgEscFromCallsMap> IPATopDownInfo;
 
   // Whether return value is escaping or not (need it in IPA)
   bool IsRetEscape = false;
@@ -270,7 +270,7 @@ private:
   const EscapedObjectsTy &getFuncEscState() const;
 
   /// Find in ArgsEscapes given argument and return escape status
-  EscReasonTy getArgEscStatus(unsigned ArgNo, const Function *Func) const;
+  EscReasonTy getArgEscBottomTopIPA(unsigned ArgNo, const Function *Func) const;
 
   /// Find argument in the from-callers (top-bottom) escape info
   EscReasonTy getArgEscTopDownIPA(const unsigned ArgNo,

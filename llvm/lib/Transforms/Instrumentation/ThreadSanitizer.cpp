@@ -664,10 +664,13 @@ bool ThreadSanitizer::sanitizeFunction(
         LocalLoadsAndStores.push_back(&Inst);
       else if ((isa<CallInst>(Inst) && !isa<DbgInfoIntrinsic>(Inst)) ||
                isa<InvokeInst>(Inst)) {
+        bool IsIntr = false, IsInterc = false;
         if (CallInst *CI = dyn_cast<CallInst>(&Inst))
           maybeMarkSanitizerLibraryCallNoBuiltin(CI, &TLI);
-        if (isa<MemIntrinsic>(Inst))
+        if (isa<MemIntrinsic>(Inst)) {
           MemIntrinCalls.push_back(&Inst);
+          IsIntr = true;
+        }
 
         if (auto *CI = dyn_cast<CallInst>(&Inst)) {
           if (Function *Callee = CI->getCalledFunction()) {
@@ -675,11 +678,13 @@ bool ThreadSanitizer::sanitizeFunction(
                 Callee->getName() == "memchr" ||
                 Callee->getName() == "strlen") {
               InterceptedCalls.push_back(CI);
+              IsInterc = true;
             }
           }
         }
 
-        HasCalls = true;
+        if (!IsIntr && !IsInterc)
+          HasCalls = true;
         chooseInstructionsToInstrument(LocalLoadsAndStores, AllLoadsAndStores,
                                        DL, EAI, EAIGlobal);
       }
@@ -851,7 +856,7 @@ isPointerEscaped(Value *Ptr, Instruction *I,
 bool ThreadSanitizer::instrumentInterceptedCalls(
     CallInst *CI, std::optional<EscapeAnalysisGlobalInfo *> EAIGlobal) {
   // Check which intercepted function is being called
-  LLVM_DEBUG(dbgs() << "Check " << *CI << "\n");
+  // LLVM_DEBUG(dbgs() << "Check " << *CI << "\n");
 
   Function *Callee = CI->getCalledFunction();
   bool ArePointersEscaped = true;
