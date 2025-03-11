@@ -1,5 +1,12 @@
 // RUN: %clang_cc1 %s -fopenacc -Wno-openacc-deprecated-clause-alias -ast-dump | FileCheck %s
 
+// Test this with PCH.
+// RUN: %clang_cc1 %s -fopenacc -emit-pch -Wno-openacc-deprecated-clause-alias -o %t %s
+// RUN: %clang_cc1 %s -fopenacc -include-pch %t -Wno-openacc-deprecated-clause-alias -ast-dump-all | FileCheck %s
+
+#ifndef PCH_HELPER
+#define PCH_HELPER
+
 int Global;
 short GlobalArray[5];
 
@@ -188,6 +195,17 @@ void NormalUses(float *PointerParam) {
   // CHECK-NEXT: DeclRefExpr{{.*}}'int' lvalue Var{{.*}}'Global' 'int'
   // CHECK-NEXT: ImplicitCastExpr{{.*}} 'int' <LValueToRValue>
   // CHECK-NEXT: DeclRefExpr{{.*}}'int' lvalue Var{{.*}}'Global' 'int'
+  // CHECK-NEXT: WhileStmt
+  // CHECK-NEXT: CXXBoolLiteralExpr
+  // CHECK-NEXT: NullStmt
+
+#pragma acc parallel attach(PointerParam) deviceptr(PointerParam)
+  while (true);
+  // CHECK-NEXT: OpenACCComputeConstruct{{.*}} parallel
+  // CHECK-NEXT: attach clause
+  // CHECK-NEXT: DeclRefExpr{{.*}}'float *' lvalue ParmVar{{.*}} 'PointerParam' 'float *'
+  // CHECK-NEXT: deviceptr clause
+  // CHECK-NEXT: DeclRefExpr{{.*}}'float *' lvalue ParmVar{{.*}} 'PointerParam' 'float *'
   // CHECK-NEXT: WhileStmt
   // CHECK-NEXT: CXXBoolLiteralExpr
   // CHECK-NEXT: NullStmt
@@ -402,6 +420,17 @@ void TemplUses(T t, U u, T*PointerParam) {
   // CHECK-NEXT: CXXBoolLiteralExpr
   // CHECK-NEXT: NullStmt
 
+#pragma acc parallel attach(PointerParam) deviceptr(PointerParam)
+  while (true);
+  // CHECK-NEXT: OpenACCComputeConstruct{{.*}} parallel
+  // CHECK-NEXT: attach clause
+  // CHECK-NEXT: DeclRefExpr{{.*}}'T *' lvalue ParmVar{{.*}} 'PointerParam' 'T *'
+  // CHECK-NEXT: deviceptr clause
+  // CHECK-NEXT: DeclRefExpr{{.*}}'T *' lvalue ParmVar{{.*}} 'PointerParam' 'T *'
+  // CHECK-NEXT: WhileStmt
+  // CHECK-NEXT: CXXBoolLiteralExpr
+  // CHECK-NEXT: NullStmt
+
   // CHECK-NEXT: DeclStmt
   // CHECK-NEXT: VarDecl{{.*}}EndMarker
   int EndMarker;
@@ -413,7 +442,7 @@ void TemplUses(T t, U u, T*PointerParam) {
   // CHECK-NEXT: TemplateArgument type 'int'
   // CHECK-NEXT: BuiltinType{{.*}} 'int'
   // CHECK-NEXT: TemplateArgument type 'int[1]'
-  // CHECK-NEXT: ConstantArrayType{{.*}} 'int[1]' 1
+  // CHECK-NEXT: ConstantArrayType{{.*}} 'int[1]'{{.*}} 1
   // CHECK-NEXT: BuiltinType{{.*}} 'int'
   // CHECK-NEXT: ParmVarDecl{{.*}} used t 'int'
   // CHECK-NEXT: ParmVarDecl{{.*}} used u 'int *'
@@ -604,6 +633,16 @@ void TemplUses(T t, U u, T*PointerParam) {
   // CHECK-NEXT: CXXBoolLiteralExpr
   // CHECK-NEXT: NullStmt
 
+//#pragma acc parallel attach(PointerParam) deviceptr(PointerParam)
+  // CHECK-NEXT: OpenACCComputeConstruct{{.*}} parallel
+  // CHECK-NEXT: attach clause
+  // CHECK-NEXT: DeclRefExpr{{.*}}'int *' lvalue ParmVar{{.*}} 'PointerParam' 'int *'
+  // CHECK-NEXT: deviceptr clause
+  // CHECK-NEXT: DeclRefExpr{{.*}}'int *' lvalue ParmVar{{.*}} 'PointerParam' 'int *'
+  // CHECK-NEXT: WhileStmt
+  // CHECK-NEXT: CXXBoolLiteralExpr
+  // CHECK-NEXT: NullStmt
+
   // CHECK-NEXT: DeclStmt
   // CHECK-NEXT: VarDecl{{.*}}EndMarker
 }
@@ -613,6 +652,8 @@ struct S {
   // CHECK: CXXRecordDecl{{.*}} implicit struct S
   int ThisMember;
   // CHECK-NEXT: FieldDecl{{.*}} ThisMember 'int'
+  int *ThisMemberPtr;
+  // CHECK-NEXT: FieldDecl{{.*}} ThisMemberPtr 'int *'
   int ThisMemberArray[5];
   // CHECK-NEXT: FieldDecl{{.*}} ThisMemberArray 'int[5]'
 
@@ -620,10 +661,11 @@ struct S {
   // CHECK-NEXT: CXXMethodDecl{{.*}} foo 'void ()'
 
   template<typename T>
-  void bar() {
+  void bar(T *PointerParam) {
   // CHECK-NEXT: FunctionTemplateDecl{{.*}}bar
   // CHECK-NEXT: TemplateTypeParmDecl{{.*}}typename depth 0 index 0 T
-  // CHECK-NEXT: CXXMethodDecl{{.*}} bar 'void ()' implicit-inline
+  // CHECK-NEXT: CXXMethodDecl{{.*}} bar 'void (T *)' implicit-inline
+  // CHECK-NEXT: ParmVarDecl{{.*}} PointerParam 'T *'
   // CHECK-NEXT: CompoundStmt
 
 #pragma acc parallel private(ThisMember, this->ThisMemberArray[1])
@@ -664,10 +706,28 @@ struct S {
   // CHECK-NEXT: CXXBoolLiteralExpr
   // CHECK-NEXT: NullStmt
 
+#pragma acc parallel attach(PointerParam, this, this->ThisMemberPtr) deviceptr(PointerParam, this, ThisMemberPtr)
+  while (true);
+  // CHECK-NEXT: OpenACCComputeConstruct{{.*}} parallel
+  // CHECK-NEXT: attach clause
+  // CHECK-NEXT: DeclRefExpr{{.*}} 'T *' lvalue ParmVar{{.*}} 'PointerParam' 'T *'
+  // CHECK-NEXT: CXXThisExpr{{.*}} 'S *' this
+  // CHECK-NEXT: MemberExpr{{.*}} 'int *' lvalue ->ThisMemberPtr
+  // CHECK-NEXT: CXXThisExpr{{.*}} 'S *' this
+  // CHECK-NEXT: deviceptr clause
+  // CHECK-NEXT: DeclRefExpr{{.*}} 'T *' lvalue ParmVar{{.*}} 'PointerParam' 'T *'
+  // CHECK-NEXT: CXXThisExpr{{.*}} 'S *' this
+  // CHECK-NEXT: MemberExpr{{.*}} 'int *' lvalue ->ThisMemberPtr
+  // CHECK-NEXT: CXXThisExpr{{.*}} 'S *' implicit this
+  // CHECK-NEXT: WhileStmt
+  // CHECK-NEXT: CXXBoolLiteralExpr
+  // CHECK-NEXT: NullStmt
+
   // Check Instantiations:
-  // CHECK-NEXT: CXXMethodDecl{{.*}} used bar 'void ()' implicit_instantiation implicit-inline
+  // CHECK-NEXT: CXXMethodDecl{{.*}} used bar 'void (int *)' implicit_instantiation implicit-inline
   // CHECK-NEXT: TemplateArgument type 'int'
   // CHECK-NEXT: BuiltinType{{.*}} 'int'
+  // CHECK-NEXT: ParmVarDecl{{.*}} PointerParam 'int *'
   // CHECK-NEXT: CompoundStmt
 
 // #pragma acc parallel private(ThisMember, this->ThisMemberArray[1])
@@ -701,6 +761,22 @@ struct S {
   // CHECK-NEXT: OpenACCComputeConstruct{{.*}} parallel
   // CHECK-NEXT: private clause
   // CHECK-NEXT: CXXThisExpr{{.*}} 'S *' this
+  // CHECK-NEXT: WhileStmt
+  // CHECK-NEXT: CXXBoolLiteralExpr
+  // CHECK-NEXT: NullStmt
+
+//#pragma acc parallel attach(PointerParam, this, this->ThisMemberPtr) deviceptr(PointerParam, this, ThisMemberPtr)
+  // CHECK-NEXT: OpenACCComputeConstruct{{.*}} parallel
+  // CHECK-NEXT: attach clause
+  // CHECK-NEXT: DeclRefExpr{{.*}} 'int *' lvalue ParmVar{{.*}} 'PointerParam' 'int *'
+  // CHECK-NEXT: CXXThisExpr{{.*}} 'S *' this
+  // CHECK-NEXT: MemberExpr{{.*}} 'int *' lvalue ->ThisMemberPtr
+  // CHECK-NEXT: CXXThisExpr{{.*}} 'S *' this
+  // CHECK-NEXT: deviceptr clause
+  // CHECK-NEXT: DeclRefExpr{{.*}} 'int *' lvalue ParmVar{{.*}} 'PointerParam' 'int *'
+  // CHECK-NEXT: CXXThisExpr{{.*}} 'S *' this
+  // CHECK-NEXT: MemberExpr{{.*}} 'int *' lvalue ->ThisMemberPtr
+  // CHECK-NEXT: CXXThisExpr{{.*}} 'S *' implicit this
   // CHECK-NEXT: WhileStmt
   // CHECK-NEXT: CXXBoolLiteralExpr
   // CHECK-NEXT: NullStmt
@@ -906,7 +982,8 @@ void Inst() {
   TemplUses<CEVar, int, int[1]>({}, {}, &i);
 
   S s;
-  s.bar<int>();
+  s.bar<int>(&i);
   STempl<int> stempl;
   stempl.bar<int>();
 }
+#endif

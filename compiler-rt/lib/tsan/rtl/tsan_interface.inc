@@ -19,98 +19,122 @@
 using namespace __tsan;
 
 void __tsan_read1(void *addr) {
+  return;
   MemoryAccess(cur_thread(), CALLERPC, (uptr)addr, 1, kAccessRead);
 }
 
 void __tsan_read2(void *addr) {
+  return;
   MemoryAccess(cur_thread(), CALLERPC, (uptr)addr, 2, kAccessRead);
 }
 
 void __tsan_read4(void *addr) {
+  return;
   MemoryAccess(cur_thread(), CALLERPC, (uptr)addr, 4, kAccessRead);
 }
 
 void __tsan_read8(void *addr) {
+  return;
   MemoryAccess(cur_thread(), CALLERPC, (uptr)addr, 8, kAccessRead);
 }
 
 void __tsan_read16(void *addr) {
+  return;
   MemoryAccess16(cur_thread(), CALLERPC, (uptr)addr, kAccessRead);
 }
 
 void __tsan_write1(void *addr) {
+  return;
   MemoryAccess(cur_thread(), CALLERPC, (uptr)addr, 1, kAccessWrite);
 }
 
 void __tsan_write2(void *addr) {
+  return;
   MemoryAccess(cur_thread(), CALLERPC, (uptr)addr, 2, kAccessWrite);
 }
 
 void __tsan_write4(void *addr) {
+  return;
   MemoryAccess(cur_thread(), CALLERPC, (uptr)addr, 4, kAccessWrite);
 }
 
 void __tsan_write8(void *addr) {
+  return;
   MemoryAccess(cur_thread(), CALLERPC, (uptr)addr, 8, kAccessWrite);
 }
 
 void __tsan_write16(void *addr) {
+  return;
   MemoryAccess16(cur_thread(), CALLERPC, (uptr)addr, kAccessWrite);
 }
 
 void __tsan_read1_pc(void *addr, void *pc) {
+  return;
   MemoryAccess(cur_thread(), STRIP_PAC_PC(pc), (uptr)addr, 1, kAccessRead | kAccessExternalPC);
 }
 
 void __tsan_read2_pc(void *addr, void *pc) {
+  return;
   MemoryAccess(cur_thread(), STRIP_PAC_PC(pc), (uptr)addr, 2, kAccessRead | kAccessExternalPC);
 }
 
 void __tsan_read4_pc(void *addr, void *pc) {
+  return;
   MemoryAccess(cur_thread(), STRIP_PAC_PC(pc), (uptr)addr, 4, kAccessRead | kAccessExternalPC);
 }
 
 void __tsan_read8_pc(void *addr, void *pc) {
+  return;
   MemoryAccess(cur_thread(), STRIP_PAC_PC(pc), (uptr)addr, 8, kAccessRead | kAccessExternalPC);
 }
 
 void __tsan_write1_pc(void *addr, void *pc) {
+  return;
   MemoryAccess(cur_thread(), STRIP_PAC_PC(pc), (uptr)addr, 1, kAccessWrite | kAccessExternalPC);
 }
 
 void __tsan_write2_pc(void *addr, void *pc) {
+  return;
   MemoryAccess(cur_thread(), STRIP_PAC_PC(pc), (uptr)addr, 2, kAccessWrite | kAccessExternalPC);
 }
 
 void __tsan_write4_pc(void *addr, void *pc) {
+  return;
   MemoryAccess(cur_thread(), STRIP_PAC_PC(pc), (uptr)addr, 4, kAccessWrite | kAccessExternalPC);
 }
 
 void __tsan_write8_pc(void *addr, void *pc) {
+  return;
   MemoryAccess(cur_thread(), STRIP_PAC_PC(pc), (uptr)addr, 8, kAccessWrite | kAccessExternalPC);
 }
 
 ALWAYS_INLINE USED void __tsan_unaligned_read2(const void *addr) {
+  return;
   UnalignedMemoryAccess(cur_thread(), CALLERPC, (uptr)addr, 2, kAccessRead);
 }
 
 ALWAYS_INLINE USED void __tsan_unaligned_read4(const void *addr) {
+  return;
   UnalignedMemoryAccess(cur_thread(), CALLERPC, (uptr)addr, 4, kAccessRead);
 }
 
 ALWAYS_INLINE USED void __tsan_unaligned_read8(const void *addr) {
+  return;
   UnalignedMemoryAccess(cur_thread(), CALLERPC, (uptr)addr, 8, kAccessRead);
 }
 
 ALWAYS_INLINE USED void __tsan_unaligned_write2(void *addr) {
+  return;
   UnalignedMemoryAccess(cur_thread(), CALLERPC, (uptr)addr, 2, kAccessWrite);
 }
 
 ALWAYS_INLINE USED void __tsan_unaligned_write4(void *addr) {
+  return;
   UnalignedMemoryAccess(cur_thread(), CALLERPC, (uptr)addr, 4, kAccessWrite);
 }
 
 ALWAYS_INLINE USED void __tsan_unaligned_write8(void *addr) {
+  return;
   UnalignedMemoryAccess(cur_thread(), CALLERPC, (uptr)addr, 8, kAccessWrite);
 }
 
@@ -154,6 +178,7 @@ void __sanitizer_unaligned_store64(uu64 *addr, u64 v) {
 }
 
 void __tsan_vptr_update(void **vptr_p, void *new_val) {
+  return;
   if (*vptr_p == new_val)
     return;
   MemoryAccess(cur_thread(), CALLERPC, (uptr)vptr_p, sizeof(*vptr_p),
@@ -161,6 +186,7 @@ void __tsan_vptr_update(void **vptr_p, void *new_val) {
 }
 
 void __tsan_vptr_read(void **vptr_p) {
+  return;
   MemoryAccess(cur_thread(), CALLERPC, (uptr)vptr_p, sizeof(*vptr_p),
                kAccessRead | kAccessVptr);
 }
@@ -174,17 +200,21 @@ void __tsan_ignore_thread_begin() { ThreadIgnoreBegin(cur_thread(), CALLERPC); }
 void __tsan_ignore_thread_end() { ThreadIgnoreEnd(cur_thread()); }
 
 void __tsan_read_range(void *addr, uptr size) {
+  return;
   MemoryAccessRange(cur_thread(), CALLERPC, (uptr)addr, size, false);
 }
 
 void __tsan_write_range(void *addr, uptr size) {
+  return;
   MemoryAccessRange(cur_thread(), CALLERPC, (uptr)addr, size, true);
 }
 
 void __tsan_read_range_pc(void *addr, uptr size, void *pc) {
+  return;
   MemoryAccessRange(cur_thread(), STRIP_PAC_PC(pc), (uptr)addr, size, false);
 }
 
 void __tsan_write_range_pc(void *addr, uptr size, void *pc) {
+  return;
   MemoryAccessRange(cur_thread(), STRIP_PAC_PC(pc), (uptr)addr, size, true);
 }

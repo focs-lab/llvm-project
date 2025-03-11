@@ -42,6 +42,9 @@ void TestExpandMathPass::runOnOperation() {
   populateExpandSinhPattern(patterns);
   populateExpandCoshPattern(patterns);
   populateExpandTanhPattern(patterns);
+  populateExpandAsinhPattern(patterns);
+  populateExpandAcoshPattern(patterns);
+  populateExpandAtanhPattern(patterns);
   populateExpandFmaFPattern(patterns);
   populateExpandFloorFPattern(patterns);
   populateExpandCeilFPattern(patterns);
@@ -49,7 +52,8 @@ void TestExpandMathPass::runOnOperation() {
   populateExpandFPowIPattern(patterns);
   populateExpandRoundFPattern(patterns);
   populateExpandRoundEvenPattern(patterns);
-  (void)applyPatternsAndFoldGreedily(getOperation(), std::move(patterns));
+  populateExpandRsqrtPattern(patterns);
+  (void)applyPatternsGreedily(getOperation(), std::move(patterns));
 }
 
 namespace mlir {
