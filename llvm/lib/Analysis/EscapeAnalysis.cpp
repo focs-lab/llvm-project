@@ -172,8 +172,6 @@ void EscapeAnalysisInfo::EscapeState::addPointsTo(
 
   LLVM_DEBUG(dbgs() << "\taddPointsTo: " << *Pointer.Obj << " --> "
                     << *Pointee.Obj << "\n");
-  // LLVM_DEBUG(dbgs() << "\t\tPointer.Loaded: " << Pointer.Loaded
-                    // << "\n\t\tPointee.Loaded: " << Pointee.Loaded << "\n");
 
   PointsTo.PointsToMap[Pointer.Obj].insert(Pointee.Obj);
 

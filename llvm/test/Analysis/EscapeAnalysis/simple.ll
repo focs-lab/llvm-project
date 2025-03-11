@@ -66,3 +66,23 @@ entry:
   store ptr %2, ptr @GPtr, align 8
   ret void
 }
+
+; Pointer escapes itself when passing it to external function
+; Escaping local pointer
+; void escaping_ptr() {
+;   int *x;
+;   external_func(x);
+;   *x = 777;
+; }
+define dso_local void @escaping_ptr() {
+; CHECK: Printing analysis 'Escape Analysis' for function 'escaping_ptr':
+; CHECK-NEXT: Escaping objects for BB entry:
+; CHECK-NEXT:   %x = alloca ptr, align 8
+entry:
+  %x = alloca ptr, align 8
+  %0 = load ptr, ptr %x, align 8
+  call void @external_func(ptr noundef %0)
+  %1 = load ptr, ptr %x, align 8
+  store i32 777, ptr %1, align 4
+  ret void
+}
