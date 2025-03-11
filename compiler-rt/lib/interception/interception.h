@@ -223,6 +223,21 @@ const interpose_substitution substitution_##func_name[]             \
        ".size  " SANITIZER_STRINGIFY(TRAMPOLINE(func)) ", "                    \
             ".-" SANITIZER_STRINGIFY(TRAMPOLINE(func)) "\n"                    \
      );
+    //  asm(                                                                      \
+    //    ".text\n"                                                               \
+    //    __ASM_WEAK_WRAPPER(func)                                                \
+    //    ".globl " SANITIZER_STRINGIFY(TRAMPOLINE(func)) "\n"                    \
+    //    ".type  " SANITIZER_STRINGIFY(TRAMPOLINE(func)) ", "                    \
+    //      ASM_TYPE_FUNCTION_STR "\n"                                            \
+    //    SANITIZER_STRINGIFY(TRAMPOLINE(func)) ":\n"                             \
+    //    C_ASM_STARTPROC "\n"                                                    \
+    //    C_ASM_TAIL_CALL(SANITIZER_STRINGIFY(TRAMPOLINE(func)),                  \
+    //                    "__interceptor_"                                        \
+    //                      SANITIZER_STRINGIFY(ASM_PREEMPTIBLE_SYM(func))) "\n"  \
+    //    C_ASM_ENDPROC "\n"                                                      \
+    //    ".size  " SANITIZER_STRINGIFY(TRAMPOLINE(func)) ", "                    \
+    //         ".-" SANITIZER_STRINGIFY(TRAMPOLINE(func)) "\n"                    \
+    //  );
 # else  // ASM_INTERCEPTOR_TRAMPOLINE_SUPPORT
 // Some architectures cannot implement efficient interceptor trampolines with
 // just a plain jump due to complexities of resolving a preemptible symbol. In

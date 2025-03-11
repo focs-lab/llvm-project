@@ -52,6 +52,13 @@
 # error "ThreadSanitizer is supported only on 64-bit platforms"
 #endif
 
+using namespace __sanitizer;
+extern THREADLOCAL atomic_uint64_t* __tsan_channel_ptr;
+extern THREADLOCAL u32 __tsan_channel_idx;
+extern THREADLOCAL u8 __tsan_sampling;
+
+extern u32* __tsan_counters;
+
 namespace __tsan {
 
 #if !SANITIZER_GO
@@ -233,6 +240,10 @@ struct alignas(SANITIZER_CACHE_LINE_SIZE) ThreadState {
 
   const ReportDesc *current_report;
 
+  // for logging
+  // uptr log_id;
+  uptr log_fd;
+
   explicit ThreadState(Tid tid);
 };
 
@@ -378,6 +389,8 @@ struct Context {
   uptr mapped_shadow_begin;
   uptr mapped_shadow_end;
 #endif
+
+  int monitor_pid;
 };
 
 extern Context *ctx;  // The one and the only global runtime context.

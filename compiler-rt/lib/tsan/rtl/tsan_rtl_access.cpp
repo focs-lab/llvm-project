@@ -607,6 +607,7 @@ void MemoryResetRange(ThreadState* thr, uptr pc, uptr addr, uptr size) {
 }
 
 void MemoryRangeFreed(ThreadState* thr, uptr pc, uptr addr, uptr size) {
+  return;
   // Callers must lock the slot to ensure synchronization with the reset.
   // The problem with "freed" memory is that it's not "monotonic"
   // with respect to bug detection: freed memory is bad to access,

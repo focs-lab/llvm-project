@@ -151,6 +151,11 @@ struct OnStartedArgs {
 
 void ThreadStart(ThreadState *thr, Tid tid, tid_t os_id,
                  ThreadType thread_type) {
+  if (UNLIKELY(!__tsan_channel_ptr)) {
+    __tsan_channel_ptr = reinterpret_cast<atomic_uint64_t*>(CreateLogFile(tid, &thr->log_fd));
+    __tsan_channel_idx = 0;
+    __tsan_sampling = 1;
+  }
   ctx->thread_registry.StartThread(tid, os_id, thread_type, thr);
   if (!thr->ignore_sync) {
     SlotAttachAndLock(thr);
@@ -249,6 +254,9 @@ void ThreadFinish(ThreadState *thr) {
     ctx->dd->DestroyLogicalThread(thr->dd_lt);
   SlotDetach(thr);
   ctx->thread_registry.FinishThread(thr->tid);
+
+  CloseLogFile(thr->log_fd);
+
   thr->~ThreadState();
 }
 
