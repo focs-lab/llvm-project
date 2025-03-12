@@ -113,6 +113,7 @@ void PrintStack(const ReportStack *ent) {
         &frame->info, common_flags()->symbolize_vs_style,
         common_flags()->strip_path_prefix);
     Printf("%s\n", res.data());
+    break;
   }
   Printf("\n");
 }
@@ -140,6 +141,7 @@ static const char *ExternalMopDesc(bool first, bool write) {
 }
 
 static void PrintMop(const ReportMop *mop, bool first) {
+/*
   Decorator d;
   char thrbuf[kThreadBufSize];
   Printf("%s", d.Access());
@@ -158,6 +160,7 @@ static void PrintMop(const ReportMop *mop, bool first) {
   PrintMutexSet(mop->mset);
   Printf(":\n");
   Printf("%s", d.Default());
+*/
   PrintStack(mop->stack);
 }
 
@@ -228,6 +231,7 @@ static void PrintMutex(const ReportMutex *rm) {
 }
 
 static void PrintThread(const ReportThread *rt) {
+/*
   Decorator d;
   if (rt->id == kMainTid)  // Little sense in describing the main thread.
     return;
@@ -250,6 +254,7 @@ static void PrintThread(const ReportThread *rt) {
     Printf(" at:");
   Printf("\n");
   Printf("%s", d.Default());
+*/
   PrintStack(rt->stack);
 }
 
@@ -280,6 +285,8 @@ static const SymbolizedStack *SkipTsanInternalFrames(SymbolizedStack *frames) {
 }
 
 void PrintReport(const ReportDesc *rep) {
+  // return; // dwslim
+/*
   Decorator d;
   Printf("==================\n");
   const char *rep_typ_str = ReportTypeString(rep->typ, rep->tag);
@@ -287,7 +294,9 @@ void PrintReport(const ReportDesc *rep) {
   Printf("WARNING: ThreadSanitizer: %s (pid=%d)\n", rep_typ_str,
          (int)internal_getpid());
   Printf("%s", d.Default());
+*/
 
+/*
   if (rep->typ == ReportTypeErrnoInSignal)
     Printf("  Signal %u handler invoked at:\n", rep->signum);
 
@@ -329,8 +338,10 @@ void PrintReport(const ReportDesc *rep) {
     }
   }
 
+*/
   for (uptr i = 0; i < rep->mops.Size(); i++)
     PrintMop(rep->mops[i], i == 0);
+/*
 
   if (rep->sleep)
     PrintSleep(rep->sleep);
@@ -342,21 +353,20 @@ void PrintReport(const ReportDesc *rep) {
     for (uptr i = 0; i < rep->mutexes.Size(); i++)
       PrintMutex(rep->mutexes[i]);
   }
-
   for (uptr i = 0; i < rep->threads.Size(); i++)
     PrintThread(rep->threads[i]);
-
   if (rep->typ == ReportTypeThreadLeak && rep->count > 1)
     Printf("  And %d more similar thread leaks.\n\n", rep->count - 1);
-
+*/
+  const char *rep_typ_str = ReportTypeString(rep->typ, rep->tag);
   if (ReportStack *stack = ChooseSummaryStack(rep)) {
     if (const SymbolizedStack *frame = SkipTsanInternalFrames(stack->frames))
       ReportErrorSummary(rep_typ_str, frame->info);
   }
-
+/*
   if (common_flags()->print_module_map == 2)
     DumpProcessMap();
-
+*/
   Printf("==================\n");
 }
 
