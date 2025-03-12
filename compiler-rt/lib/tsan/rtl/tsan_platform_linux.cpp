@@ -247,9 +247,9 @@ uptr CreateLogFile(Tid tid, uptr* out_fd) {
   // Open a new file descriptor, creating the file if it does not exist
   // 0666 = read + write access for user, group and world
   char dir_name[64], file_name[64];
-  internal_snprintf(dir_name, 64, "/tmp/tsan.slots.%d", internal_getpid());
+  internal_snprintf(dir_name, 64, "/tmp/tsan.monitor.%lu", internal_getpid());
   mkdir(dir_name, 0755);
-  internal_snprintf(file_name, 64, "/tmp/tsan.slots.%d/%d", internal_getpid(), tid);
+  internal_snprintf(file_name, 64, "/tmp/tsan.monitor.%lu/%d", internal_getpid(), tid);
   int fd = internal_open(file_name, O_RDWR | O_CREAT, 0666);
   if (fd < 0) {
     Printf("Error opening file %s!\n", file_name);
