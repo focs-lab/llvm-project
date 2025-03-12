@@ -707,6 +707,9 @@ static bool SpuriousRace(Shadow old) {
 
 void ReportRace(ThreadState *thr, RawShadow *shadow_mem, Shadow cur, Shadow old,
                 AccessType typ0) {
+#if !TSAN_REPORT_RACE
+  return;
+#endif
   CheckedMutex::CheckNoLocks();
 
   // Symbolizer makes lots of intercepted calls. If we try to process them,

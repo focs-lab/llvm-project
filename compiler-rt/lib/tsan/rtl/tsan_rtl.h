@@ -618,6 +618,10 @@ void OnUserFree(ThreadState *thr, uptr pc, uptr p, bool write);
 
 #if TSAN_SAMPLING
 ALWAYS_INLINE bool ShouldSample(ThreadState *thr) {
+#if TSAN_EMPTY
+  return false;
+#endif
+
   // For testing, when we want to sample all events.
   // #if TSAN_UCLOCKS || TSAN_OL
   // thr->SetSampled(true);
