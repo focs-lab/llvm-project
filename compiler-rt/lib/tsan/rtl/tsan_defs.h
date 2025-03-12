@@ -30,13 +30,13 @@
 #define TSAN_CONFIG_SSU_MEA 8
 #define TSAN_CONFIG_SSO_MEA 9
 
-#define TSAN_FRESHNESS_CONFIG TSAN_CONFIG_SST
-#define TSAN_SAMPLING_RATE 0.3
+#define TSAN_FRESHNESS_CONFIG TSAN_CONFIG_E
+#define TSAN_SAMPLING_RATE 0
 #define TSAN_REPORT_RACE 0
 static constexpr unsigned int TSAN_SAMPLING_THRESHOLD = 65536 * TSAN_SAMPLING_RATE / 100;
 
 #if TSAN_FRESHNESS_CONFIG == TSAN_CONFIG_E
-#define TSAN_SAMPLING 1
+#define TSAN_SAMPLING 1   // Set this to 1 so that ShouldSample is called, because the skipping logic is in there.
 #define TSAN_UCLOCKS 0
 #define TSAN_OL 0
 #define TSAN_SETTING_NAME "TSAN-E"
