@@ -761,18 +761,24 @@ void Initialize(ThreadState *thr) {
   ctx->monitor_pid = monitor_pid;
 
   // need to let the monitor process start up before continuing
-  Printf("[+] Waiting for monitor to get ready\n");
-  int monitor_wait_count = 0;
-  constexpr int monitor_wait_threshold = 10;
-  while(atomic_load_relaxed(__tsan_channel_ptr) != kMonitorReady && monitor_wait_count < monitor_wait_threshold) {
-    SleepForSeconds(1);
-    monitor_wait_count++;
+  const char* monitor_path = flags()->monitor_path;
+  if (monitor_path && monitor_path[0] != 0) {
+    Printf("[+] Waiting for monitor to get ready\n");
+    int monitor_wait_count = 0;
+    constexpr int monitor_wait_threshold = 10;
+    while(atomic_load_relaxed(__tsan_channel_ptr) != kMonitorReady && monitor_wait_count < monitor_wait_threshold) {
+      SleepForSeconds(1);
+      monitor_wait_count++;
+    }
+    if (monitor_wait_count == monitor_wait_threshold)
+      Printf("[!] Monitor did not signal ready. Resuming program regardless.\n");
+    else
+      Printf("[+] Monitor Ready\n");
+    __tsan_channel_idx++;
   }
-  if (monitor_wait_count == monitor_wait_threshold)
-    Printf("[!] Monitor did not signal ready. Resuming program regardless.\n");
-  else
-    Printf("[+] Monitor Ready\n");
-  __tsan_channel_idx++;
+  else {
+    Printf("[+] No monitor_path options found in TSAN_OPTIONS. Running without monitor.\n");
+  }
 
   if (flags()->stop_on_start) {
     Printf("ThreadSanitizer is suspended at startup (pid %d)."
