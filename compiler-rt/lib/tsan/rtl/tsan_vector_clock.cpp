@@ -444,12 +444,11 @@ void VectorClock::Acquire(VectorClock* src) {
 #else
 void VectorClock::Acquire(const VectorClock* src) {
 #endif
-  if (!src)
-    return;
-
 #if TSAN_EMPTY
   return;
 #endif
+  if (!src)
+    return;
 
 #if TSAN_UCLOCK_MEASUREMENTS
   atomic_fetch_add(&ctx->num_original_acquires, 1, memory_order_relaxed);
@@ -547,6 +546,7 @@ static VectorClock* AllocClock(VectorClock** dstp) {
 void VectorClock::Release(VectorClock** dstp) {
   VectorClock* dst = AllocClock(dstp);
 #if TSAN_EMPTY
+// still allow the clock to be allocated for a fair-ish comparison
   return;
 #endif
 
@@ -632,6 +632,7 @@ void VectorClock::Release(VectorClock** dstp) {
 void VectorClock::ReleaseStore(VectorClock** dstp) {
   VectorClock* dst = AllocClock(dstp);
 #if TSAN_EMPTY
+// still allow the clock to be allocated for a fair-ish comparison
   return;
 #endif
 
@@ -942,6 +943,7 @@ void VectorClock::AcquireJoin(const VectorClock* child) {
 
 VectorClock& VectorClock::operator=(const VectorClock& other) {
 #if TSAN_EMPTY
+// no-op
   return *this;
 #endif
 #if TSAN_UCLOCKS
