@@ -89,7 +89,7 @@ void EscapeAnalysisGlobalInfo::printSCC(
     dbgs() << *Obj << "\t";
 }
 
-static void dbgPrintAliasCand(const SmallVectorImpl<UnderlObjInfo> &UnderlObjs) {
+static void dbgPrintAliasCand(const SmallVectorImpl<UnderlObjTy> &UnderlObjs) {
   for (const auto &A : UnderlObjs)
     dbgs() << "\tAlias candidate: " << *A.Obj << "\n";
 }
@@ -153,8 +153,6 @@ void EscapeAnalysisInfo::EscapeState::checkAndUpdEscStatus(
 void EscapeAnalysisInfo::EscapeState::forEachPointeeDo(
     const Value *Obj, std::function<void(const Value *)> Action) const {
   LLVM_DEBUG(dbgs() << "\t\t\t\tforEachPointeeDo: " << *Obj << "\n";);
-  const auto Pointees = PointsTo.getPointees(Obj);
-
   if (const auto Pointees = PointsTo.getPointees(Obj); Pointees)
     for (const Value *Pointee : Pointees.value())
       Action(Pointee);
@@ -162,7 +160,7 @@ void EscapeAnalysisInfo::EscapeState::forEachPointeeDo(
 
 /// Add the alias: Alias --> PointeeValue
 void EscapeAnalysisInfo::EscapeState::addPointsTo(
-    const UnderlObjInfo &Pointer, const UnderlObjInfo &Pointee,
+    const UnderlObjTy &Pointer, const UnderlObjTy &Pointee,
     const EscapeAnalysisInfo *EAI) {
   assert(Pointer.Obj->getType()->isPointerTy() && "Alias must be a pointer\n");
 
@@ -178,8 +176,7 @@ void EscapeAnalysisInfo::EscapeState::addPointsTo(
   if (Pointee.Loaded) {
     LLVM_DEBUG(dbgs() << "\t\t\tPointee loaded\n";);
     forEachPointeeDo(Pointee.Obj, [&](const Value *Ptee) {
-      LLVM_DEBUG(dbgs() << "\t\t\t\tforEachPointeeDo: " << *Ptee << "\n");
-      addPointsTo(Pointer, {Ptee, false}, EAI);
+      addPointsTo(Pointer, {Ptee, false, std::nullopt}, EAI); // FIXME: Path
     });
     return;
   }
@@ -193,16 +190,13 @@ void EscapeAnalysisInfo::EscapeState::addPointsTo(
     forEachPointeeDo(Pointer.Obj, [&](const Value *Ptee) {
       checkAndUpdEscStatus(Ptee, Pointee.Obj, EAI);
     });
+    return;
   }
-
-  // If pointee object is escaped (as observed from previous analysis)
-  // if (const auto It = EscapedObjs.find(Pointer.Obj); It != EscapedObjs.end())
-    // addEscapeObjOrReason(Pointee.Obj, It->second);
 
   // Considering transitivity: recursively add new alias to all existing aliases
   // of PointeeValue
   forEachPointeeDo(Pointee.Obj, [&](const Value *Ptee) {
-    addPointsTo(Pointer, {Ptee, false}, EAI);
+    addPointsTo(Pointer, {Ptee, false, std::nullopt}, EAI); // FIXME: Path
   });
 }
 
@@ -493,10 +487,10 @@ EscapeAnalysisInfo::EscapeAnalysisInfo(
 
 void EscapeAnalysisInfo::updRetEscStatus(
     EscapeState &ES, const BasicBlock *BB,
-    const SmallVectorImpl<UnderlObjInfo> &UnderlObjs) {
-  for (const auto EO : UnderlObjs) {
+    const SmallVectorImpl<UnderlObjTy> &UnderlObjs) {
+  for (const auto &EO : UnderlObjs) {
     LLVM_DEBUG(dbgs() << "\t\treturn: check: " << *EO.Obj << "\n";);
-    if (isEscapedForBBIPA(BB, EO.Obj) || ES.getEscReason(EO.Obj).any()) { // FIXME remove getEscReason??
+    if (isEscapedForBBIPA(BB, EO.Obj) || ES.getEscReason(EO.Obj).any()) {
       LLVM_DEBUG(dbgs() << "\t\t\t\treturn is escaped\n");
       IsRetEscape = true;
       return;
@@ -504,7 +498,7 @@ void EscapeAnalysisInfo::updRetEscStatus(
     LLVM_DEBUG(dbgs() << "\t\t\t\treturn is not escaped\n");
   }
 
-  for (const auto &[Obj, Loaded] : UnderlObjs) {
+  for (const auto &[Obj, Loaded, Path] : UnderlObjs) {
     if (Loaded) {
       LLVM_DEBUG(dbgs() << "\t\tupdRetEscStatus " << *Obj << " Loaded\n");
       ES.forEachPointeeDo(Obj, [&](const Value *Pointee) {
@@ -567,7 +561,7 @@ void EscapeAnalysisInfo::compBBEscapeState(const BasicBlock *BB,
         // register escapes, not a memory
         if (EscReason == EscReasonBits::ESCAPED_CALL) {
           UnderlObjs.clear();
-          UnderlObjs.push_back({&I, false});
+          UnderlObjs.push_back({&I, false, std::nullopt}); // INFO: Path
         }
 
         // If that's return instruction, we should check if it can return
@@ -575,7 +569,7 @@ void EscapeAnalysisInfo::compBBEscapeState(const BasicBlock *BB,
         if ((I.getOpcode() == Instruction::Ret) && (!IsRetEscape))
           updRetEscStatus(ES, BB, UnderlObjs);
 
-        for (const auto &[Obj, Loaded] : UnderlObjs) {
+        for (const auto &[Obj, Loaded, Path] : UnderlObjs) {
           ES.addEscapingObject(Obj, EscReason);
           if (Loaded) {
             LLVM_DEBUG(dbgs() << "\t\tLoaded\n");
@@ -593,11 +587,11 @@ void EscapeAnalysisInfo::compBBEscapeState(const BasicBlock *BB,
             ES.addEscapingObject(Obj, EscReason);
         }
       } else { assert(EscKind == EscKindTy::MAY_ALIASING);
-        assert((std::holds_alternative<SmallVector<UnderlObjInfo>>(
+        assert((std::holds_alternative<SmallVector<UnderlObjTy>>(
           EscDetails.value()) &&
           "getEscapeKindForOpnd must return alias list"));
         const auto AliasList =
-            std::get<SmallVector<UnderlObjInfo>>(EscDetails.value());
+            std::get<SmallVector<UnderlObjTy>>(EscDetails.value());
 
         LLVM_DEBUG(dbgs() << "\t-- ALIASING --\n";
                    dbgPrintAliasCand(AliasList); );
@@ -1383,7 +1377,7 @@ EscapeAnalysisGlobalInfo::EscapeAnalysisGlobalInfo(CallGraph &CG, Module &M_)
 bool EscapeAnalysisGlobalInfo::isEscapedUndrlObjOrPointee(
     const Value *Addr, const BasicBlock *BB,
     EscapeAnalysisInfo::EscReasonTy &EscReason) {
-  for (const UnderlObjInfo &UnderlObj :
+  for (const UnderlObjTy &UnderlObj :
        EscapeAnalysisInfo::getUnderlyingMayEscObjs(Addr)) {
     LLVM_DEBUG(dbgs() << "isEscapedUndrlObjOrPointee UnderlObj: "
                       << *UnderlObj.Obj << "\n");
@@ -1394,7 +1388,7 @@ bool EscapeAnalysisGlobalInfo::isEscapedUndrlObjOrPointee(
 }
 
 bool EscapeAnalysisGlobalInfo::isEscapedForBBTSan(
-    const Function *F, const BasicBlock *BB, const UnderlObjInfo &UnderlObj,
+    const Function *F, const BasicBlock *BB, const UnderlObjTy &UnderlObj,
     EscapeAnalysisInfo::EscReasonTy &EscReason) {
   const auto FEIIt = FuncEscapeInfo.find(F);
   if (FEIIt == FuncEscapeInfo.end())
@@ -1451,17 +1445,142 @@ EscapeAnalysisGlobalPrinterPass::run(Module &M,
 // getUnderlyingObject infrastructure (taken and modified from ValueTracker.cpp)
 //===----------------------------------------------------------------------===//
 
+/// Check if it's GEP accessing the structure field
+static bool isStructFieldGEP(const GEPOperator *GEP) {
+  // First index is 0, the next ones corresponds the fields
+  if ((GEP->getNumIndices() < 2) || !GEP->hasAllConstantIndices())
+    return false;
+
+  // Get the first index (after the pointer).
+  // In the case of structure field access, the first index should usually be 0.
+  Value *FirstIndex = GEP->getOperand(1);
+
+  // Strip away potential type casts to get to the base value.
+  FirstIndex = FirstIndex->stripPointerCasts();
+
+  // Check if the first index is a constant 0.
+  if (const auto *ConstIntFirstIndex = dyn_cast<ConstantInt>(FirstIndex)) {
+    if (!ConstIntFirstIndex->isZero()) {
+      return false; // First index is not 0, probably not a structure field
+                    // access.
+    }
+  } else {
+    return false; // First index is not a constant, not suitable for direct
+                  // structure field access.
+  }
+
+  // Check the type of the pointer to which the GEP is applied.
+  // It should be a pointer to a structure or a pointer to a pointer to a
+  // structure, etc.
+  Type *PtrType = GEP->getSourceElementType();
+
+  // Check if the base type is a structure.
+  if (isa<StructType>(PtrType))
+    return true; // Looks like a structure field access.
+
+  return false;
+}
+
+/// Get underlying object and record the path to the accesed field (if exists)
+static const Value *
+getUnderlyingObjectWithPath(const Value *V, unsigned MaxLookup,
+                            std::optional<SmallVector<unsigned>> &Path) {
+  if (!V->getType()->isPointerTy())
+    return V;
+
+  // Is all the indices are structure field accesses
+  bool IsAllStructFieldIndices = true;
+  for (unsigned Count = 0; MaxLookup == 0 || Count < MaxLookup; ++Count) {
+    if (auto *GEP = dyn_cast<GEPOperator>(V)) {
+      V = GEP->getPointerOperand();
+      if (IsAllStructFieldIndices) {
+        if (isStructFieldGEP(GEP)) {
+          if (!Path.has_value())
+            Path = SmallVector<unsigned>();
+
+          // Add indices from GEP to Path (except the very first index)
+          for (unsigned i = 2; i < GEP->getNumOperands(); ++i) {
+            const auto *ConstIntIndex = cast<ConstantInt>(GEP->getOperand(i));
+            Path.value().push_back(ConstIntIndex->getZExtValue());
+          }
+        } else {
+          if (Path.has_value())
+            Path.reset();
+          IsAllStructFieldIndices = false;
+        }
+      }
+
+      // if ((IsAllStructFieldIndices) && (GEP->hasAllConstantIndices())) {
+        // SmallVector<Value *, 4> Indices(GEP->idx_begin(), GEP->idx_end());
+        // Type *CurType = GEP->getSourceElementType();
+        // for (Value *Idx : Indices) {
+          // dbgs() << "Field index: " << *Idx << "\n";
+          // if (StructType *ST = dyn_cast<StructType>(CurType)) {
+            // ConstantInt *CI = cast<ConstantInt>(Idx);
+            // unsigned Index = CI->getZExtValue();
+            // assert(Index < ST->getNumElements());
+            // if (!Path.has_value())
+              // Path = SmallVector<unsigned>();
+            // Path.value().push_back(Index);
+            // CurType = ST->getElementType(Index);
+          // } else {
+            // if (Path.has_value())
+              // Path.reset();
+            // IsAllStructFieldIndices = false;
+          // }
+        // }
+      // }
+    } else if (Operator::getOpcode(V) == Instruction::BitCast ||
+               Operator::getOpcode(V) == Instruction::AddrSpaceCast) {
+      V = cast<Operator>(V)->getOperand(0);
+      if (!V->getType()->isPointerTy())
+        return V;
+    } else if (auto *GA = dyn_cast<GlobalAlias>(V)) {
+      if (GA->isInterposable())
+        return V;
+      V = GA->getAliasee();
+    } else {
+      if (auto *PHI = dyn_cast<PHINode>(V)) {
+        // Look through single-arg phi nodes created by LCSSA.
+        if (PHI->getNumIncomingValues() == 1) {
+          V = PHI->getIncomingValue(0);
+          continue;
+        }
+      } else if (auto *Call = dyn_cast<CallBase>(V)) {
+        // CaptureTracking can know about special capturing properties of some
+        // intrinsics like launder.invariant.group, that can't be expressed with
+        // the attributes, but have properties like returning aliasing pointer.
+        // Because some analysis may assume that nocaptured pointer is not
+        // returned from some special intrinsic (because function would have to
+        // be marked with returns attribute), it is crucial to use this function
+        // because it should be in sync with CaptureTracking. Not using it may
+        // cause weird miscompilations where 2 aliasing pointers are assumed to
+        // noalias.
+        if (auto *RP = getArgumentAliasingToReturnedPointer(Call, false)) {
+          V = RP;
+          continue;
+        }
+      }
+
+      return V;
+    }
+    assert(V->getType()->isPointerTy() && "Unexpected operand type!");
+  }
+  return V;
+}
+
 /// Wrapper around getUnderlyingObject to look through loads
-static UnderlObjInfo getUnderlyingObjectThroughLoads(const Value *&P,
-                                                     const unsigned MaxLookup) {
+static UnderlObjTy getUnderlObjThroughLoads(const Value *&P,
+                                            const unsigned MaxLookup) {
+  std::optional<SmallVector<unsigned>> Path;
   bool LoadInstFlag = false;
   while (true) {
-    P = getUnderlyingObject(P, MaxLookup);
+    P = getUnderlyingObjectWithPath(P, MaxLookup, Path);
     if (const auto *Load = dyn_cast<LoadInst>(P)) {
       P = Load->getPointerOperand();
       LoadInstFlag = true;
     } else {
-      return {P, LoadInstFlag};
+      return {P, LoadInstFlag, Path}; // INFO: Path
     }
   }
 }
@@ -1472,42 +1591,36 @@ static UnderlObjInfo getUnderlyingObjectThroughLoads(const Value *&P,
 /// This is slightly modified version from ValueTracking.cpp. The differences:
 /// 1. Pass through LoadInst to get the original loaded object.
 /// 2. Ignore phi invariant check.
-static void getUnderlyingObjectsWithoutPHIInvCheck(
-    const Value *V, SmallVectorImpl<UnderlObjInfo> &Objects,
+static void getUnderlObjsWithoutPHIInvCheck(
+    const Value *V, SmallVectorImpl<UnderlObjTy> &Objects,
     const unsigned MaxLookup) {
-  // LLVM_DEBUG(dbgs() << "getUnderlyingObjectsWithoutPHIInvCheck: " << *V
-                    // << "\n");
   SmallPtrSet<const Value *, 4> Visited;
-  // SmallVector<const Value *, 4> Worklist;
-  SmallVector<UnderlObjInfo> Worklist;
-  Worklist.push_back({V, false});
+  SmallVector<UnderlObjTy> Worklist;
+  Worklist.push_back({V, false, std::nullopt}); // INFO: Path
   do {
     const Value *Obj = Worklist.pop_back_val().Obj;
-    auto P = getUnderlyingObjectThroughLoads(Obj, MaxLookup);
+    UnderlObjTy UO = getUnderlObjThroughLoads(Obj, MaxLookup);
 
-    if (!Visited.insert(P.Obj).second)
+    if (!Visited.insert(UO.Obj).second)
       continue;
 
     // TODO use & operator for LoadFlag to combine loads
-    if (auto *SI = dyn_cast<SelectInst>(P.Obj)) {
-      Worklist.push_back({SI->getTrueValue(), P.Loaded});
-      Worklist.push_back({SI->getFalseValue(), P.Loaded});
+    if (auto *SI = dyn_cast<SelectInst>(UO.Obj)) {
+      Worklist.push_back({SI->getTrueValue(), UO.Loaded, std::nullopt}); // INFO: Path
+      Worklist.push_back({SI->getFalseValue(), UO.Loaded, std::nullopt}); // INFO: Path
       continue;
     }
 
-    if (auto *PN = dyn_cast<PHINode>(P.Obj)) {
-      LLVM_DEBUG(dbgs() << "PHI node: " << *PN << "\n");
+    if (auto *PN = dyn_cast<PHINode>(UO.Obj)) {
       // In original function, we check here whether PHI is invariant during
       // the loop. In this version, we are conservative and ignore it.
       // append_range(Worklist, PN->incoming_values());
-      for (const Value *Incoming : PN->incoming_values()) {
-        LLVM_DEBUG(dbgs() << "Incoming: " << *Incoming << "\n");
-        Worklist.push_back({Incoming, P.Loaded});
-      }
+      for (const Value *Incoming : PN->incoming_values())
+        Worklist.push_back({Incoming, UO.Loaded, std::nullopt}); // INFO: Path;
       continue;
     }
 
-    Objects.push_back(P);
+    Objects.push_back(UO);
   } while (!Worklist.empty());
 }
 
@@ -1542,27 +1655,28 @@ static const Value *getUnderlyingObjectFromInt(const Value *V) {
 /// This is a wrapper around getUnderlyingObjects and adds support for basic
 /// ptrtoint+arithmetic+inttoptr sequences.
 /// It returns false if unidentified object is found in getUnderlyingObjects.
-static bool getUnderlyingObjectsForCodeGenWithoutPHIInvCheck(
-    const Value *V, SmallVectorImpl<UnderlObjInfo> &Objects, const unsigned MaxLookup,
+static bool getUnderlObjsForCodeGenWithoutPHIInvCheck(
+    const Value *V, SmallVectorImpl<UnderlObjTy> &Objects,
+    const unsigned MaxLookup,
     std::shared_ptr<EscapeAnalysisInfo::IPABottomTopMap> IPAFuncEscInfo) {
   SmallPtrSet<const Value *, 16> Visited;
   SmallVector<const Value *, 4> Working(1, V);
   do {
     V = Working.pop_back_val();
 
-    SmallVector<UnderlObjInfo> Objs;
-    getUnderlyingObjectsWithoutPHIInvCheck(V, Objs, MaxLookup);
+    SmallVector<UnderlObjTy> Objs;
+    getUnderlObjsWithoutPHIInvCheck(V, Objs, MaxLookup);
 
-    for (const auto &VV : Objs) {
-      if (!Visited.insert(VV.Obj).second)
+    for (const UnderlObjTy &UO : Objs) {
+      if (!Visited.insert(UO.Obj).second)
         continue;
-      if (Operator::getOpcode(VV.Obj) == Instruction::IntToPtr) {
+      if (Operator::getOpcode(UO.Obj) == Instruction::IntToPtr) {
         const Value *OWithoutCast =
-            getUnderlyingObjectFromInt(cast<User>(VV.Obj)->getOperand(0));
+            getUnderlyingObjectFromInt(cast<User>(UO.Obj)->getOperand(0));
 
         // Pass through loads
-        const auto UnderlObj = getUnderlyingObjectThroughLoads(
-            OWithoutCast, MaxLookup);
+        const auto UnderlObj =
+            getUnderlObjThroughLoads(OWithoutCast, MaxLookup);
 
         if (UnderlObj.Obj->getType()->isPointerTy() ||
             isa<PHINode>(UnderlObj.Obj)) {
@@ -1573,15 +1687,15 @@ static bool getUnderlyingObjectsForCodeGenWithoutPHIInvCheck(
 
       // If getUnderlyingObjects fails to find an identifiable object,
       // getUnderlyingObjectsForCodeGen also fails for safety.
-      if (!isIdentifiedObject(VV.Obj) &&
+      if (!isIdentifiedObject(UO.Obj) &&
           // Function arguments may escape or be aliases */
-          !isa<Argument>(VV.Obj) &&
+          !isa<Argument>(UO.Obj) &&
           // Results of function calls (e.g. returning pointer) may escape
-          !isCallMayEscape(VV.Obj, IPAFuncEscInfo)) {
+          !isCallMayEscape(UO.Obj, IPAFuncEscInfo)) { // do we need it?
         Objects.clear();
         return false;
       }
-      Objects.push_back(VV);
+      Objects.push_back(UO);
     }
   } while (!Working.empty());
   return true;
@@ -1589,17 +1703,24 @@ static bool getUnderlyingObjectsForCodeGenWithoutPHIInvCheck(
 
 /// Recuresively search in the instruction for the underlying objects which
 /// may escape
-SmallVector<UnderlObjInfo> EscapeAnalysisInfo::getUnderlyingMayEscObjs(
+SmallVector<UnderlObjTy> EscapeAnalysisInfo::getUnderlyingMayEscObjs(
     const Value *V, const unsigned MaxLookup,
     std::shared_ptr<IPABottomTopMap> IPAFuncEscInfo) {
-  SmallVector<UnderlObjInfo> UnderlObjs;
-  getUnderlyingObjectsForCodeGenWithoutPHIInvCheck(V, UnderlObjs, MaxLookup,
-                                                   IPAFuncEscInfo);
-
-  // LLVM_DEBUG(dbgs() << "\tgetUnderlyingMayEscObjects for " << *V << "\n");
-  // LLVM_DEBUG(if (!UnderlObjs.empty()) {
-  // dbgs() << "\tgetUnderlyingMayEscObjects:";
-  // for (const auto &Obj : UnderlObjs) dbgs() << "\t\t" << *Obj.Obj << "\n"; }
-  // else dbgs() << "\tgetUnderlyingMayEscObjects -- empty\n"; );
+  SmallVector<UnderlObjTy> UnderlObjs;
+  getUnderlObjsForCodeGenWithoutPHIInvCheck(V, UnderlObjs, MaxLookup,
+                                            IPAFuncEscInfo);
+  LLVM_DEBUG(dbgs() << "\tgetUnderlyingMayEscObjects for " << *V << "\n");
+  LLVM_DEBUG(if (!UnderlObjs.empty()) {
+    dbgs() << "\tgetUnderlyingMayEscObjects:";
+    for (const auto &Obj : UnderlObjs) {
+      dbgs() << "\t\t" << *Obj.Obj << "\n\t\t\tPath: ";
+      if (Obj.Path.has_value())
+        for (unsigned Index : Obj.Path.value())
+          dbgs() << Index << " ";
+      else
+        dbgs() << "None";
+      dbgs() << "\n";
+    }
+  } else dbgs() << "\tgetUnderlyingMayEscObjects -- empty\n";);
   return UnderlObjs;
 }

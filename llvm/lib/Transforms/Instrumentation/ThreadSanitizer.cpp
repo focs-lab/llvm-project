@@ -553,7 +553,7 @@ void ThreadSanitizer::chooseInstructionsToInstrument(
 
     if (EAI.has_value()) {
       bool InstrOmitted = false;
-      for (const UnderlObjInfo &UnderlObj :
+      for (const UnderlObjTy &UnderlObj :
            EscapeAnalysisInfo::getUnderlyingMayEscObjs(Addr)) {
         EscReasonTy EscReason;
         const bool IsEscaped = EAI.value().isEscapedForBB(

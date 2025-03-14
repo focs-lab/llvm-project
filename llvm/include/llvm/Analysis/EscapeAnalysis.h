@@ -26,9 +26,14 @@
 namespace llvm {
 /// This is the implementation of simple escape analysis
 
-struct UnderlObjInfo {
+struct UnderlObjTy {
   const Value *Obj;
+  // Was the object loaded from the pointer through the chain of instructions
   bool Loaded;
+  // Path to the underlying object: the sequence of indices in GEPs
+  // For now, we consider only pathes to structure fields. If there were
+  // array indices, Path assigned to empty.
+  std::optional<SmallVector<unsigned>> Path;
 };
 
 /// Interface to access escape analysis results for single function.
@@ -83,7 +88,7 @@ public:
 
   /// Recursively search in the instruction for the underlying objects which
   /// may escape
-  static SmallVector<UnderlObjInfo> getUnderlyingMayEscObjs(
+  static SmallVector<UnderlObjTy> getUnderlyingMayEscObjs(
       const Value *V, unsigned MaxLookup = MaxUnderlObjLookup,
       std::shared_ptr<IPABottomTopMap> IPAFuncEscInfo = nullptr);
 
@@ -179,7 +184,7 @@ private:
     /// in the escape analysis information. If the pointee value has previously
     /// escaped or if the alias itself is an escaping pointer, the alias is
     /// also marked as escaping.
-    void addPointsTo(const UnderlObjInfo &Pointer, const UnderlObjInfo &Pointee,
+    void addPointsTo(const UnderlObjTy &Pointer, const UnderlObjTy &Pointee,
                      const EscapeAnalysisInfo *EAI);
 
     void merge(const EscapeState &OtherES, const EscapeAnalysisInfo *EAI) {
@@ -214,7 +219,7 @@ private:
   /// Check if function returns escaped object, and update function return
   /// escape status
   void updRetEscStatus(EscapeState &ES, const BasicBlock *BB,
-                       const SmallVectorImpl<UnderlObjInfo> &UnderlObjs);
+                       const SmallVectorImpl<UnderlObjTy> &UnderlObjs);
   void addEscapedPtrArgs(EscapeState &ES);
 
   /// Compute the resulting escape state for BB
@@ -239,7 +244,7 @@ private:
   /// Determine what kind of escape behaviour V may exhibit.
   struct EscInfoTy {
     EscKindTy EscKind;
-    std::optional<std::variant<EscReasonTy, SmallVector<UnderlObjInfo>>>
+    std::optional<std::variant<EscReasonTy, SmallVector<UnderlObjTy>>>
         EscDetails = std::nullopt;
   };
 
@@ -351,7 +356,7 @@ public:
 
   /// Is Value V is escaping in some path from Entry to BB in the function F
   bool isEscapedForBBTSan(const Function *F, const BasicBlock *BB,
-                          const UnderlObjInfo &UnderlObj,
+                          const UnderlObjTy &UnderlObj,
                           EscapeAnalysisInfo::EscReasonTy &EscReason);
 
   /// This is needed for using with OuterAnalysisManagerProxy
