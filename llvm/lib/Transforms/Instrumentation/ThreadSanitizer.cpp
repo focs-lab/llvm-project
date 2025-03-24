@@ -661,7 +661,7 @@ bool ThreadSanitizer::sanitizeFunction(
 
   ///////////////////////////////////////////////////////////////////////////////
   // List of instructions (function calls) to delete
-  SmallVector<CallInst*, 8> EnableDisableFuncToDelete;
+  SmallVector<CallInst*, 8> EnableDisableFuncCleanupList;
 
   // Counter for considering nesting __tsan_disable/__tsan_enable
   int disableEnableNesting = 0;
@@ -682,11 +682,12 @@ bool ThreadSanitizer::sanitizeFunction(
           // errs() << "CalledFunc: " << CalledFunc->getName() << "\n";
           if (CalledFunc->getName() == "__tsan_disable") {
             disableEnableNesting++;
-            EnableDisableFuncToDelete.push_back(CI);
+            EnableDisableFuncCleanupList.push_back(CI);
             continue;
-          } else if (CalledFunc->getName() == "__tsan_enable") {
+          }
+          if (CalledFunc->getName() == "__tsan_enable") {
             disableEnableNesting--;
-            EnableDisableFuncToDelete.push_back(CI);
+            EnableDisableFuncCleanupList.push_back(CI);
             continue;
           }
         }
@@ -741,7 +742,7 @@ bool ThreadSanitizer::sanitizeFunction(
   */
 
   // Erase all __tsan_disable/enable functions
-  for (auto *CI: EnableDisableFuncToDelete)
+  for (auto *CI: EnableDisableFuncCleanupList)
     CI->eraseFromParent();
   //////////////////////////////////////////////////////////////////////////////
 
