@@ -927,13 +927,14 @@ bool ThreadSanitizer::instrumentMemIntrinsic(Instruction *I,
 
     // Check if the first argument of M is '%tvs = alloca %struct.timeval'
     bool TimevalCaseFlag = false;
-    if (auto *Alloca = dyn_cast<AllocaInst>(M->getArgOperand(0))) {
-      if (Alloca->getAllocatedType()->isStructTy() &&
-          cast<StructType>(Alloca->getAllocatedType())->getName() ==
-              "struct.timeval") {
-        LLVM_DEBUG(
-            dbgs() << "First argument is an allocation of struct.timeval\n");
-        TimevalCaseFlag = true;
+    if (const auto *Alloca = dyn_cast<AllocaInst>(M->getArgOperand(0))) {
+      if (Alloca->getAllocatedType()->isStructTy()) {
+        if (const auto *Struct = cast<StructType>(Alloca->getAllocatedType());
+            Struct->hasName() && (Struct->getName() == "struct.timeval")) {
+          LLVM_DEBUG(dbgs()
+                     << "First argument is an allocation of struct.timeval\n");
+          TimevalCaseFlag = true;
+        }
       }
     }
 
