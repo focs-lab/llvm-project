@@ -176,7 +176,7 @@ void EscapeAnalysisInfo::EscapeState::addPointsTo(
   if (Pointee.Loaded) {
     LLVM_DEBUG(dbgs() << "\t\t\tPointee loaded\n";);
     forEachPointeeDo(Pointee.Obj, [&](const Value *Ptee) {
-      addPointsTo(Pointer, {Ptee, false, std::nullopt}, EAI); // FIXME: Path
+      addPointsTo(Pointer, {{Ptee, std::nullopt}, false}, EAI); // FIXME: Path
     });
     return;
   }
@@ -196,7 +196,7 @@ void EscapeAnalysisInfo::EscapeState::addPointsTo(
   // Considering transitivity: recursively add new alias to all existing aliases
   // of PointeeValue
   forEachPointeeDo(Pointee.Obj, [&](const Value *Ptee) {
-    addPointsTo(Pointer, {Ptee, false, std::nullopt}, EAI); // FIXME: Path
+    addPointsTo(Pointer, {{Ptee, std::nullopt}, false}, EAI); // FIXME: Path
   });
 }
 
@@ -498,10 +498,10 @@ void EscapeAnalysisInfo::updRetEscStatus(
     LLVM_DEBUG(dbgs() << "\t\t\t\treturn is not escaped\n");
   }
 
-  for (const auto &[Obj, Loaded, Path] : UnderlObjs) {
-    if (Loaded) {
-      LLVM_DEBUG(dbgs() << "\t\tupdRetEscStatus " << *Obj << " Loaded\n");
-      ES.forEachPointeeDo(Obj, [&](const Value *Pointee) {
+  for (const auto &UO : UnderlObjs) {
+    if (UO.Loaded) {
+      LLVM_DEBUG(dbgs() << "\t\tupdRetEscStatus " << *UO.Obj << " Loaded\n");
+      ES.forEachPointeeDo(UO.Obj, [&](const Value *Pointee) {
         if (isEscapedForBBIPA(BB, Pointee))
           IsRetEscape = true;
       });
@@ -536,12 +536,12 @@ void EscapeAnalysisInfo::compBBEscapeState(const BasicBlock *BB,
   for (const Instruction &I : *BB) {
     LLVM_DEBUG(dbgs() << "\n\nINSTR " << I << "\n");
     for (const Use &Opnd : I.operands()) {
-      LLVM_DEBUG(dbgs() << "\nOPND: "; dbgPrintObj(Opnd););
-
       const auto [EscKind, EscDetails] = getEscInfoForOpnd(Opnd);
 
       if (EscKind == EscKindTy::NO_ESCAPE)
         continue;
+
+      LLVM_DEBUG(dbgs() << "\nOPND: "; dbgPrintObj(Opnd););
 
       assert(EscDetails.has_value() && "EscDetails must be set");
 
@@ -553,15 +553,13 @@ void EscapeAnalysisInfo::compBBEscapeState(const BasicBlock *BB,
 
       if (EscKind == EscKindTy::MAY_ESCAPE) {
         LLVM_DEBUG(dbgs() << "\t-- MAY_ESCAPE --\n");
-        assert(std::holds_alternative<EscReasonTy>(EscDetails.value()) &&
-          "getEscapeKindForOpnd must return escape reason");
         const auto EscReason = std::get<EscReasonTy>(EscDetails.value());
 
         // Yes, looks ugly, but calls returning pointer is the only case when
         // register escapes, not a memory
         if (EscReason == EscReasonBits::ESCAPED_CALL) {
           UnderlObjs.clear();
-          UnderlObjs.push_back({&I, false, std::nullopt}); // INFO: Path
+          UnderlObjs.push_back({{&I, std::nullopt}, false}); // INFO: Path
         }
 
         // If that's return instruction, we should check if it can return
@@ -569,27 +567,24 @@ void EscapeAnalysisInfo::compBBEscapeState(const BasicBlock *BB,
         if ((I.getOpcode() == Instruction::Ret) && (!IsRetEscape))
           updRetEscStatus(ES, BB, UnderlObjs);
 
-        for (const auto &[Obj, Loaded, Path] : UnderlObjs) {
-          ES.addEscapingObject(Obj, EscReason);
-          if (Loaded) {
+        for (const auto &UO : UnderlObjs) {
+          ES.addEscapingObject(UO.Obj, EscReason);
+          if (UO.Loaded) {
             LLVM_DEBUG(dbgs() << "\t\tLoaded\n");
-            ES.forEachPointeeDo(Obj, [&](const Value *Pointee) {
+            ES.forEachPointeeDo(UO.Obj, [&](const Value *Pointee) {
               ES.addEscapeObjOrReason(Pointee, EscReason);
             });
             continue;
           }
 
-          const auto ExtEscReason = getExtObjStatus(Obj);
-          LLVM_DEBUG(dbgs() << "\t\tEscObj: "; dbgPrintObj(Obj);
+          const auto ExtEscReason = getExtObjStatus(UO.Obj);
+          LLVM_DEBUG(dbgs() << "\t\tEscObj: "; dbgPrintObj(UO.Obj);
                      dbgs() << "\n\t\tExtEscReason: ";
                      printEscReason(ExtEscReason););
           if (ExtEscReason != EscReasonBits::GPTR_ALIASING)
-            ES.addEscapingObject(Obj, EscReason);
+            ES.addEscapingObject(UO.Obj, EscReason);
         }
       } else { assert(EscKind == EscKindTy::MAY_ALIASING);
-        assert((std::holds_alternative<SmallVector<UnderlObjTy>>(
-          EscDetails.value()) &&
-          "getEscapeKindForOpnd must return alias list"));
         const auto AliasList =
             std::get<SmallVector<UnderlObjTy>>(EscDetails.value());
 
@@ -758,10 +753,8 @@ EscapeAnalysisInfo::getEscInfoStore(const Use &U, const Instruction *I) {
   // }
 
   const auto DstObjs = getUnderlyingMayEscObjs(I->getOperand(1));
-  if (DstObjs.empty()) {
-    // dbgs() << "No underlying objects for store\n";
+  if (DstObjs.empty())
     return {EscKindTy::NO_ESCAPE, std::nullopt};
-  }
 
   return {EscKindTy::MAY_ALIASING, DstObjs};
 }
@@ -1481,7 +1474,7 @@ static bool isStructFieldGEP(const GEPOperator *GEP) {
   return false;
 }
 
-/// Get underlying object and record the path to the accesed field (if exists)
+/// Get underlying object and record the path to the accessed field (if exists)
 static const Value *
 getUnderlyingObjectWithPath(const Value *V, unsigned MaxLookup,
                             std::optional<SmallVector<unsigned>> &Path) {
@@ -1509,27 +1502,6 @@ getUnderlyingObjectWithPath(const Value *V, unsigned MaxLookup,
           IsAllStructFieldIndices = false;
         }
       }
-
-      // if ((IsAllStructFieldIndices) && (GEP->hasAllConstantIndices())) {
-        // SmallVector<Value *, 4> Indices(GEP->idx_begin(), GEP->idx_end());
-        // Type *CurType = GEP->getSourceElementType();
-        // for (Value *Idx : Indices) {
-          // dbgs() << "Field index: " << *Idx << "\n";
-          // if (StructType *ST = dyn_cast<StructType>(CurType)) {
-            // ConstantInt *CI = cast<ConstantInt>(Idx);
-            // unsigned Index = CI->getZExtValue();
-            // assert(Index < ST->getNumElements());
-            // if (!Path.has_value())
-              // Path = SmallVector<unsigned>();
-            // Path.value().push_back(Index);
-            // CurType = ST->getElementType(Index);
-          // } else {
-            // if (Path.has_value())
-              // Path.reset();
-            // IsAllStructFieldIndices = false;
-          // }
-        // }
-      // }
     } else if (Operator::getOpcode(V) == Instruction::BitCast ||
                Operator::getOpcode(V) == Instruction::AddrSpaceCast) {
       V = cast<Operator>(V)->getOperand(0);
@@ -1580,7 +1552,7 @@ static UnderlObjTy getUnderlObjThroughLoads(const Value *&P,
       P = Load->getPointerOperand();
       LoadInstFlag = true;
     } else {
-      return {P, LoadInstFlag, Path}; // INFO: Path
+      return {{P, Path}, LoadInstFlag}; // INFO: Path
     }
   }
 }
@@ -1596,7 +1568,7 @@ static void getUnderlObjsWithoutPHIInvCheck(
     const unsigned MaxLookup) {
   SmallPtrSet<const Value *, 4> Visited;
   SmallVector<UnderlObjTy> Worklist;
-  Worklist.push_back({V, false, std::nullopt}); // INFO: Path
+  Worklist.push_back({{V, std::nullopt}, false}); // INFO: Path
   do {
     const Value *Obj = Worklist.pop_back_val().Obj;
     UnderlObjTy UO = getUnderlObjThroughLoads(Obj, MaxLookup);
@@ -1606,8 +1578,8 @@ static void getUnderlObjsWithoutPHIInvCheck(
 
     // TODO use & operator for LoadFlag to combine loads
     if (auto *SI = dyn_cast<SelectInst>(UO.Obj)) {
-      Worklist.push_back({SI->getTrueValue(), UO.Loaded, std::nullopt}); // INFO: Path
-      Worklist.push_back({SI->getFalseValue(), UO.Loaded, std::nullopt}); // INFO: Path
+      Worklist.push_back({{SI->getTrueValue(), std::nullopt}, UO.Loaded}); // INFO: Path
+      Worklist.push_back({{SI->getFalseValue(), std::nullopt}, UO.Loaded}); // INFO: Path
       continue;
     }
 
@@ -1616,7 +1588,7 @@ static void getUnderlObjsWithoutPHIInvCheck(
       // the loop. In this version, we are conservative and ignore it.
       // append_range(Worklist, PN->incoming_values());
       for (const Value *Incoming : PN->incoming_values())
-        Worklist.push_back({Incoming, UO.Loaded, std::nullopt}); // INFO: Path;
+        Worklist.push_back({{Incoming, std::nullopt}, UO.Loaded}); // INFO: Path;
       continue;
     }
 

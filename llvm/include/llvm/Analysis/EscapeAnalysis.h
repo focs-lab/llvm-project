@@ -26,14 +26,29 @@
 namespace llvm {
 /// This is the implementation of simple escape analysis
 
-struct UnderlObjTy {
-  const Value *Obj;
-  // Was the object loaded from the pointer through the chain of instructions
+using FieldPathTy = SmallVector<unsigned>;
+
+// Because that's field-sensitive analysis, we distinguish accesses to different
+// field of structures. That's why it's not enough to store a pointer to the
+// object (e.g. escaped) but to the field within it (if the object is a
+// structure)
+struct ObjAndPath {
+  // Object (can be variable, pointer, structure or array)
+  const Value *Obj = nullptr;
+
+  // GEP path to the field (if it's the structure field)
+  std::optional<FieldPathTy> Path;
+
+  bool operator<(const ObjAndPath &Other) const {
+    if (Obj != Other.Obj)
+      return Obj < Other.Obj;
+
+    return Path < Other.Path;
+  }
+};
+
+struct UnderlObjTy: ObjAndPath {
   bool Loaded;
-  // Path to the underlying object: the sequence of indices in GEPs
-  // For now, we consider only pathes to structure fields. If there were
-  // array indices, Path assigned to empty.
-  std::optional<SmallVector<unsigned>> Path;
 };
 
 /// Interface to access escape analysis results for single function.
