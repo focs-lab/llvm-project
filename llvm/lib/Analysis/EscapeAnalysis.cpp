@@ -195,14 +195,15 @@ void EscapeAnalysisInfo::EscapeState::addPointsTo(
 
   PointsTo.addPointsToPair(Pointer, Pointee);
 
-  if (Pointee.Loaded) {
-    LLVM_DEBUG(dbgs() << "\t\t\tPointee loaded\n";);
-    forEachPointeeDo(Pointee, [&](const ObjAndPath &Ptee) {
-      // FIXME: double check Path
-      addPointsTo(Pointer, {Ptee, false}, EAI);
-    });
+  // Considering transitivity: recursively add new alias to all existing aliases
+  // of Pointee
+  forEachPointeeDo(Pointee, [&](const ObjAndPath &Ptee) {
+    // Ptee inherits path of Pointee
+    addPointsTo(Pointer, {{Ptee.Obj, Pointee.Path}, false}, EAI);
+  });
+
+  if (Pointee.Loaded)
     return;
-  }
 
   checkAndUpdEscStatus(Pointer, Pointee, EAI);
 
@@ -213,15 +214,7 @@ void EscapeAnalysisInfo::EscapeState::addPointsTo(
     forEachPointeeDo(Pointer, [&](const ObjAndPath &Ptee) {
       checkAndUpdEscStatus(Ptee, Pointee, EAI);
     });
-    return;
   }
-
-  // Considering transitivity: recursively add new alias to all existing aliases
-  // of PointeeValue
-  forEachPointeeDo(Pointee, [&](const ObjAndPath &Ptee) {
-    // FIXME: double check Path
-    addPointsTo(Pointer, {Ptee, false}, EAI);
-  });
 }
 
 //===----------------------------------------------------------------------===//
@@ -351,6 +344,11 @@ void EscapeAnalysisInfo::EscapeState::addEscObjOrReason(const ObjAndPath &OAP,
     EscObjIt->second |= EscReason;
   else {
     // If object escapes by empty path, then it escapes by all paths
+    // 1. If the object has already escaped by EmptyFieldPath, do nothing
+    if (EscapedObjs.find({OAP.Obj, EmptyFieldPath}) != EscapedObjs.end())
+      return;
+
+    // 2. If EmptyFieldPath is the new (current) path, then leave only it
     if (OAP.Path == EmptyFieldPath)
       for (auto It = EscapedObjs.begin(); It != EscapedObjs.end();) {
         if (It->first.Obj == OAP.Obj)
@@ -821,6 +819,12 @@ EscapeAnalysisInfo::getEscInfoStore(const Use &U, const Instruction *I) {
 
   if (U.getOperandNo() != 0)
     return {EscKindTy::NO_ESCAPE, std::nullopt};
+
+  // If the stored type is not a pointer, it's not an escape neither aliasing
+  if (!cast<StoreInst>(I)->getValueOperand()->getType()->isPointerTy())
+    return {EscKindTy::NO_ESCAPE, std::nullopt};
+
+  // dbgs() << *cast<StoreInst>(I)->getPointerOperandType() << "\n";
 
   const auto DstObjs = getUnderlyingMayEscObjs(I->getOperand(1));
   if (DstObjs.empty())
@@ -1762,18 +1766,18 @@ SmallVector<UnderlObjTy> EscapeAnalysisInfo::getUnderlyingMayEscObjs(
   SmallVector<UnderlObjTy> UnderlObjs;
   getUnderlObjsForCodeGenWithoutPHIInvCheck(V, UnderlObjs, MaxLookup,
                                             IPAFuncEscInfo);
-  // LLVM_DEBUG(dbgs() << "\tgetUnderlyingMayEscObjects for " << *V << "\n");
-  // LLVM_DEBUG(if (!UnderlObjs.empty()) {
-  //   dbgs() << "\tgetUnderlyingMayEscObjects:";
-  //   for (const auto &Obj : UnderlObjs) {
-  //     dbgs() << "\t\t" << *Obj.Obj << "\n\t\t\tPath: ";
-  //     if (Obj.Path.has_value())
-  //       for (unsigned Index : Obj.Path.value())
-  //         dbgs() << Index << " ";
-  //     else
-  //       dbgs() << "None";
-  //     dbgs() << "\n";
-  //   }
-  // } else dbgs() << "\tgetUnderlyingMayEscObjects -- empty\n";);
+  LLVM_DEBUG(dbgs() << "\tgetUnderlyingMayEscObjects for " << *V << "\n");
+  LLVM_DEBUG(if (!UnderlObjs.empty()) {
+    dbgs() << "\tgetUnderlyingMayEscObjects:";
+    for (const auto &Obj : UnderlObjs) {
+      dbgs() << "\t\t" << *Obj.Obj << "\n\t\t\tPath: ";
+      if (Obj.Path != EmptyFieldPath)
+        for (unsigned Index : Obj.Path)
+          dbgs() << Index << " ";
+      else
+        dbgs() << "None";
+      dbgs() << "\n";
+    }
+  } else dbgs() << "\tgetUnderlyingMayEscObjects -- empty\n";);
   return UnderlObjs;
 }
