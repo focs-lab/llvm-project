@@ -21,7 +21,7 @@ entry:
 define dso_local void @escape_memcpy() {
 ; CHECK: Printing analysis 'Escape Analysis' for function 'escape_memcpy':
 ; CHECK-NEXT: Escaping objects for BB entry:
-; CHECK-DAG:  %S2 = alloca %struct.StructTy, align 8
+; CHECK-DAG:  %S2 = alloca %struct.StructTy, align 8 | Path: 0
 ; CHECK-DAG:  %S1 = alloca %struct.StructTy, align 8
 entry:
   %S1 = alloca %struct.StructTy, align 8
@@ -35,7 +35,7 @@ entry:
 define dso_local void @no_escape_memcpy() {
 ; CHECK: Printing analysis 'Escape Analysis' for function 'no_escape_memcpy':
 ; CHECK-NEXT: Escaping objects for BB entry:
-; CHECK-DAG: %S2 = alloca %struct.StructWithoutPointers, align 4
+; CHECK-DAG: %S2 = alloca %struct.StructWithoutPointers, align 4 | Path: 0
 ; CHECK-NOT: %S1 = alloca %struct.StructWithoutPointers, align 4
 entry:
   %S1 = alloca %struct.StructWithoutPointers, align 4

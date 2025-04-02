@@ -14,6 +14,8 @@
 #define LLVM_ANALYSIS_ESCAPEANALYSIS_H
 
 #include "ValueTracking.h"
+
+#include "llvm/ADT/SmallSet.h"
 #include "llvm/Analysis/CallGraph.h"
 
 #include "llvm/IR/Instructions.h"
@@ -27,6 +29,7 @@ namespace llvm {
 /// This is the implementation of simple escape analysis
 
 using FieldPathTy = SmallVector<unsigned>;
+FieldPathTy EmptyFieldPath;
 
 // Because that's field-sensitive analysis, we distinguish accesses to different
 // field of structures. That's why it's not enough to store a pointer to the
@@ -44,6 +47,10 @@ struct ObjAndPath {
       return Obj < Other.Obj;
 
     return Path < Other.Path;
+  }
+
+  bool operator==(const ObjAndPath &Other) const {
+    return Obj == Other.Obj && Path == Other.Path;
   }
 };
 
@@ -108,29 +115,30 @@ public:
       std::shared_ptr<IPABottomTopMap> IPAFuncEscInfo = nullptr);
 
   /// Is Value V is escaping somewhere in the function
-  bool isEscapedForFunc(const Value *V,
-                        std::optional<std::reference_wrapper<EscReasonTy>>
-                            EscReason = std::nullopt) const;
+  bool isEscapedForFunc(const ObjAndPath &OAP,
+                        EscReasonTy *EscReason = nullptr) const;
 
   EscReasonTy findObjInBBEscState(const BasicBlock *BB,
-                                     const Value *V) const;
+                                  const ObjAndPath &OAP) const;
 
   /// Return escape reason for V in BB
-  EscReasonTy getFullEscReasonForBB(const BasicBlock *BB, const Value *V) const;
+  EscReasonTy getFullEscReasonForBB(const BasicBlock *BB,
+                                    const ObjAndPath &OAP) const;
 
   /// Is Value V is escaping in some path from Entry to BB?
-  bool isEscapedForBBImpl(const BasicBlock *BB, const Value *V,
+  bool isEscapedForBBImpl(const BasicBlock *BB, const ObjAndPath &OAP,
                           EscReasonTy *EscReason, bool UseIPA) const;
-  bool isEscapedForBB(const BasicBlock *BB, const Value *V,
+  bool isEscapedForBB(const BasicBlock *BB, const ObjAndPath &OAP,
                       EscReasonTy *EscReason = nullptr) const;
-  bool isEscapedForBBIPA(const BasicBlock *BB, const Value *V,
-                      EscReasonTy *EscReason = nullptr) const;
+  bool isEscapedForBBIPA(const BasicBlock *BB, const ObjAndPath &OAP,
+                         EscReasonTy *EscReason = nullptr) const;
 
-  void forEachPointeeDo(const Value *Obj, const BasicBlock *BB,
-                        std::function<void(const Value *)> Action) const {
+  void forEachPointeeDo(
+      const ObjAndPath &OAP, const BasicBlock *BB,
+      const std::function<void(const ObjAndPath &)> &Action) const {
     const auto It = BBEscapeStates.find(BB);
     assert(It != BBEscapeStates.end());
-    It->second.forEachPointeeDo(Obj, Action);
+    It->second.forEachPointeeDo(OAP, Action);
   }
 
 private:
@@ -141,8 +149,8 @@ private:
   // Reference to the function being analyzed.
   const Function &AnalyzedFunc;
 
-  // Resulting type: list of escaping objects
-  using EscapedObjectsTy = DenseMap<const Value *, EscReasonTy>;
+  // List of escaping objects corresponding to each path in the object
+  using EscapedObjectsTy = std::map<ObjAndPath, EscReasonTy>;
 
   // IPA information about arguments escapes (bottom-top)
   std::shared_ptr<IPABottomTopMap> IPABottomTopInfo;
@@ -158,14 +166,24 @@ private:
   DenseMap<const BasicBlock *, EscapeState> BBEscapeStates;
 
   class PointsToRelTy {
-    friend struct EscapeState;
-
-    using PointeeListTy = SmallPtrSet<const Value *, 8>;
-    DenseMap<const Value *, PointeeListTy> PointsToMap;
+    using PointeeListTy = SmallSet<ObjAndPath, 4>;
+    using PathToPointeeMap = std::map<FieldPathTy, PointeeListTy>;
+    DenseMap<const Value *, PathToPointeeMap> PointsToMap;
 
   public:
+    /// Merge with other PointsToRel object (needed in basic data flow analysis)
+    void merge(const PointsToRelTy &Other);
+
+    /// Add an points-to relation between two objects.
+    void addPointsToPair(const ObjAndPath &Pointer, const ObjAndPath &Pointee);
+
+    /// Check whether points-to relation contains Pointer-Pointee pair
+    bool containsPointsToPair(const ObjAndPath &Pointer,
+                              const ObjAndPath &Pointee);
+
     /// Traverse the (implicit) tree of aliases and get the list of aliases
-    std::optional<PointeeListTy> getPointees(const Value *V) const;
+    std::optional<PointeeListTy>
+    getPointees(const ObjAndPath &Pointer) const;
 
     /// We need it to check if something changed in the data-flow analysis
     bool operator==(const PointsToRelTy &Other) const;
@@ -181,19 +199,21 @@ private:
 
     /// Make list of escaping object + its aliases, and add them to the list
     /// of escaping object
-    void addEscapingObject(const Value *EscObj, EscReasonTy EscReason);
+    void addEscObj(const ObjAndPath &EscObj, EscReasonTy EscReason);
 
     /// Adds an object to the list of escaped objects with a specified escape
     /// reason. If the object is already in the list, update escape reason.
-    void addEscapeObjOrReason(const Value *EscObj, const EscReasonTy EscReason);
+    void addEscObjOrReason(const ObjAndPath &OAP, EscReasonTy EscReason);
 
     /// Check CheckedObj escape status (as [maybe] external object)
     /// and update AffectedObj if needed
-    void checkAndUpdEscStatus(const Value *CheckedObj, const Value *AffectedObj,
+    void checkAndUpdEscStatus(const ObjAndPath &Pointer,
+                              const ObjAndPath &Pointee,
                               const EscapeAnalysisInfo *EAI);
 
-    void forEachPointeeDo(const Value *Obj,
-                          std::function<void(const Value *)> Action) const;
+    void forEachPointeeDo(
+        const ObjAndPath &OAP,
+        const std::function<void(const ObjAndPath &)> &Action) const;
 
     /// Adds an alias relationship between a given alias and a pointee value
     /// in the escape analysis information. If the pointee value has previously
@@ -203,17 +223,16 @@ private:
                      const EscapeAnalysisInfo *EAI);
 
     void merge(const EscapeState &OtherES, const EscapeAnalysisInfo *EAI) {
-      mergeAliases(OtherES, EAI);
+      PointsTo.merge(OtherES.PointsTo);
       mergeEscapedObjects(OtherES);
     }
 
-    const EscapedObjectsTy &getEscapedObjs() const { return EscapedObjs; };
+    const EscapedObjectsTy &getEscObjs() const { return EscapedObjs; };
+
     const PointsToRelTy &getPointsTo() const { return PointsTo; }
 
-    void print(raw_ostream &OS) const;
-
     /// Try to find object in the EscapedObjects and return escape reason
-    EscReasonTy getEscReason(const Value *V) const;
+    EscReasonTy getEscReason(const ObjAndPath &OAP) const;
 
   private:
     // Set of allocations that escape in this block.
@@ -222,10 +241,6 @@ private:
     // map from Alloca aliases to the original Allocas
     // Note that a Value may be the alias of multiple Allocas
     PointsToRelTy PointsTo;
-
-    /// Merge two Alias relations into one
-    void mergeAliases(const EscapeState &OtherES,
-                      const EscapeAnalysisInfo *EAI);
 
     /// Merge lists of escaped objects for two escape states (BBs)
     void mergeEscapedObjects(const EscapeState &OtherES);
@@ -285,9 +300,6 @@ private:
 
   /// Check whether type contains pointers
   static bool structContainsPointerType(const Type *Ty);
-
-  /// Escaping state for the function is union of all BBs' escape states
-  const EscapedObjectsTy &getFuncEscState() const;
 
   /// Find in ArgsEscapes given argument and return escape status
   EscReasonTy getArgEscBottomTopIPA(unsigned ArgNo, const Function *Func) const;

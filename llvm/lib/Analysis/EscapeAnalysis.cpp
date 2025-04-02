@@ -15,6 +15,7 @@
 #include "llvm/ADT/PostOrderIterator.h"
 #include "llvm/ADT/SCCIterator.h"
 #include "llvm/ADT/StringExtras.h"
+#include "llvm/ADT/SmallSet.h"
 #include "llvm/Analysis/AliasAnalysis.h"
 #include "llvm/Analysis/ValueTracking.h"
 #include "llvm/Analysis/CaptureTracking.h"
@@ -80,13 +81,34 @@ void EscapeAnalysisGlobalInfo::printSCC(
   }
 }
 
-[[maybe_unused]] static void dbgPrintObj(const Value *Obj) {
+static std::string dbgPathToStr(const std::optional<FieldPathTy> &Path) {
+  if (!Path.has_value())
+    return "";
+  const auto &PathVal = Path.value();
+
+  std::string Result;
+  raw_string_ostream RSO(Result);
+  RSO << " | Path: ";
+  for (size_t i = 0; i < PathVal.size(); ++i) {
+    if (i != 0)
+      RSO << " ";
+    RSO << PathVal[i];
+  }
+  RSO.flush();
+  return Result;
+}
+
+static std::string dbgObjToStr(const Value *Obj) {
+  std::string Output;
+  raw_string_ostream OS(Output);
   if (const auto *F = dyn_cast<Function>(Obj))
-    dbgs() << F->getName() << "\t";
+    OS << F->getName() << "\t";
   else if (const auto *BB = dyn_cast<BasicBlock>(Obj))
-    dbgs() << BB->getName() << "\t";
+    OS << BB->getName() << "\t";
   else
-    dbgs() << *Obj << "\t";
+    OS << *Obj << "\t";
+  OS.flush();
+  return Output;
 }
 
 static void dbgPrintAliasCand(const SmallVectorImpl<UnderlObjTy> &UnderlObjs) {
@@ -125,36 +147,37 @@ static bool isPointerArgument(const Value *V) {
 // Alias relation
 //===----------------------------------------------------------------------===//
 
+/// If instruction creates an alias to the object which has escaped before
+/// or escapes "by definition" (e.g. pointer function argument,
+/// global pointer), then that's not just aliasing, but escaping as well
 void EscapeAnalysisInfo::EscapeState::checkAndUpdEscStatus(
-    const Value *CheckedObj, const Value *AffectedObj,
+    const ObjAndPath &Pointer, const ObjAndPath &Pointee,
     const EscapeAnalysisInfo *EAI) {
-  // If instruction creates an alias to the object which has escaped before
-  // or escapes "by definition" (e.g. pointer function argument,
-  // global pointer), then that's not just aliasing, but escaping as well
-
-  LLVM_DEBUG(dbgs() << "\tcheckAndUpdEscStatus: " << *CheckedObj << " --> "
-                    << *AffectedObj << "\n");
-  if (const auto EscReason = EAI->getExtObjStatusIPA(CheckedObj);
+  LLVM_DEBUG(dbgs() << "\tcheckAndUpdEscStatus: " << *Pointer.Obj << " --> "
+                    << *Pointee.Obj << "\n");
+  if (const auto EscReason = EAI->getExtObjStatusIPA(Pointer.Obj);
       EscReason.any())
-    addEscapeObjOrReason(AffectedObj, EscReason);
+    addEscObjOrReason(Pointee, EscReason);
 
   // Assigning to structures
-  if (const auto *Alloca = dyn_cast<AllocaInst>(CheckedObj);
+  if (const auto *Alloca = dyn_cast<AllocaInst>(Pointer.Obj);
       Alloca && Alloca->getAllocatedType()->isStructTy()) {
-    if (const auto It = EscapedObjs.find(AffectedObj); It != EscapedObjs.end())
-      addEscapeObjOrReason(CheckedObj, It->second);
+    if (const auto It = EscapedObjs.find(Pointee); It != EscapedObjs.end())
+      addEscObjOrReason(Pointer, It->second);
 
-    if (const auto EscReason = EAI->getExtObjStatusIPA(AffectedObj);
+    if (const auto EscReason = EAI->getExtObjStatusIPA(Pointee.Obj);
         EscReason.any())
-      addEscapeObjOrReason(CheckedObj, EscReason);
+      addEscObjOrReason(Pointer, EscReason);
   }
 }
 
 void EscapeAnalysisInfo::EscapeState::forEachPointeeDo(
-    const Value *Obj, std::function<void(const Value *)> Action) const {
-  LLVM_DEBUG(dbgs() << "\t\t\t\tforEachPointeeDo: " << *Obj << "\n";);
-  if (const auto Pointees = PointsTo.getPointees(Obj); Pointees)
-    for (const Value *Pointee : Pointees.value())
+    const ObjAndPath &OAP,
+    const std::function<void(const ObjAndPath &)> &Action) const {
+  LLVM_DEBUG(dbgs() << "\t\t\tforEachPointeeDo: " << *OAP.Obj
+                    << dbgPathToStr(OAP.Path) << "\n";);
+  if (const auto Pointees = PointsTo.getPointees(OAP); Pointees)
+    for (const ObjAndPath &Pointee : Pointees.value())
       Action(Pointee);
 }
 
@@ -165,65 +188,119 @@ void EscapeAnalysisInfo::EscapeState::addPointsTo(
   assert(Pointer.Obj->getType()->isPointerTy() && "Alias must be a pointer\n");
 
   if ((Pointer.Obj == Pointee.Obj) || (Pointee.Obj == nullptr) ||
-      PointsTo.PointsToMap[Pointer.Obj].contains(Pointee.Obj))
+      PointsTo.containsPointsToPair(Pointer, Pointee))
     return;
 
-  LLVM_DEBUG(dbgs() << "\taddPointsTo: " << *Pointer.Obj << " --> "
-                    << *Pointee.Obj << "\n");
+  LLVM_DEBUG(dbgs() << "\taddPointsTo: " << *Pointer.Obj
+                    << dbgPathToStr(Pointer.Path) << " --> " << *Pointee.Obj
+                    << dbgPathToStr(Pointee.Path) << "\n");
 
-  PointsTo.PointsToMap[Pointer.Obj].insert(Pointee.Obj);
+  PointsTo.addPointsToPair(Pointer, Pointee);
 
   if (Pointee.Loaded) {
     LLVM_DEBUG(dbgs() << "\t\t\tPointee loaded\n";);
-    forEachPointeeDo(Pointee.Obj, [&](const Value *Ptee) {
-      addPointsTo(Pointer, {{Ptee, std::nullopt}, false}, EAI); // FIXME: Path
+    forEachPointeeDo(Pointee, [&](const ObjAndPath &Ptee) {
+      // FIXME: double check Path
+      addPointsTo(Pointer, {Ptee, false}, EAI);
     });
     return;
   }
 
-  checkAndUpdEscStatus(Pointer.Obj, Pointee.Obj, EAI);
+  checkAndUpdEscStatus(Pointer, Pointee, EAI);
 
   // If pointer value was loaded, we should check whether pointee object is
   // escaped or not
   if (Pointer.Loaded) {
     LLVM_DEBUG(dbgs() << "\t\t\tPointer loaded\n";);
-    forEachPointeeDo(Pointer.Obj, [&](const Value *Ptee) {
-      checkAndUpdEscStatus(Ptee, Pointee.Obj, EAI);
+    forEachPointeeDo(Pointer, [&](const ObjAndPath &Ptee) {
+      checkAndUpdEscStatus(Ptee, Pointee, EAI);
     });
     return;
   }
 
   // Considering transitivity: recursively add new alias to all existing aliases
   // of PointeeValue
-  forEachPointeeDo(Pointee.Obj, [&](const Value *Ptee) {
-    addPointsTo(Pointer, {{Ptee, std::nullopt}, false}, EAI); // FIXME: Path
+  forEachPointeeDo(Pointee, [&](const ObjAndPath &Ptee) {
+    // FIXME: double check Path
+    addPointsTo(Pointer, {Ptee, false}, EAI);
   });
 }
 
-void EscapeAnalysisInfo::EscapeState::print(raw_ostream &OS) const {
-  OS << "Escaped objects:\n";
-  for (auto &Obj : EscapedObjs) {
-    OS << "  " << *Obj.first << " : ";
-    printEscReason(Obj.second);
-    OS << "\n";
-  }
+//===----------------------------------------------------------------------===//
+// PointsToRelTy
+//===----------------------------------------------------------------------===//
+
+/// Merge with other PointsToRel object (needed in basic data flow analysis)
+void EscapeAnalysisInfo::PointsToRelTy::merge(const PointsToRelTy &Other) {
+  for (const auto &[Pointer, PathToPointeeMap] : Other.PointsToMap)
+    for (const auto &[Path, PointeeSet] : PathToPointeeMap)
+      for (const ObjAndPath &Pointee : PointeeSet)
+        addPointsToPair({Pointer, Path}, Pointee);
 }
 
-EscapeAnalysisInfo::EscReasonTy EscapeAnalysisInfo::EscapeState::getEscReason(
-    const Value *V) const {
-  const auto EscObjsIt = EscapedObjs.find(V);
-  if (EscObjsIt != EscapedObjs.end())
-    return EscObjsIt->second;
-  return 0;
+/// Add an points-to relation between two objects
+void EscapeAnalysisInfo::PointsToRelTy::addPointsToPair(
+    const ObjAndPath &Pointer, const ObjAndPath &Pointee) {
+  if (!Pointer.Path.has_value())
+    PointsToMap[Pointer.Obj][EmptyFieldPath].insert(Pointee);
+  else
+    PointsToMap[Pointer.Obj][Pointer.Path.value()].insert(Pointee);
 }
 
-/// Get list of aliases for the object a
+/// Check whether points-to relation contains Pointer-Pointee pair
+bool EscapeAnalysisInfo::PointsToRelTy::containsPointsToPair(
+    const ObjAndPath &Pointer, const ObjAndPath &Pointee) {
+
+  const auto It = PointsToMap.find(Pointer.Obj);
+  if (It == PointsToMap.end())
+    return false;
+
+  decltype(It->second)::const_iterator It2;
+  if (!Pointer.Path.has_value())
+    It2 = It->second.find(EmptyFieldPath);
+  else
+    It2 = It->second.find(Pointer.Path.value());
+
+  if (It2 == It->second.end())
+    return false;
+
+  return It2->second.contains(Pointee);
+}
+
+
+/// Get list of pointees for the object
 std::optional<EscapeAnalysisInfo::PointsToRelTy::PointeeListTy>
-EscapeAnalysisInfo::PointsToRelTy::getPointees(const Value *V) const {
-  const auto It = PointsToMap.find(V);
+EscapeAnalysisInfo::PointsToRelTy::getPointees(
+    const ObjAndPath &Pointer) const {
+  const auto It = PointsToMap.find(Pointer.Obj);
   if (It == PointsToMap.end())
     return std::nullopt;
-  return It->second;
+
+  // Helper function to collect all pointees from paths
+  auto collectAllPointees = [&](const PathToPointeeMap &PathToPointee)
+      -> std::optional<PointeeListTy> {
+    PointeeListTy AllPointees;
+    for (const auto &[Path, Pointees] : PathToPointee)
+      AllPointees.insert(Pointees.begin(), Pointees.end());
+    return AllPointees.empty() ? std::nullopt : std::make_optional(AllPointees);
+  };
+
+  // If pointer has no path, it can point by all paths
+  const auto &PathToPointee = It->second;
+  if (!Pointer.Path.has_value())
+    return collectAllPointees(PathToPointee);
+
+  auto It2 = PathToPointee.find(EmptyFieldPath);
+  if (It2 != PathToPointee.end())
+    return collectAllPointees(PathToPointee);
+
+  if (!Pointer.Path.has_value())
+    return std::nullopt;
+
+  It2 = PathToPointee.find(Pointer.Path.value());
+
+  return It2 == PathToPointee.end() ? std::nullopt
+                                    : std::make_optional(It2->second);
 }
 
 /// We need it to check if something changed in the data-flow analysis
@@ -237,10 +314,12 @@ bool EscapeAnalysisInfo::PointsToRelTy::operator==(
 /// Print alias relation
 void EscapeAnalysisInfo::PointsToRelTy::print(raw_ostream &OS) const {
   OS << "Alias relations:\n";
-  for (const auto &[Key, ValueSet] : PointsToMap) {
-    OS << "\tAlias: " << *Key << "\n";
-    for (const Value *Alias : ValueSet)
-      OS << "\t\t --> " << *Alias << "\n";
+  for (const auto &[PointerObj, PathToPointee] : PointsToMap) {
+    for (const auto &[Path, Pointees] : PathToPointee) {
+      OS << "\tAlias: " << *PointerObj << dbgPathToStr(Path) << "\n";
+      for (const auto &[PointeeObj, Path] : Pointees)
+        OS << "\t\t\t --> " << *PointeeObj << dbgPathToStr(Path) << "\n";
+    }
   }
   OS << "\n";
 }
@@ -249,58 +328,57 @@ void EscapeAnalysisInfo::PointsToRelTy::print(raw_ostream &OS) const {
 // EscapeState
 //===----------------------------------------------------------------------===//
 
+EscapeAnalysisInfo::EscReasonTy EscapeAnalysisInfo::EscapeState::getEscReason(
+    const ObjAndPath &OAP) const {
+  const auto EscObjsIt = EscapedObjs.find(OAP);
+  if (EscObjsIt != EscapedObjs.end())
+    return EscObjsIt->second;
+  return 0;
+}
+
 bool EscapeAnalysisInfo::EscapeState::operator==(const EscapeState &ES) const {
   if (this == &ES)
     return true;
-  return ((EscapedObjs == ES.EscapedObjs) && (PointsTo == ES.PointsTo));
+  return ((PointsTo == ES.PointsTo) && (EscapedObjs == ES.EscapedObjs));
 }
 
-void EscapeAnalysisInfo::EscapeState::addEscapeObjOrReason(
-    const Value *EscObj, const EscReasonTy EscReason) {
-  LLVM_DEBUG(dbgs() << "\t\t\t\taddEscapeObjOrReason: ";
-             dbgPrintObj(EscObj);
-             dbgs() << "\n\t\t\t\tNew EscReason: "; printEscReason(EscReason););
-  if (const auto EscObjIt = EscapedObjs.find(EscObj);
-      EscObjIt != EscapedObjs.end()) {
+void EscapeAnalysisInfo::EscapeState::addEscObjOrReason(
+    const ObjAndPath &OAP, EscReasonTy EscReason) {
+  LLVM_DEBUG(dbgs() << "\t\t\t\taddEscapeObjOrReason: " << dbgObjToStr(OAP.Obj)
+                    << dbgPathToStr(OAP.Path) << "\n\t\t\t\tNew EscReason: ";
+             printEscReason(EscReason););
+
+  if (const auto EscObjIt = EscapedObjs.find(OAP);
+      EscObjIt != EscapedObjs.end())
     // Object is already escaped - add the escape reason
     EscObjIt->second |= EscReason;
-  } else {
+  else
     // Object has not escaped before - add it
-    EscapedObjs.insert({EscObj, EscReason});
-  }
+    EscapedObjs.insert({OAP, EscReason});
 }
 
-void EscapeAnalysisInfo::EscapeState::addEscapingObject(
-    const Value *EscObj, const EscReasonTy EscReason) {
-  LLVM_DEBUG(dbgs() << "\t\taddEscapingObject: "; dbgPrintObj(EscObj);
-             dbgs() << "\n");
-  SmallVector<const Value *, 8> WorkList;
-  SmallPtrSet<const Value *, 8> Visited;
+void EscapeAnalysisInfo::EscapeState::addEscObj(
+    const ObjAndPath &EscObj, const EscReasonTy EscReason) {
+  LLVM_DEBUG(dbgs() << "\t\taddEscObj: " << dbgObjToStr(EscObj.Obj) << "\n");
+  SmallVector<ObjAndPath> WorkList;
+  SmallSet<ObjAndPath, 4> Visited;
 
   WorkList.push_back(EscObj);
 
   while (!WorkList.empty()) {
-    const Value *Current = WorkList.pop_back_val();
+    const ObjAndPath Curr = WorkList.pop_back_val();
 
-    if (!Visited.insert(Current).second)
+    if (!Visited.insert(Curr).second)
       continue;
 
-    addEscapeObjOrReason(Current, EscReason);
+    addEscObjOrReason(Curr, EscReason);
 
-    if (const auto Aliases = PointsTo.getPointees(Current);
-        Aliases.has_value())
-      for (const Value *Alias : Aliases.value())
-        if (!Visited.contains(Alias))
-          WorkList.push_back(Alias);
+    if (const auto Pointees = PointsTo.getPointees(Curr);
+        Pointees.has_value())
+      for (const auto &OAP: Pointees.value())
+        if (!Visited.contains(OAP))
+          WorkList.push_back(OAP);
   }
-}
-
-void EscapeAnalysisInfo::EscapeState::mergeAliases(
-    const EscapeState &OtherES, const EscapeAnalysisInfo *EAI) {
-  for (const auto &[OtherKey, OtherValueSet] : OtherES.PointsTo.PointsToMap)
-    for (const auto *OtherPointeeValue : OtherValueSet)
-      // addAlias(OtherKey, OtherPointeeValue, EAI);
-      PointsTo.PointsToMap[OtherKey].insert(OtherPointeeValue);
 }
 
 void EscapeAnalysisInfo::EscapeState::mergeEscapedObjects(
@@ -490,7 +568,7 @@ void EscapeAnalysisInfo::updRetEscStatus(
     const SmallVectorImpl<UnderlObjTy> &UnderlObjs) {
   for (const auto &EO : UnderlObjs) {
     LLVM_DEBUG(dbgs() << "\t\treturn: check: " << *EO.Obj << "\n";);
-    if (isEscapedForBBIPA(BB, EO.Obj) || ES.getEscReason(EO.Obj).any()) {
+    if (isEscapedForBBIPA(BB, EO) || ES.getEscReason(EO).any()) {
       LLVM_DEBUG(dbgs() << "\t\t\t\treturn is escaped\n");
       IsRetEscape = true;
       return;
@@ -501,7 +579,7 @@ void EscapeAnalysisInfo::updRetEscStatus(
   for (const auto &UO : UnderlObjs) {
     if (UO.Loaded) {
       LLVM_DEBUG(dbgs() << "\t\tupdRetEscStatus " << *UO.Obj << " Loaded\n");
-      ES.forEachPointeeDo(UO.Obj, [&](const Value *Pointee) {
+      ES.forEachPointeeDo(UO, [&](const ObjAndPath &Pointee) {
         if (isEscapedForBBIPA(BB, Pointee))
           IsRetEscape = true;
       });
@@ -522,7 +600,8 @@ void EscapeAnalysisInfo::addEscapedPtrArgs(EscapeState &ES) {
     if (ArgEscReason.any()) {
       LLVM_DEBUG(dbgs() << "Argument " << Arg.getName() << " is escaped: ";
                  printEscReason(ArgEscReason););
-      ES.addEscapingObject(&Arg, ArgEscReason);
+      // FIXME double check
+      ES.addEscObj({&Arg, std::nullopt}, ArgEscReason);
     }
   }
 }
@@ -541,8 +620,7 @@ void EscapeAnalysisInfo::compBBEscapeState(const BasicBlock *BB,
       if (EscKind == EscKindTy::NO_ESCAPE)
         continue;
 
-      LLVM_DEBUG(dbgs() << "\nOPND: "; dbgPrintObj(Opnd););
-
+      LLVM_DEBUG(dbgs() << "\nOPND: " << dbgObjToStr(Opnd););
       assert(EscDetails.has_value() && "EscDetails must be set");
 
       auto UnderlObjs = getUnderlyingMayEscObjs(
@@ -568,21 +646,21 @@ void EscapeAnalysisInfo::compBBEscapeState(const BasicBlock *BB,
           updRetEscStatus(ES, BB, UnderlObjs);
 
         for (const auto &UO : UnderlObjs) {
-          ES.addEscapingObject(UO.Obj, EscReason);
+          ES.addEscObj(UO, EscReason);
           if (UO.Loaded) {
             LLVM_DEBUG(dbgs() << "\t\tLoaded\n");
-            ES.forEachPointeeDo(UO.Obj, [&](const Value *Pointee) {
-              ES.addEscapeObjOrReason(Pointee, EscReason);
+            ES.forEachPointeeDo(UO, [&](const ObjAndPath &Pointee) {
+              ES.addEscObjOrReason(Pointee, EscReason);
             });
             continue;
           }
 
           const auto ExtEscReason = getExtObjStatus(UO.Obj);
-          LLVM_DEBUG(dbgs() << "\t\tEscObj: "; dbgPrintObj(UO.Obj);
-                     dbgs() << "\n\t\tExtEscReason: ";
+          LLVM_DEBUG(dbgs() << "\t\tEscObj: " << dbgObjToStr(UO.Obj)
+                            << "\n\t\tExtEscReason: ";
                      printEscReason(ExtEscReason););
           if (ExtEscReason != EscReasonBits::GPTR_ALIASING)
-            ES.addEscapingObject(UO.Obj, EscReason);
+            ES.addEscObj(UO, EscReason);
         }
       } else { assert(EscKind == EscKindTy::MAY_ALIASING);
         const auto AliasList =
@@ -625,14 +703,6 @@ bool EscapeAnalysisInfo::structContainsPointerType(const Type *Ty) {
     if (structContainsPointerType(EltTy))
       return true;
   return false;
-}
-
-/// Escaping state for the function is the escape state for Exit BB
-const EscapeAnalysisInfo::EscapedObjectsTy &EscapeAnalysisInfo::getFuncEscState() const {
-  const auto It = BBEscapeStates.find(&AnalyzedFunc.back());
-  assert(It != BBEscapeStates.end() &&
-         "Escape state for exit  block  not  found");
-  return It->second.getEscapedObjs();
 }
 
 EscapeAnalysisInfo::EscInfoTy
@@ -745,12 +815,6 @@ EscapeAnalysisInfo::getEscInfoStore(const Use &U, const Instruction *I) {
 
   if (U.getOperandNo() != 0)
     return {EscKindTy::NO_ESCAPE, std::nullopt};
-
-  // Passing value instead of pointer is neither escape nor alias
-  // if (const auto *Src = I->getOperand(0); !Src->getType()->isPointerTy()) {
-    // dbgs() << "Passing value instead of pointer is neither escape nor alias\n";
-    // return {EscKindTy::NO_ESCAPE, std::nullopt};
-  // }
 
   const auto DstObjs = getUnderlyingMayEscObjs(I->getOperand(1));
   if (DstObjs.empty())
@@ -892,20 +956,20 @@ bool EscapeAnalysisInfo::isDereferenceableOrNull(const Value *O,
   return O->getPointerDereferenceableBytes(DL, CanBeNull, CanBeFreed);
 }
 
-
 EscapeAnalysisInfo::EscReasonTy
 EscapeAnalysisInfo::findObjInBBEscState(const BasicBlock *BB,
-                                           const Value *V) const {
+                                        const ObjAndPath &OAP) const {
   const auto It = BBEscapeStates.find(BB);
   assert((It != BBEscapeStates.end()) && "Cannot find BBEscapeState for BB\n");
-  return It->second.getEscReason(V);
+  return It->second.getEscReason(OAP);
 }
 
 bool EscapeAnalysisInfo::isEscapedForBBImpl(const BasicBlock *BB,
-                                            const Value *V,
+                                            const ObjAndPath &OAP,
                                             EscReasonTy *EscReason,
                                             bool UseIPA) const {
-  const auto ExtStatus = UseIPA ? getExtObjStatusIPA(V) : getExtObjStatus(V);
+  const auto ExtStatus =
+      UseIPA ? getExtObjStatusIPA(OAP.Obj) : getExtObjStatus(OAP.Obj);
 
   if (ExtStatus.any()) {
     if (EscReason)
@@ -913,7 +977,7 @@ bool EscapeAnalysisInfo::isEscapedForBBImpl(const BasicBlock *BB,
     return true;
   }
 
-  const auto FoundStatus = findObjInBBEscState(BB, V);
+  const auto FoundStatus = findObjInBBEscState(BB, OAP);
   if (FoundStatus.any()) {
     if (EscReason)
       *EscReason = FoundStatus;
@@ -926,36 +990,37 @@ bool EscapeAnalysisInfo::isEscapedForBBImpl(const BasicBlock *BB,
 }
 
 /// Is Value V is escaping in some path from Entry to BB?
-bool EscapeAnalysisInfo::isEscapedForBB(const BasicBlock *BB, const Value *V,
+bool EscapeAnalysisInfo::isEscapedForBB(const BasicBlock *BB,
+                                        const ObjAndPath &OAP,
                                         EscReasonTy *EscReason) const {
-  return isEscapedForBBImpl(BB, V, EscReason, false);
+  return isEscapedForBBImpl(BB, OAP, EscReason, false);
 }
 
 /// Is Value V is escaping in some path from Entry to BB?
-bool EscapeAnalysisInfo::isEscapedForBBIPA(const BasicBlock *BB, const Value *V,
+bool EscapeAnalysisInfo::isEscapedForBBIPA(const BasicBlock *BB,
+                                           const ObjAndPath &OAP,
                                            EscReasonTy *EscReason) const {
-  return isEscapedForBBImpl(BB, V, EscReason, true);
+  return isEscapedForBBImpl(BB, OAP, EscReason, true);
 }
 
 /// Return escape reason for V in BB
 EscapeAnalysisInfo::EscReasonTy EscapeAnalysisInfo::getFullEscReasonForBB(
-    const BasicBlock *BB, const Value *V) const {
-  return getExtObjStatusIPA(V) | findObjInBBEscState(BB, V);
+    const BasicBlock *BB, const ObjAndPath &OAP) const {
+  return getExtObjStatusIPA(OAP.Obj) | findObjInBBEscState(BB, OAP);
 }
 
 /// Is Value V is escaping somewhere in the function
-bool EscapeAnalysisInfo::isEscapedForFunc(
-    const Value *V,
-    std::optional<std::reference_wrapper<EscReasonTy>> EscReason) const {
+bool EscapeAnalysisInfo::isEscapedForFunc(const ObjAndPath &OAP,
+                                             EscReasonTy *EscReason) const {
   EscReasonTy CombinedEscReason;
   for (const auto &BB : AnalyzedFunc) {
     if (pred_empty(&BB) && !BB.isEntryBlock())
       continue;
-    CombinedEscReason |= getFullEscReasonForBB(&BB, V);
+    CombinedEscReason |= getFullEscReasonForBB(&BB, OAP);
   }
 
-  if (EscReason.has_value())
-    EscReason->get() = CombinedEscReason;
+  if (EscReason)
+    *EscReason = CombinedEscReason;
 
   return CombinedEscReason.any();
 }
@@ -963,18 +1028,19 @@ bool EscapeAnalysisInfo::isEscapedForFunc(
 void EscapeAnalysisInfo::printEscapingForBB(const BasicBlock *BB,
                                             raw_ostream &OS) const {
   const auto It = BBEscapeStates.find(BB);
-  if ((It == BBEscapeStates.end()) || (It->second.getEscapedObjs().empty()))
+  if ((It == BBEscapeStates.end()) || (It->second.getEscObjs().empty()))
     return;
 
   bool PrintedEscapeHeader = false;
-  for (const auto &V : It->second.getEscapedObjs()) {
+  for (const auto &OAP : It->second.getEscObjs()) {
     if (!PrintedEscapeHeader) {
       OS << "Escaping objects for BB " << BB->getName() << ":\n";
       PrintedEscapeHeader = true;
     }
 
-    if (!isa<GlobalValue>(V.first)) {
-      OS << *V.first << "\n";
+    if (!isa<GlobalValue>(OAP.first.Obj)) {
+      // OS << *OAP.first.Obj << "\n";
+      OS << *OAP.first.Obj << dbgPathToStr(OAP.first.Path) << "\n";
       // LLVM_DEBUG(OS << "EscReason: "; printEscReason(V.second); );
     }
   }
@@ -1033,8 +1099,11 @@ void EscapeAnalysisGlobalInfo::updIPAFuncEscInfo(
   for (const auto &Arg : F->args()) {
     EscapeAnalysisInfo::EscReasonTy ArgEscReason;
     LLVM_DEBUG(dbgs() << "@@@@@@@@@ ArgEsc: " << Arg << " -- Escape status: "
-                      << EAI.isEscapedForFunc(&Arg) << "\n";);
-    EAI.isEscapedForFunc(&Arg, std::ref(ArgEscReason));
+                      << EAI.isEscapedForFunc({&Arg, std::nullopt})
+                      << "\n";);
+
+    // FIXME: double check if std::nullopt is correct here
+    EAI.isEscapedForFunc({&Arg, std::nullopt}, &ArgEscReason);
 
     if (IPABottomTopEscInfo->find(F) != IPABottomTopEscInfo->end()) {
       if ((*IPABottomTopEscInfo)[F].ArgEscapes.find(Arg.getArgNo()) !=
@@ -1171,19 +1240,18 @@ void EscapeAnalysisGlobalInfo::evalTopDownArgEscStatus(
       const auto *BB = CB->getParent();
 
       for (const auto &UnderlObj : UnderlObjs) {
-        auto checkEscapeStatus = [&](const Value *Obj) {
-          IsArgEscaped[ArgIdx] |=
-              CallEAI.isEscapedForBBIPA(BB, Obj);
-          LLVM_DEBUG(dbgs() << "\t\tArg " << ArgIdx << " (underl obj: " << *Obj
-                            << ") is escaped: "
+        auto checkEscapeStatus = [&](const ObjAndPath &OAP) {
+          IsArgEscaped[ArgIdx] |= CallEAI.isEscapedForBBIPA(BB, OAP);
+          LLVM_DEBUG(dbgs() << "\t\tArg " << ArgIdx
+                            << " (underl obj: " << *OAP.Obj << ") is escaped: "
                             << (IsArgEscaped[ArgIdx] ? "YES" : "NO") << "\n");
           return IsArgEscaped[ArgIdx];
         };
 
         if (UnderlObj.Loaded)
-          CallEAI.forEachPointeeDo(UnderlObj.Obj, BB, checkEscapeStatus);
+          CallEAI.forEachPointeeDo(UnderlObj, BB, checkEscapeStatus);
         else
-          checkEscapeStatus(UnderlObj.Obj);
+          checkEscapeStatus(UnderlObj);
 
         if (IsArgEscaped[ArgIdx])
           break;
@@ -1389,7 +1457,7 @@ bool EscapeAnalysisGlobalInfo::isEscapedForBBTSan(
   if (EscapeAnalysisInfo::isNonConstGV(UnderlObj.Obj))
     return true;
 
-  FEIIt->second.isEscapedForBBIPA(BB, UnderlObj.Obj, &EscReason);
+  FEIIt->second.isEscapedForBBIPA(BB, UnderlObj, &EscReason);
 
   // If object escapes by passing to a function, it doesn't matter whether
   // it's a pointer or not, because even pointer may escape through this
@@ -1398,8 +1466,8 @@ bool EscapeAnalysisGlobalInfo::isEscapedForBBTSan(
     return true;
 
   if (UnderlObj.Loaded) {
-    FEIIt->second.forEachPointeeDo(UnderlObj.Obj, BB, [&](const Value *V) {
-      FEIIt->second.isEscapedForBBIPA(BB, V, &EscReason);
+    FEIIt->second.forEachPointeeDo(UnderlObj, BB, [&](const ObjAndPath &OAP) {
+      FEIIt->second.isEscapedForBBIPA(BB, OAP, &EscReason);
     });
   }
   return EscReason.any();
@@ -1681,18 +1749,18 @@ SmallVector<UnderlObjTy> EscapeAnalysisInfo::getUnderlyingMayEscObjs(
   SmallVector<UnderlObjTy> UnderlObjs;
   getUnderlObjsForCodeGenWithoutPHIInvCheck(V, UnderlObjs, MaxLookup,
                                             IPAFuncEscInfo);
-  LLVM_DEBUG(dbgs() << "\tgetUnderlyingMayEscObjects for " << *V << "\n");
-  LLVM_DEBUG(if (!UnderlObjs.empty()) {
-    dbgs() << "\tgetUnderlyingMayEscObjects:";
-    for (const auto &Obj : UnderlObjs) {
-      dbgs() << "\t\t" << *Obj.Obj << "\n\t\t\tPath: ";
-      if (Obj.Path.has_value())
-        for (unsigned Index : Obj.Path.value())
-          dbgs() << Index << " ";
-      else
-        dbgs() << "None";
-      dbgs() << "\n";
-    }
-  } else dbgs() << "\tgetUnderlyingMayEscObjects -- empty\n";);
+  // LLVM_DEBUG(dbgs() << "\tgetUnderlyingMayEscObjects for " << *V << "\n");
+  // LLVM_DEBUG(if (!UnderlObjs.empty()) {
+  //   dbgs() << "\tgetUnderlyingMayEscObjects:";
+  //   for (const auto &Obj : UnderlObjs) {
+  //     dbgs() << "\t\t" << *Obj.Obj << "\n\t\t\tPath: ";
+  //     if (Obj.Path.has_value())
+  //       for (unsigned Index : Obj.Path.value())
+  //         dbgs() << Index << " ";
+  //     else
+  //       dbgs() << "None";
+  //     dbgs() << "\n";
+  //   }
+  // } else dbgs() << "\tgetUnderlyingMayEscObjects -- empty\n";);
   return UnderlObjs;
 }
