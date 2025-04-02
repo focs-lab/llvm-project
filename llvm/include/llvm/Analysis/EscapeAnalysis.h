@@ -22,8 +22,8 @@
 #include "llvm/IR/PassManager.h"
 
 #include <bitset>
-#include <variant>
 #include <functional>
+#include <variant>
 
 namespace llvm {
 /// This is the implementation of simple escape analysis
@@ -40,7 +40,7 @@ struct ObjAndPath {
   const Value *Obj = nullptr;
 
   // GEP path to the field (if it's the structure field)
-  std::optional<FieldPathTy> Path;
+  FieldPathTy Path = EmptyFieldPath;
 
   bool operator<(const ObjAndPath &Other) const {
     if (Obj != Other.Obj)
@@ -54,7 +54,7 @@ struct ObjAndPath {
   }
 };
 
-struct UnderlObjTy: ObjAndPath {
+struct UnderlObjTy : ObjAndPath {
   bool Loaded;
 };
 
@@ -79,8 +79,8 @@ public:
 
   struct IPABottomTopInfoEntry {
     SmallDenseMap<unsigned, EscReasonTy> ArgEscapes; // for each argument
-    bool IsRetEscape = false; // whether return value is escaping or not
-    bool IsRecursive = false; // whether function is recursive or not
+    bool IsRetEscape = false;   // whether return value is escaping or not
+    bool IsRecursive = false;   // whether function is recursive or not
     bool IsPassedAsPtr = false; // whether function is passed as pointer
                                 // to another call or not
     bool operator==(const IPABottomTopInfoEntry &Other) const {
@@ -102,9 +102,9 @@ public:
   /// ArgumentEscape is needed for IPA analysis (because we should ignore
   /// escaping by calls)
   explicit EscapeAnalysisInfo(
-    const Function &Fn,
-    std::shared_ptr<IPABottomTopMap> IPAFuncEscInfo = nullptr,
-    std::shared_ptr<IPAArgEscFromCallsMap> IPAArgEscFromCallers_ = nullptr);
+      const Function &Fn,
+      std::shared_ptr<IPABottomTopMap> IPAFuncEscInfo = nullptr,
+      std::shared_ptr<IPAArgEscFromCallsMap> IPAArgEscFromCallers_ = nullptr);
 
   void print(raw_ostream &OS) const;
 
@@ -133,13 +133,10 @@ public:
   bool isEscapedForBBIPA(const BasicBlock *BB, const ObjAndPath &OAP,
                          EscReasonTy *EscReason = nullptr) const;
 
-  void forEachPointeeDo(
-      const ObjAndPath &OAP, const BasicBlock *BB,
-      const std::function<void(const ObjAndPath &)> &Action) const {
-    const auto It = BBEscapeStates.find(BB);
-    assert(It != BBEscapeStates.end());
-    It->second.forEachPointeeDo(OAP, Action);
-  }
+  /// Make action for each pointee, if given object points to something
+  void
+  forEachPointeeDo(const ObjAndPath &OAP, const BasicBlock *BB,
+                   const std::function<void(const ObjAndPath &)> &Action) const;
 
 private:
   // Types of object escaping states
@@ -182,8 +179,7 @@ private:
                               const ObjAndPath &Pointee);
 
     /// Traverse the (implicit) tree of aliases and get the list of aliases
-    std::optional<PointeeListTy>
-    getPointees(const ObjAndPath &Pointer) const;
+    std::optional<PointeeListTy> getPointees(const ObjAndPath &Pointer) const;
 
     /// We need it to check if something changed in the data-flow analysis
     bool operator==(const PointsToRelTy &Other) const;
@@ -268,8 +264,7 @@ private:
 
   /// Get escape status of the object and if it's a pointer argument,
   /// lookup in the top-bottom argument escape analysis
-  EscReasonTy
-  getExtObjStatusIPA(const Value *V) const;
+  EscReasonTy getExtObjStatusIPA(const Value *V) const;
 
   /// Determine what kind of escape behaviour V may exhibit.
   struct EscInfoTy {
@@ -305,8 +300,7 @@ private:
   EscReasonTy getArgEscBottomTopIPA(unsigned ArgNo, const Function *Func) const;
 
   /// Find argument in the from-callers (top-bottom) escape info
-  EscReasonTy getArgEscTopDownIPA(const unsigned ArgNo,
-                                         const Function *Func) const;
+  EscReasonTy getArgEscTopDownIPA(unsigned ArgNo, const Function *Func) const;
 };
 
 /// Interface to access safety global (interprocedural) analysis results.
@@ -322,8 +316,8 @@ class EscapeAnalysisGlobalInfo {
   /// Map for escape information about argument from outside of the function
   /// (escape comes from passing parameters to the function calls)
   std::shared_ptr<EscapeAnalysisInfo::IPAArgEscFromCallsMap>
-  IPATopDownArgEscInfo =
-      std::make_shared<EscapeAnalysisInfo::IPAArgEscFromCallsMap>();
+      IPATopDownArgEscInfo =
+          std::make_shared<EscapeAnalysisInfo::IPAArgEscFromCallsMap>();
 
   /// Traverse SCCs in the call graph, find recursive functions and SCCs
   /// init IPAFuncEscInfo
@@ -332,11 +326,10 @@ class EscapeAnalysisGlobalInfo {
 
   /// Bottom-top traversal of SCCs of the callgraph, do local analysis,
   /// fill FuncEscapeInfo, IPAFuncEscInfo
-  bool traverseCGBottomTop(CallGraph &CG,
-                                 const SmallPtrSetImpl<const Function *> &
-                                 RecursiveFuncs,
-                                 SmallVector<std::vector<CallGraphNode *> > &
-                                 SCCList);
+  bool
+  traverseCGBottomTop(CallGraph &CG,
+                      const SmallPtrSetImpl<const Function *> &RecursiveFuncs,
+                      SmallVector<std::vector<CallGraphNode *>> &SCCList);
 
   /// Init escape status of arguments and return
   static void
@@ -369,7 +362,7 @@ class EscapeAnalysisGlobalInfo {
   /// (relevant for SCC with 1 node)
   static bool isRecursiveCallGraphNode(const CallGraphNode *CGN);
   void updIPAFuncEscInfo(const Function *F,
-                          const EscapeAnalysisInfo &EAI) const;
+                         const EscapeAnalysisInfo &EAI) const;
   void printSCC(const std::vector<CallGraphNode *> &SCC);
 
 public:
@@ -377,9 +370,8 @@ public:
   void print(Module &M, raw_ostream &O) const;
 
   /// For given pointer, get underlying objects, and get escape status for them
-  bool
-  isEscapedUndrlObjOrPointee(const Value *Addr, const BasicBlock *BB,
-                             EscapeAnalysisInfo::EscReasonTy &EscReason);
+  bool isEscapedUndrlObjOrPointee(const Value *Addr, const BasicBlock *BB,
+                                  EscapeAnalysisInfo::EscReasonTy &EscReason);
 
   /// Is Value V is escaping in some path from Entry to BB in the function F
   bool isEscapedForBBTSan(const Function *F, const BasicBlock *BB,
