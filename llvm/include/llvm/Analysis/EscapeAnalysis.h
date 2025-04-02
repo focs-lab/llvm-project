@@ -224,7 +224,6 @@ private:
     }
 
     const EscapedObjectsTy &getEscObjs() const { return EscapedObjs; };
-
     const PointsToRelTy &getPointsTo() const { return PointsTo; }
 
     /// Try to find object in the EscapedObjects and return escape reason
@@ -244,9 +243,9 @@ private:
 
   /// Check if function returns escaped object, and update function return
   /// escape status
-  void updRetEscStatus(EscapeState &ES, const BasicBlock *BB,
+  void updRetEscStatus(const EscapeState &ES, const BasicBlock *BB,
                        const SmallVectorImpl<UnderlObjTy> &UnderlObjs);
-  void addEscapedPtrArgs(EscapeState &ES);
+  void addEscapedPtrArgs(EscapeState &ES) const;
 
   /// Compute the resulting escape state for BB
   void compBBEscapeState(const BasicBlock *BB, EscapeState &ES);
@@ -341,7 +340,7 @@ class EscapeAnalysisGlobalInfo {
   getFuncToCallSitesMap();
 
   /// Check weather function passed to the Objective C selector
-  bool isFuncPassedToObjCSelector(const Function *F);
+  bool isFuncPassedToObjCSelector(const Function *F) const;
 
   /// Compute escape status for the function argument based on call instructions
   void traverseCGTopDown(
@@ -350,7 +349,7 @@ class EscapeAnalysisGlobalInfo {
           &FuncCallSites,
       const SmallPtrSetImpl<const Function *> &RecursiveFuncs);
 
-  void printArgEscStatus();
+  void printArgEscStatus() const;
 
   /// Compute escape status for the function argument based on call instructions
   void evalTopDownArgEscStatus(
@@ -363,7 +362,7 @@ class EscapeAnalysisGlobalInfo {
   static bool isRecursiveCallGraphNode(const CallGraphNode *CGN);
   void updIPAFuncEscInfo(const Function *F,
                          const EscapeAnalysisInfo &EAI) const;
-  void printSCC(const std::vector<CallGraphNode *> &SCC);
+  static void printSCC(const std::vector<CallGraphNode *> &SCC);
 
 public:
   explicit EscapeAnalysisGlobalInfo(CallGraph &CG, Module &M);

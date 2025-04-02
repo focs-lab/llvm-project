@@ -81,18 +81,17 @@ void EscapeAnalysisGlobalInfo::printSCC(
   }
 }
 
-static std::string dbgPathToStr(const std::optional<FieldPathTy> &Path) {
-  if (!Path.has_value())
+static std::string dbgPathToStr(const FieldPathTy &Path) {
+  if (Path == EmptyFieldPath)
     return "";
-  const auto &PathVal = Path.value();
 
   std::string Result;
   raw_string_ostream RSO(Result);
   RSO << " | Path: ";
-  for (size_t i = 0; i < PathVal.size(); ++i) {
+  for (size_t i = 0; i < Path.size(); ++i) {
     if (i != 0)
       RSO << " ";
-    RSO << PathVal[i];
+    RSO << Path[i];
   }
   RSO.flush();
   return Result;
@@ -116,7 +115,7 @@ static void dbgPrintAliasCand(const SmallVectorImpl<UnderlObjTy> &UnderlObjs) {
     dbgs() << "\tAlias candidate: " << *A.Obj << "\n";
 }
 
-void EscapeAnalysisGlobalInfo::printArgEscStatus() {
+void EscapeAnalysisGlobalInfo::printArgEscStatus() const {
   dbgs() << "\nIsArgEscapedFromCalls:\n";
   for (const auto &Entry : *IPATopDownArgEscInfo) {
     const Function *F = Entry.first;
@@ -350,9 +349,18 @@ void EscapeAnalysisInfo::EscapeState::addEscObjOrReason(const ObjAndPath &OAP,
       EscObjIt != EscapedObjs.end())
     // Object is already escaped - add the escape reason
     EscObjIt->second |= EscReason;
-  else
+  else {
+    // If object escapes by empty path, then it escapes by all paths
+    if (OAP.Path == EmptyFieldPath)
+      for (auto It = EscapedObjs.begin(); It != EscapedObjs.end();) {
+        if (It->first.Obj == OAP.Obj)
+          It = EscapedObjs.erase(It);
+        else
+          ++It;
+      }
     // Object has not escaped before - add it
     EscapedObjs.insert({OAP, EscReason});
+  }
 }
 
 void EscapeAnalysisInfo::EscapeState::addEscObj(const ObjAndPath &EscObj,
@@ -559,7 +567,7 @@ EscapeAnalysisInfo::EscapeAnalysisInfo(
 }
 
 void EscapeAnalysisInfo::updRetEscStatus(
-    EscapeState &ES, const BasicBlock *BB,
+    const EscapeState &ES, const BasicBlock *BB,
     const SmallVectorImpl<UnderlObjTy> &UnderlObjs) {
   for (const auto &EO : UnderlObjs) {
     LLVM_DEBUG(dbgs() << "\t\treturn: check: " << *EO.Obj << "\n";);
@@ -584,7 +592,7 @@ void EscapeAnalysisInfo::updRetEscStatus(
   }
 }
 
-void EscapeAnalysisInfo::addEscapedPtrArgs(EscapeState &ES) {
+void EscapeAnalysisInfo::addEscapedPtrArgs(EscapeState &ES) const {
   // Iterate over the arguments of the function
   for (const Argument &Arg : AnalyzedFunc.args()) {
     if (!Arg.getType()->isPointerTy())
@@ -1311,7 +1319,8 @@ bool EscapeAnalysisGlobalInfo::traverseCGBottomTop(
   return false;
 }
 
-bool EscapeAnalysisGlobalInfo::isFuncPassedToObjCSelector(const Function *F) {
+bool EscapeAnalysisGlobalInfo::isFuncPassedToObjCSelector(
+    const Function *F) const {
   for (const GlobalVariable &GV : M.globals()) {
     if (GV.getName().starts_with("OBJC_SELECTOR_REFERENCES_") &&
         GV.hasInitializer()) {
@@ -1346,7 +1355,7 @@ void EscapeAnalysisGlobalInfo::traverseCGTopDown(
     bool Converged = false;
     while (!Converged) {
       Converged = true;
-      for (CallGraphNode *CGN : SCC) {
+      for (const CallGraphNode *CGN : SCC) {
         const Function *F = CGN->getFunction();
 
         // We consider only localy defined, static functions
