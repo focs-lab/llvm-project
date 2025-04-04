@@ -362,7 +362,7 @@ void EscapeAnalysisInfo::EscapeState::addEscObjOrReason(const ObjAndPath &OAP,
     // Object has not escaped before - add it
     EscapedObjs.insert({OAP, EscReason});
 
-    // DEBUG_WITH_TYPE(PRINT_ESCAPING_CALLEES,
+    DEBUG_WITH_TYPE(PRINT_ESCAPING_CALLEES,
     if (I && (EscReason == PASSING_TO_CALL)) {
           // Print callee function, possible leads to escaping passed arguments
           if (const auto *CB = dyn_cast<CallBase>(I)) {
@@ -374,7 +374,7 @@ void EscapeAnalysisInfo::EscapeState::addEscObjOrReason(const ObjAndPath &OAP,
             }
           }
         }
-    // );
+    );
   }
 }
 
