@@ -117,6 +117,7 @@ STATISTIC(NumEscRetPtr, "Number of escapes due to returning a pointer");
 STATISTIC(NumEscVolatile, "Number of escapes due to volatile");
 STATISTIC(NumEscOther, "Number of escapes due to other reasons");
 STATISTIC(NumEscInvalid, "Number of escapes due to invalid reasons");
+STATISTIC(NumEscCall, "Number of escapes due to escaped calls");
 
 const char kTsanModuleCtorName[] = "tsan.module_ctor";
 const char kTsanInitName[] = "__tsan_init";
@@ -488,6 +489,8 @@ static void updateEscapeStatistics(EscReasonTy Reason) {
     ++NumEscOther;
   if ((Reason & EscReasonTy(EscapeAnalysisInfo::INVALID)).any())
     ++NumEscInvalid;
+  if ((Reason & EscReasonTy(EscapeAnalysisInfo::ESCAPED_CALL)).any())
+    ++NumEscCall;
 }
 
 // Instrumenting some of the accesses may be proven redundant.
@@ -575,9 +578,9 @@ void ThreadSanitizer::chooseInstructionsToInstrument(
                                                          EscReason)) {
         LLVM_DEBUG(dbgs() << "Instruction omitted\n");
         NumOmittedNonEscaped++;
-        updateEscapeStatistics(EscReason);
         continue;
       }
+      updateEscapeStatistics(EscReason);
       LLVM_DEBUG(dbgs() << "Instruction instrumented\n");
     }
 
@@ -892,6 +895,7 @@ bool ThreadSanitizer::instrumentInterceptedCalls(
 bool ThreadSanitizer::instrumentMemIntrinsic(Instruction *I,
    std::optional<EscapeAnalysisGlobalInfo*> EAIGlobal) {
   InstrumentationIRBuilder IRB(I);
+  LLVM_DEBUG(dbgs() << "Instrumenting MemIntrinsic: " << *I << "\n");
 
   if (MemSetInst *M = dyn_cast<MemSetInst>(I)) {
     Value *Cast1 =
@@ -900,9 +904,11 @@ bool ThreadSanitizer::instrumentMemIntrinsic(Instruction *I,
 
     // Check if pointer is not escape
     if (!isPointerEscaped(M->getArgOperand(0), I, EAIGlobal)) {
+      LLVM_DEBUG(dbgs() << "MemIntrinsic does not escape any pointers\n");
       disableInterceptorForInstr(I, IRB);
       return false;
     }
+    LLVM_DEBUG(dbgs() << "MemIntrinsic escapes pointers\n");
 
     IRB.CreateCall(
         MemsetFn,

@@ -26,11 +26,12 @@
 #include "llvm/IR/PassManager.h"
 
 #include <deque>
+#include <fstream>
 
 using namespace llvm;
 
 #define DEBUG_TYPE "ea"
-#define DEEP_DEBUG_TYPE "ea-deep-debug"
+#define PRINT_ESCAPING_CALLEES "ea-escaping-callees"
 
 //===----------------------------------------------------------------------===//
 // For debug
@@ -150,22 +151,22 @@ static bool isPointerArgument(const Value *V) {
 /// global pointer), then that's not just aliasing, but escaping as well
 void EscapeAnalysisInfo::EscapeState::checkAndUpdEscStatus(
     const ObjAndPath &Pointer, const ObjAndPath &Pointee,
-    const EscapeAnalysisInfo *EAI) {
+    const EscapeAnalysisInfo *EAI, const Instruction *I) {
   LLVM_DEBUG(dbgs() << "\tcheckAndUpdEscStatus: " << *Pointer.Obj << " --> "
                     << *Pointee.Obj << "\n");
   if (const auto EscReason = EAI->getExtObjStatusIPA(Pointer.Obj);
       EscReason.any())
-    addEscObjOrReason(Pointee, EscReason);
+    addEscObjOrReason(Pointee, EscReason, I);
 
   // Assigning to structures
   if (const auto *Alloca = dyn_cast<AllocaInst>(Pointer.Obj);
       Alloca && Alloca->getAllocatedType()->isStructTy()) {
     if (const auto It = EscapedObjs.find(Pointee); It != EscapedObjs.end())
-      addEscObjOrReason(Pointer, It->second);
+      addEscObjOrReason(Pointer, It->second, I);
 
     if (const auto EscReason = EAI->getExtObjStatusIPA(Pointee.Obj);
         EscReason.any())
-      addEscObjOrReason(Pointer, EscReason);
+      addEscObjOrReason(Pointer, EscReason, I);
   }
 }
 
@@ -180,9 +181,10 @@ void EscapeAnalysisInfo::EscapeState::forEachPointeeDo(
 }
 
 /// Add the alias: Alias --> PointeeValue
-void EscapeAnalysisInfo::EscapeState::addPointsTo(
-    const UnderlObjTy &Pointer, const UnderlObjTy &Pointee,
-    const EscapeAnalysisInfo *EAI) {
+void EscapeAnalysisInfo::EscapeState::addPointsTo(const UnderlObjTy &Pointer,
+                                                  const UnderlObjTy &Pointee,
+                                                  const EscapeAnalysisInfo *EAI,
+                                                  const Instruction *I) {
   assert(Pointer.Obj->getType()->isPointerTy() && "Alias must be a pointer\n");
 
   if ((Pointer.Obj == Pointee.Obj) || (Pointee.Obj == nullptr) ||
@@ -199,20 +201,20 @@ void EscapeAnalysisInfo::EscapeState::addPointsTo(
   // of Pointee
   forEachPointeeDo(Pointee, [&](const ObjAndPath &Ptee) {
     // Ptee inherits path of Pointee
-    addPointsTo(Pointer, {{Ptee.Obj, Pointee.Path}, false}, EAI);
+    addPointsTo(Pointer, {{Ptee.Obj, Pointee.Path}, false}, EAI, I);
   });
 
   if (Pointee.Loaded)
     return;
 
-  checkAndUpdEscStatus(Pointer, Pointee, EAI);
+  checkAndUpdEscStatus(Pointer, Pointee, EAI, I);
 
   // If pointer value was loaded, we should check whether pointee object is
   // escaped or not
   if (Pointer.Loaded) {
     LLVM_DEBUG(dbgs() << "\t\t\tPointer loaded\n";);
     forEachPointeeDo(Pointer, [&](const ObjAndPath &Ptee) {
-      checkAndUpdEscStatus(Ptee, Pointee, EAI);
+      checkAndUpdEscStatus(Ptee, Pointee, EAI, I);
     });
   }
 }
@@ -333,7 +335,8 @@ bool EscapeAnalysisInfo::EscapeState::operator==(const EscapeState &ES) const {
 }
 
 void EscapeAnalysisInfo::EscapeState::addEscObjOrReason(const ObjAndPath &OAP,
-                                                        EscReasonTy EscReason) {
+                                                        EscReasonTy EscReason,
+                                                        const Instruction *I) {
   LLVM_DEBUG(dbgs() << "\t\t\t\taddEscapeObjOrReason: " << dbgObjToStr(OAP.Obj)
                     << dbgPathToStr(OAP.Path) << "\n\t\t\t\tNew EscReason: ";
              printEscReason(EscReason););
@@ -358,11 +361,26 @@ void EscapeAnalysisInfo::EscapeState::addEscObjOrReason(const ObjAndPath &OAP,
       }
     // Object has not escaped before - add it
     EscapedObjs.insert({OAP, EscReason});
+
+    // DEBUG_WITH_TYPE(PRINT_ESCAPING_CALLEES,
+    if (I && (EscReason == PASSING_TO_CALL)) {
+          // Print callee function, possible leads to escaping passed arguments
+          if (const auto *CB = dyn_cast<CallBase>(I)) {
+            if (CB->hasName(); const auto *Callee = CB->getCalledFunction()) {
+              dbgs() << "\t\tCallee Function: " << Callee->getName() << "\n";
+
+              if (const auto &DebugLoc = I->getDebugLoc())
+                dbgs() << "\t\tSource Line: " << DebugLoc.getLine() << "\n";
+            }
+          }
+        }
+    // );
   }
 }
 
 void EscapeAnalysisInfo::EscapeState::addEscObj(const ObjAndPath &EscObj,
-                                                const EscReasonTy EscReason) {
+                                                const EscReasonTy EscReason,
+                                                const Instruction *I) {
   LLVM_DEBUG(dbgs() << "\t\taddEscObj: " << dbgObjToStr(EscObj.Obj) << "\n");
   SmallVector<ObjAndPath> WorkList;
   SmallSet<ObjAndPath, 4> Visited;
@@ -375,7 +393,7 @@ void EscapeAnalysisInfo::EscapeState::addEscObj(const ObjAndPath &EscObj,
     if (!Visited.insert(Curr).second)
       continue;
 
-    addEscObjOrReason(Curr, EscReason);
+    addEscObjOrReason(Curr, EscReason, I);
 
     if (const auto Pointees = PointsTo.getPointees(Curr); Pointees.has_value())
       for (const auto &OAP : Pointees.value())
@@ -455,17 +473,24 @@ static bool getIPAFuncRetEscStatus(
   return false;
 }
 
-static bool isSafeExternalCall(StringRef FuncName) {
+static bool isSafeExternalCall(
+    StringRef FuncName,
+    std::shared_ptr<SmallSet<std::string, 8>> NonEscapingFuncs = nullptr) {
   // TODO Demangle the function name before comparison
+  if (NonEscapingFuncs && NonEscapingFuncs->contains(std::string(FuncName)))
+    return true;
+
   return (FuncName == "malloc" || FuncName == "calloc" ||
           FuncName == "realloc" || FuncName == "strlen" ||
           FuncName == "strcmp" || FuncName == "memchr");
 }
 
 /// Check if it's a function call which can escape
-static bool isCallMayEscape(const Value *V,
-                            std::shared_ptr<EscapeAnalysisInfo::IPABottomTopMap>
-                                IPABottomTopInfo = nullptr) {
+static bool isCallMayEscape(
+    const Value *V,
+    std::shared_ptr<EscapeAnalysisInfo::IPABottomTopMap> IPABottomTopInfo =
+        nullptr,
+    std::shared_ptr<SmallSet<std::string, 8>> NonEscapingFuncs = nullptr) {
   const auto *CB = dyn_cast<CallBase>(V);
   if (!CB)
     return false;
@@ -476,7 +501,7 @@ static bool isCallMayEscape(const Value *V,
   // Check if the call is to a known memory allocation function.
   if (const Function *F = CB->getCalledFunction()) {
     if (F->isDeclaration()) {
-      if (isSafeExternalCall(F->getName()))
+      if (isSafeExternalCall(F->getName(), NonEscapingFuncs))
         return false; // Memory allocation functions do not escape.
       return true;    // Unknown external function.
     }
@@ -513,15 +538,16 @@ EscapeAnalysisInfo::getExtObjStatusIPA(const Value *V) const {
 //===----------------------------------------------------------------------===//
 
 EscapeAnalysisInfo::EscapeAnalysisInfo(
-    const Function &Fn, std::shared_ptr<IPABottomTopMap> IPABottomTopInfo_,
+    const Function &Fn,
+    std::shared_ptr<SmallSet<std::string, 8>> NonEscapingFuncs_,
+    std::shared_ptr<IPABottomTopMap> IPABottomTopInfo_,
     std::shared_ptr<IPAArgEscFromCallsMap> IPAArgEscFromCallers_)
     : AnalyzedFunc(Fn), IPABottomTopInfo(IPABottomTopInfo_),
-      IPATopDownInfo(IPAArgEscFromCallers_) {
+      IPATopDownInfo(IPAArgEscFromCallers_),
+      NonEscapingFuncs(NonEscapingFuncs_) {
   LLVM_DEBUG(dbgs() << "\n|||||||||||||||||||||||||||||||||||||||||||||||||||||"
-                       "|||||||||||||||||\n"
-                       "|||||||||||||||||||| Func "
-                    << Fn.getName()
-                    << "\t||||||||||||||||||||||\n"
+                       "|||||||||||||||||\n|||||||||||||||||||| Func "
+                    << Fn.getName() << "\t||||||||||||||||||||||\n"
                        "|||||||||||||||||||||||||||||||||||||||||||||||||||||||"
                        "|||||||||||||||\n");
   std::deque<const BasicBlock *> WorkList;
@@ -602,7 +628,7 @@ void EscapeAnalysisInfo::addEscapedPtrArgs(EscapeState &ES) const {
       LLVM_DEBUG(dbgs() << "Argument " << Arg.getName() << " is escaped: ";
                  printEscReason(ArgEscReason););
       // FIXME double check
-      ES.addEscObj({&Arg, EmptyFieldPath}, ArgEscReason);
+      ES.addEscObj({&Arg, EmptyFieldPath}, ArgEscReason, nullptr);
     }
   }
 }
@@ -647,11 +673,11 @@ void EscapeAnalysisInfo::compBBEscapeState(const BasicBlock *BB,
           updRetEscStatus(ES, BB, UnderlObjs);
 
         for (const auto &UO : UnderlObjs) {
-          ES.addEscObj(UO, EscReason);
+          ES.addEscObj(UO, EscReason, &I);
           if (UO.Loaded) {
             LLVM_DEBUG(dbgs() << "\t\tLoaded\n");
             ES.forEachPointeeDo(UO, [&](const ObjAndPath &Pointee) {
-              ES.addEscObjOrReason(Pointee, EscReason);
+              ES.addEscObjOrReason(Pointee, EscReason, &I);
             });
             continue;
           }
@@ -661,7 +687,7 @@ void EscapeAnalysisInfo::compBBEscapeState(const BasicBlock *BB,
                             << "\n\t\tExtEscReason: ";
                      printEscReason(ExtEscReason););
           if (ExtEscReason != EscReasonBits::GPTR_ALIASING)
-            ES.addEscObj(UO, EscReason);
+            ES.addEscObj(UO, EscReason, &I);
         }
       } else {
         assert(EscKind == EscKindTy::MAY_ALIASING);
@@ -673,7 +699,7 @@ void EscapeAnalysisInfo::compBBEscapeState(const BasicBlock *BB,
 
         for (const auto &Alias : AliasList)
           for (const auto &Pointee : UnderlObjs)
-            ES.addPointsTo(Alias, Pointee, this);
+            ES.addPointsTo(Alias, Pointee, this, &I);
       }
     }
   }
@@ -760,7 +786,7 @@ EscapeAnalysisInfo::getEscInfoCall(const Use &U, const Instruction *I) const {
 
   if (const Function *CalledFunc = Call->getCalledFunction()) {
     // Some functions can be taken as safe external calls
-    if (isSafeExternalCall(CalledFunc->getName()))
+    if (isSafeExternalCall(CalledFunc->getName(), NonEscapingFuncs))
       return {EscKindTy::NO_ESCAPE, std::nullopt};
   }
 
@@ -1296,7 +1322,7 @@ bool EscapeAnalysisGlobalInfo::traverseCGBottomTop(
         FuncEscapeInfo.erase(F);
 
         const auto [It, Inserted] = FuncEscapeInfo.try_emplace(
-            F, EscapeAnalysisInfo(*F, IPABottomTopEscInfo));
+            F, EscapeAnalysisInfo(*F, NonEscapingFuncs, IPABottomTopEscInfo));
 
         const auto &EAI = It->second;
         // For non-recursive functions, no need to iterate until convergence
@@ -1374,9 +1400,9 @@ void EscapeAnalysisGlobalInfo::traverseCGTopDown(
         if ((SCC.size() == 1) && !RecursiveFuncs.contains(F)) {
           evalTopDownArgEscStatus(FuncCallSites, F);
           FuncEscapeInfo.erase(F);
-          FuncEscapeInfo.try_emplace(F,
-                                     EscapeAnalysisInfo(*F, IPABottomTopEscInfo,
-                                                        IPATopDownArgEscInfo));
+          FuncEscapeInfo.try_emplace(
+              F, EscapeAnalysisInfo(*F, NonEscapingFuncs, IPABottomTopEscInfo,
+                                    IPATopDownArgEscInfo));
           break;
         }
 
@@ -1391,9 +1417,9 @@ void EscapeAnalysisGlobalInfo::traverseCGTopDown(
         // Build escape summary for a function
         evalTopDownArgEscStatus(FuncCallSites, F);
         FuncEscapeInfo.erase(F);
-        FuncEscapeInfo.try_emplace(
-            F,
-            EscapeAnalysisInfo(*F, IPABottomTopEscInfo, IPATopDownArgEscInfo));
+        FuncEscapeInfo.try_emplace(F, EscapeAnalysisInfo(*F, NonEscapingFuncs,
+                                                         IPABottomTopEscInfo,
+                                                         IPATopDownArgEscInfo));
 
         if (Converged && (PrevIPAFuncInfo != (*IPATopDownArgEscInfo)[F]))
           Converged = false;
@@ -1402,8 +1428,27 @@ void EscapeAnalysisGlobalInfo::traverseCGTopDown(
   }
 }
 
+void EscapeAnalysisGlobalInfo::readFuncWhitelist() {
+  std::ifstream WhiteListFile(FuncWhiteListFileName);
+  if (!WhiteListFile.is_open()) {
+    errs() << "Error opening file: " << FuncWhiteListFileName << "\n";
+    return;
+  }
+
+  std::string FuncName;
+  while (std::getline(WhiteListFile, FuncName)) {
+    std::remove_if(FuncName.begin(), FuncName.end(), isspace);
+    if (FuncName.empty())
+      continue;
+    NonEscapingFuncs->insert(FuncName);
+  }
+  WhiteListFile.close();
+}
+
 EscapeAnalysisGlobalInfo::EscapeAnalysisGlobalInfo(CallGraph &CG, Module &M_)
     : M(M_) {
+  readFuncWhitelist();
+
   // We do a bottom-up SCC traversal of the call graph.  In other words, we
   // visit all callees before callers (leaf-first).
 

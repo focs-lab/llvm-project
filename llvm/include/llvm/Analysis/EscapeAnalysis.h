@@ -103,6 +103,7 @@ public:
   /// escaping by calls)
   explicit EscapeAnalysisInfo(
       const Function &Fn,
+      std::shared_ptr<SmallSet<std::string, 8>> NonEscapingFuncs_ = nullptr,
       std::shared_ptr<IPABottomTopMap> IPAFuncEscInfo = nullptr,
       std::shared_ptr<IPAArgEscFromCallsMap> IPAArgEscFromCallers_ = nullptr);
 
@@ -162,6 +163,9 @@ private:
   /// Map of basic blocks to their escape analysis states.
   DenseMap<const BasicBlock *, EscapeState> BBEscapeStates;
 
+  /// List of functions whose arguments don't escape
+  std::shared_ptr<SmallSet<std::string, 8>> NonEscapingFuncs;
+
   class PointsToRelTy {
     using PointeeListTy = SmallSet<ObjAndPath, 4>;
     using PathToPointeeMap = std::map<FieldPathTy, PointeeListTy>;
@@ -195,17 +199,20 @@ private:
 
     /// Make list of escaping object + its aliases, and add them to the list
     /// of escaping object
-    void addEscObj(const ObjAndPath &EscObj, EscReasonTy EscReason);
+    void addEscObj(const ObjAndPath &EscObj, EscReasonTy EscReason,
+                   const Instruction *I);
 
     /// Adds an object to the list of escaped objects with a specified escape
     /// reason. If the object is already in the list, update escape reason.
-    void addEscObjOrReason(const ObjAndPath &OAP, EscReasonTy EscReason);
+    void addEscObjOrReason(const ObjAndPath &OAP, EscReasonTy EscReason,
+                           const Instruction *I);
 
     /// Check CheckedObj escape status (as [maybe] external object)
     /// and update AffectedObj if needed
     void checkAndUpdEscStatus(const ObjAndPath &Pointer,
                               const ObjAndPath &Pointee,
-                              const EscapeAnalysisInfo *EAI);
+                              const EscapeAnalysisInfo *EAI,
+                              const Instruction *I);
 
     void forEachPointeeDo(
         const ObjAndPath &OAP,
@@ -216,7 +223,7 @@ private:
     /// escaped or if the alias itself is an escaping pointer, the alias is
     /// also marked as escaping.
     void addPointsTo(const UnderlObjTy &Pointer, const UnderlObjTy &Pointee,
-                     const EscapeAnalysisInfo *EAI);
+                     const EscapeAnalysisInfo *EAI, const Instruction *I);
 
     void merge(const EscapeState &OtherES, const EscapeAnalysisInfo *EAI) {
       PointsTo.merge(OtherES.PointsTo);
@@ -307,6 +314,11 @@ class EscapeAnalysisGlobalInfo {
   Module &M;
   DenseMap<const Function *, EscapeAnalysisInfo> FuncEscapeInfo;
 
+  /// List of functions whose arguments don't escape
+  static constexpr auto FuncWhiteListFileName = "ea-func-whitelist.txt";
+  std::shared_ptr<SmallSet<std::string, 8>> NonEscapingFuncs =
+      std::make_shared<SmallSet<std::string, 8>>();
+
   /// Map for escape information for function arguments from inside of the
   /// function (escape comes from inner objects).
   std::shared_ptr<EscapeAnalysisInfo::IPABottomTopMap> IPABottomTopEscInfo =
@@ -363,6 +375,9 @@ class EscapeAnalysisGlobalInfo {
   void updIPAFuncEscInfo(const Function *F,
                          const EscapeAnalysisInfo &EAI) const;
   static void printSCC(const std::vector<CallGraphNode *> &SCC);
+
+  /// Read function names whose arguments don't escape
+  void readFuncWhitelist();
 
 public:
   explicit EscapeAnalysisGlobalInfo(CallGraph &CG, Module &M);
