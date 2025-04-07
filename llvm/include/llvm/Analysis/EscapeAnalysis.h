@@ -379,6 +379,10 @@ class EscapeAnalysisGlobalInfo {
   /// Read function names whose arguments don't escape
   void readFuncWhitelist();
 
+  /// Write information on program (non-library) functions whose arguments don't
+  /// escape, based on the IPA analysis
+  void writeIPASummary();
+
 public:
   explicit EscapeAnalysisGlobalInfo(CallGraph &CG, Module &M);
   void print(Module &M, raw_ostream &O) const;

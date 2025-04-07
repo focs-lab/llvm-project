@@ -1492,7 +1492,7 @@ EscapeAnalysisGlobalInfo::EscapeAnalysisGlobalInfo(CallGraph &CG, Module &M_)
   traverseCGTopDown(SCCList, FuncCallSites, RecursiveFuncs);
 
   LLVM_DEBUG(printArgEscStatus(););
-  LLVM_DEBUG(dbgs() << "\n");
+  writeIPASummary();
 }
 
 /// For given pointer, get underlying objects, and get escape status for them
@@ -1545,6 +1545,27 @@ void EscapeAnalysisGlobalInfo::print(Module &M, raw_ostream &O) const {
       << "':\n";
     It->second.print(O);
   }
+}
+
+void EscapeAnalysisGlobalInfo::writeIPASummary() {
+  const auto SummaryFileName = "func_escape_summary_" + M.getName() + ".txt";
+  std::ofstream SummaryFile(SummaryFileName.str(), std::ios::out);
+  if (!SummaryFile.is_open()) {
+    errs() << "Error opening summary file: " << SummaryFileName << "\n";
+    return;
+  }
+
+  for (const auto &Entry : *IPATopDownArgEscInfo) {
+    const Function *F = Entry.first;
+    const SmallVector<bool> &EscapedArgs = Entry.second;
+
+    // Check if all the arguments don't escape
+    if (std::all_of(EscapedArgs.begin(), EscapedArgs.end(),
+                    [](bool Escaped) { return !Escaped; })) {
+      SummaryFile << F->getName().str() << "\n";
+    }
+  }
+  SummaryFile.close();
 }
 
 AnalysisKey EscapeAnalysisGlobal::Key;
