@@ -95,6 +95,7 @@ public:
 
   using IPABottomTopMap = DenseMap<const Function *, IPABottomTopInfoEntry>;
   using IPAArgEscFromCallsMap = DenseMap<const Function *, SmallVector<bool>>;
+  using NonEscapingFuncsMap = std::map<std::string, SmallSet<unsigned, 4>>;
 
   static void printEscReason(EscReasonTy EscReason);
 
@@ -103,7 +104,7 @@ public:
   /// escaping by calls)
   explicit EscapeAnalysisInfo(
       const Function &Fn,
-      std::shared_ptr<SmallSet<std::string, 8>> NonEscapingFuncs_ = nullptr,
+      std::shared_ptr<NonEscapingFuncsMap> NonEscapingFuncs_ = nullptr,
       std::shared_ptr<IPABottomTopMap> IPAFuncEscInfo = nullptr,
       std::shared_ptr<IPAArgEscFromCallsMap> IPAArgEscFromCallers_ = nullptr);
 
@@ -164,7 +165,7 @@ private:
   DenseMap<const BasicBlock *, EscapeState> BBEscapeStates;
 
   /// List of functions whose arguments don't escape
-  std::shared_ptr<SmallSet<std::string, 8>> NonEscapingFuncs;
+  std::shared_ptr<NonEscapingFuncsMap> NonEscapingFuncs;
 
   class PointsToRelTy {
     using PointeeListTy = SmallSet<ObjAndPath, 4>;
@@ -316,8 +317,8 @@ class EscapeAnalysisGlobalInfo {
 
   /// List of functions whose arguments don't escape
   static constexpr auto FuncWhiteListFileName = "ea-func-whitelist.txt";
-  std::shared_ptr<SmallSet<std::string, 8>> NonEscapingFuncs =
-      std::make_shared<SmallSet<std::string, 8>>();
+  std::shared_ptr<EscapeAnalysisInfo::NonEscapingFuncsMap> NonEscapingFuncs =
+      std::make_shared<EscapeAnalysisInfo::NonEscapingFuncsMap>();
 
   /// Map for escape information for function arguments from inside of the
   /// function (escape comes from inner objects).
@@ -377,7 +378,7 @@ class EscapeAnalysisGlobalInfo {
   static void printSCC(const std::vector<CallGraphNode *> &SCC);
 
   /// Read function names whose arguments don't escape
-  void readFuncWhitelist();
+  void readNonEscapingFuncs();
 
   /// Write information on program (non-library) functions whose arguments don't
   /// escape, based on the IPA analysis

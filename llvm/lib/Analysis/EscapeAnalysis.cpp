@@ -27,6 +27,7 @@
 
 #include <deque>
 #include <fstream>
+#include <sstream>
 
 using namespace llvm;
 
@@ -342,10 +343,10 @@ void EscapeAnalysisInfo::EscapeState::addEscObjOrReason(const ObjAndPath &OAP,
              printEscReason(EscReason););
 
   if (const auto EscObjIt = EscapedObjs.find(OAP);
-      EscObjIt != EscapedObjs.end())
+      EscObjIt != EscapedObjs.end()) {
     // Object is already escaped - add the escape reason
     EscObjIt->second |= EscReason;
-  else {
+  } else {
     // If object escapes by empty path, then it escapes by all paths
     // 1. If the object has already escaped by EmptyFieldPath, do nothing
     if (EscapedObjs.find({OAP.Obj, EmptyFieldPath}) != EscapedObjs.end())
@@ -473,16 +474,35 @@ static bool getIPAFuncRetEscStatus(
   return false;
 }
 
-static bool isSafeExternalCall(
+static bool isCallNotReturnEscaped(
     StringRef FuncName,
-    std::shared_ptr<SmallSet<std::string, 8>> NonEscapingFuncs = nullptr) {
-  // TODO Demangle the function name before comparison
-  if (NonEscapingFuncs && NonEscapingFuncs->contains(std::string(FuncName)))
-    return true;
-
+    std::shared_ptr<EscapeAnalysisInfo::NonEscapingFuncsMap> NonEscapingFuncs =
+        nullptr) {
   return (FuncName == "malloc" || FuncName == "calloc" ||
           FuncName == "realloc" || FuncName == "strlen" ||
           FuncName == "strcmp" || FuncName == "memchr");
+}
+
+static bool isSafeExternalCall(
+    StringRef FuncName, unsigned ArgIndex,
+    std::shared_ptr<EscapeAnalysisInfo::NonEscapingFuncsMap> NonEscapingFuncs =
+        nullptr) {
+  // TODO Demangle the function name before comparison
+  if (!NonEscapingFuncs)
+    return isCallNotReturnEscaped(FuncName, NonEscapingFuncs);
+
+  const auto FuncIt = NonEscapingFuncs->find(std::string(FuncName));
+  if (FuncIt == NonEscapingFuncs->end())
+    return false;
+
+  const auto &ArgEscStatus = FuncIt->second;
+  if (ArgEscStatus.empty())
+    return true; // All arguments are escaped if the status is empty
+
+  if (ArgEscStatus.contains(ArgIndex))
+    return true; // Argument is marked as non-escaped
+
+  return false;  // Specific argument is not escaped
 }
 
 /// Check if it's a function call which can escape
@@ -490,7 +510,8 @@ static bool isCallMayEscape(
     const Value *V,
     std::shared_ptr<EscapeAnalysisInfo::IPABottomTopMap> IPABottomTopInfo =
         nullptr,
-    std::shared_ptr<SmallSet<std::string, 8>> NonEscapingFuncs = nullptr) {
+    std::shared_ptr<EscapeAnalysisInfo::NonEscapingFuncsMap> NonEscapingFuncs =
+        nullptr) {
   const auto *CB = dyn_cast<CallBase>(V);
   if (!CB)
     return false;
@@ -501,7 +522,7 @@ static bool isCallMayEscape(
   // Check if the call is to a known memory allocation function.
   if (const Function *F = CB->getCalledFunction()) {
     if (F->isDeclaration()) {
-      if (isSafeExternalCall(F->getName(), NonEscapingFuncs))
+      if (isCallNotReturnEscaped(F->getName(), NonEscapingFuncs))
         return false; // Memory allocation functions do not escape.
       return true;    // Unknown external function.
     }
@@ -539,7 +560,7 @@ EscapeAnalysisInfo::getExtObjStatusIPA(const Value *V) const {
 
 EscapeAnalysisInfo::EscapeAnalysisInfo(
     const Function &Fn,
-    std::shared_ptr<SmallSet<std::string, 8>> NonEscapingFuncs_,
+    std::shared_ptr<NonEscapingFuncsMap> NonEscapingFuncs_,
     std::shared_ptr<IPABottomTopMap> IPABottomTopInfo_,
     std::shared_ptr<IPAArgEscFromCallsMap> IPAArgEscFromCallers_)
     : AnalyzedFunc(Fn), IPABottomTopInfo(IPABottomTopInfo_),
@@ -784,25 +805,26 @@ EscapeAnalysisInfo::getEscInfoCall(const Use &U, const Instruction *I) const {
           return {EscKindTy::MAY_ALIASING, getUnderlyingMayEscObjs(Dst)};
   }
 
-  if (const Function *CalledFunc = Call->getCalledFunction()) {
-    // Some functions can be taken as safe external calls
-    if (isSafeExternalCall(CalledFunc->getName(), NonEscapingFuncs))
-      return {EscKindTy::NO_ESCAPE, std::nullopt};
-  }
-
   // Calling a function pointer does not in itself cause the pointer to
   // be captured.  This is a subtle point considering that (for example)
   // the callee might return its own address.  It is analogous to saying
   // that loading a value from a pointer does not cause the pointer to be
   // captured, even though the loaded value might be the pointer itself
   // (think of self-referential objects).
-  if (Call->isCallee(&U))
+  if (Call->isCallee(&U) || (!Call->isDataOperand(&U)))
     return {EscKindTy::NO_ESCAPE, std::nullopt};
+
+  if (const Function *CalledFunc = Call->getCalledFunction()) {
+    LLVM_DEBUG(dbgs() << "U: " << *U.get() << "\n");
+    unsigned ArgIndex = Call->getArgOperandNo(&U);
+    // Some functions can be taken as safe external calls
+    if (isSafeExternalCall(CalledFunc->getName(), ArgIndex, NonEscapingFuncs))
+      return {EscKindTy::NO_ESCAPE, std::nullopt};
+  }
 
   // Check if that's the argument which can escape through this call
   // Not captured if only passed via 'nocapture' arguments.
-  if (Call->isDataOperand(&U) &&
-      !Call->doesNotCapture(Call->getDataOperandNo(&U)) &&
+  if (!Call->doesNotCapture(Call->getDataOperandNo(&U)) &&
       U->getType()->isPointerTy()) {
     // If that's IPA, need to check whether passing to calls is escape or not
     if (!IPABottomTopInfo)
@@ -1428,26 +1450,45 @@ void EscapeAnalysisGlobalInfo::traverseCGTopDown(
   }
 }
 
-void EscapeAnalysisGlobalInfo::readFuncWhitelist() {
+void EscapeAnalysisGlobalInfo::readNonEscapingFuncs() {
   std::ifstream WhiteListFile(FuncWhiteListFileName);
   if (!WhiteListFile.is_open()) {
-    errs() << "Error opening file: " << FuncWhiteListFileName << "\n";
+    dbgs() << "Warning: cannot opening file with non-escaping arguments: "
+           << FuncWhiteListFileName << "\n";
     return;
   }
 
-  std::string FuncName;
-  while (std::getline(WhiteListFile, FuncName)) {
-    std::remove_if(FuncName.begin(), FuncName.end(), isspace);
-    if (FuncName.empty())
+  std::string FuncLine;
+  while (std::getline(WhiteListFile, FuncLine)) {
+    if (FuncLine.empty())
       continue;
-    NonEscapingFuncs->insert(FuncName);
+
+    // Check if the function definition contains arguments that don't escape
+    const auto ColonPos = FuncLine.find(':');
+    if (ColonPos == std::string::npos) {
+      // No argument list. All arguments are not escpaping
+      (*NonEscapingFuncs)[FuncLine] = SmallSet<unsigned, 4>();
+      continue;
+    }
+
+    // Parse argument
+    std::string FuncName = FuncLine.substr(0, ColonPos);
+    std::istringstream ArgStream(FuncLine.substr(ColonPos + 1));
+    unsigned ArgInd;
+    SmallSet<unsigned, 4> NonEscapingArgs;
+
+    while (ArgStream >> ArgInd)
+      NonEscapingArgs.insert(ArgInd);
+
+    // Store the function name along with its non-escaping arguments
+    (*NonEscapingFuncs)[FuncName] = std::move(NonEscapingArgs);
   }
   WhiteListFile.close();
 }
 
 EscapeAnalysisGlobalInfo::EscapeAnalysisGlobalInfo(CallGraph &CG, Module &M_)
     : M(M_) {
-  readFuncWhitelist();
+  readNonEscapingFuncs();
 
   // We do a bottom-up SCC traversal of the call graph.  In other words, we
   // visit all callees before callers (leaf-first).
@@ -1492,6 +1533,7 @@ EscapeAnalysisGlobalInfo::EscapeAnalysisGlobalInfo(CallGraph &CG, Module &M_)
   traverseCGTopDown(SCCList, FuncCallSites, RecursiveFuncs);
 
   LLVM_DEBUG(printArgEscStatus(););
+
   writeIPASummary();
 }
 
@@ -1548,22 +1590,62 @@ void EscapeAnalysisGlobalInfo::print(Module &M, raw_ostream &O) const {
 }
 
 void EscapeAnalysisGlobalInfo::writeIPASummary() {
-  const auto SummaryFileName = "func_escape_summary_" + M.getName() + ".txt";
+  // {
+  //   const auto SummaryFileName = "func_escape_summary_" + M.getName() + ".txt";
+  //   std::ofstream SummaryFile(SummaryFileName.str(), std::ios::out);
+  //   if (!SummaryFile.is_open()) {
+  //     errs() << "Error opening summary file: " << SummaryFileName << "\n";
+  //     return;
+  //   }
+  //
+  //   for (const auto &Entry : *IPATopDownArgEscInfo) {
+  //     const Function *F = Entry.first;
+  //     const SmallVector<bool> &EscapedArgs = Entry.second;
+  //
+  //     // Check if all the arguments don't escape
+  //     if (std::all_of(EscapedArgs.begin(), EscapedArgs.end(),
+  //                     [](bool Escaped) { return !Escaped; }))
+  //       SummaryFile << F->getName().str() << "\n";
+  //   }
+  //   SummaryFile.close();
+  // }
+
+  const auto SummaryFileName =
+      "func_escape_summary_" + M.getName() + ".txt";
   std::ofstream SummaryFile(SummaryFileName.str(), std::ios::out);
   if (!SummaryFile.is_open()) {
     errs() << "Error opening summary file: " << SummaryFileName << "\n";
     return;
   }
 
-  for (const auto &Entry : *IPATopDownArgEscInfo) {
-    const Function *F = Entry.first;
-    const SmallVector<bool> &EscapedArgs = Entry.second;
+  for (const auto &Entry : *IPABottomTopEscInfo) {
+    const auto &ArgEscapes = Entry.second.ArgEscapes;
 
     // Check if all the arguments don't escape
-    if (std::all_of(EscapedArgs.begin(), EscapedArgs.end(),
-                    [](bool Escaped) { return !Escaped; })) {
-      SummaryFile << F->getName().str() << "\n";
+    // const auto *Func = Entry.first;
+    // if (std::all_of(ArgEscapes.begin(), ArgEscapes.end(),
+    //                 [](const auto &Entry) { return Entry.second.none(); })) {
+    //   SummaryFile << Func->getName().str() << "\n";
+    // }
+
+    // Iterate through ArgEscapes to collect arguments which don't escape
+    bool HasNonEscapingArgs = false;
+
+    for (const auto &ArgEscapeEntry : ArgEscapes) {
+      if (ArgEscapeEntry.second.none()) {
+        if (!HasNonEscapingArgs) {
+          SummaryFile << Entry.first->getName().str() << ": "
+                      << ArgEscapeEntry.first;
+          HasNonEscapingArgs = true;
+          continue;
+        }
+        SummaryFile << " " << ArgEscapeEntry.first;
+      }
     }
+
+    // Add a newline only if there were non-escaping arguments
+    if (HasNonEscapingArgs)
+      SummaryFile << "\n";
   }
   SummaryFile.close();
 }
