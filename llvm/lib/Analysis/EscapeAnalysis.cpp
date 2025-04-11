@@ -1467,7 +1467,8 @@ void EscapeAnalysisGlobalInfo::readNonEscapingFuncs() {
     const auto ColonPos = FuncLine.find(':');
     if (ColonPos == std::string::npos) {
       // No argument list. All arguments are not escpaping
-      (*NonEscapingFuncs)[FuncLine] = SmallSet<unsigned, 4>();
+      if (NonEscapingFuncs->find(FuncLine) == NonEscapingFuncs->end())
+        (*NonEscapingFuncs)[FuncLine] = SmallSet<unsigned, 4>();
       continue;
     }
 
@@ -1482,6 +1483,11 @@ void EscapeAnalysisGlobalInfo::readNonEscapingFuncs() {
 
     // Store the function name along with its non-escaping arguments
     (*NonEscapingFuncs)[FuncName] = std::move(NonEscapingArgs);
+
+    // If the function already exists in NonEscapingFuncs, update its arguments
+    auto ExistingArgsIt = NonEscapingFuncs->find(FuncName);
+    ExistingArgsIt->second.insert(NonEscapingArgs.begin(),
+                                  NonEscapingArgs.end());
   }
   WhiteListFile.close();
 }
