@@ -14,20 +14,48 @@
 #define LLVM_ANALYSIS_ESCAPEANALYSIS_H
 
 #include "ValueTracking.h"
+
+#include "llvm/ADT/SmallSet.h"
 #include "llvm/Analysis/CallGraph.h"
 
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/PassManager.h"
 
 #include <bitset>
-#include <variant>
+#include <fstream>
 #include <functional>
+#include <variant>
 
 namespace llvm {
 /// This is the implementation of simple escape analysis
 
-struct UnderlObjInfo {
-  const Value *Obj;
+using FieldPathTy = SmallVector<unsigned>;
+FieldPathTy EmptyFieldPath;
+
+// Because that's field-sensitive analysis, we distinguish accesses to different
+// field of structures. That's why it's not enough to store a pointer to the
+// object (e.g. escaped) but to the field within it (if the object is a
+// structure)
+struct ObjAndPath {
+  // Object (can be variable, pointer, structure or array)
+  const Value *Obj = nullptr;
+
+  // GEP path to the field (if it's the structure field)
+  FieldPathTy Path = EmptyFieldPath;
+
+  bool operator<(const ObjAndPath &Other) const {
+    if (Obj != Other.Obj)
+      return Obj < Other.Obj;
+
+    return Path < Other.Path;
+  }
+
+  bool operator==(const ObjAndPath &Other) const {
+    return Obj == Other.Obj && Path == Other.Path;
+  }
+};
+
+struct UnderlObjTy : ObjAndPath {
   bool Loaded;
 };
 
@@ -52,8 +80,8 @@ public:
 
   struct IPABottomTopInfoEntry {
     SmallDenseMap<unsigned, EscReasonTy> ArgEscapes; // for each argument
-    bool IsRetEscape = false; // whether return value is escaping or not
-    bool IsRecursive = false; // whether function is recursive or not
+    bool IsRetEscape = false;   // whether return value is escaping or not
+    bool IsRecursive = false;   // whether function is recursive or not
     bool IsPassedAsPtr = false; // whether function is passed as pointer
                                 // to another call or not
     bool operator==(const IPABottomTopInfoEntry &Other) const {
@@ -68,6 +96,7 @@ public:
 
   using IPABottomTopMap = DenseMap<const Function *, IPABottomTopInfoEntry>;
   using IPAArgEscFromCallsMap = DenseMap<const Function *, SmallVector<bool>>;
+  using NonEscapingFuncsMap = std::map<std::string, SmallSet<unsigned, 4>>;
 
   static void printEscReason(EscReasonTy EscReason);
 
@@ -75,43 +104,42 @@ public:
   /// ArgumentEscape is needed for IPA analysis (because we should ignore
   /// escaping by calls)
   explicit EscapeAnalysisInfo(
-    const Function &Fn,
-    std::shared_ptr<IPABottomTopMap> IPAFuncEscInfo = nullptr,
-    std::shared_ptr<IPAArgEscFromCallsMap> IPAArgEscFromCallers_ = nullptr);
+      const Function &Fn,
+      std::shared_ptr<NonEscapingFuncsMap> NonEscapingFuncs_ = nullptr,
+      std::shared_ptr<IPABottomTopMap> IPAFuncEscInfo = nullptr,
+      std::shared_ptr<IPAArgEscFromCallsMap> IPAArgEscFromCallers_ = nullptr);
 
   void print(raw_ostream &OS) const;
 
   /// Recursively search in the instruction for the underlying objects which
   /// may escape
-  static SmallVector<UnderlObjInfo> getUnderlyingMayEscObjs(
+  static SmallVector<UnderlObjTy> getUnderlyingMayEscObjs(
       const Value *V, unsigned MaxLookup = MaxUnderlObjLookup,
       std::shared_ptr<IPABottomTopMap> IPAFuncEscInfo = nullptr);
 
   /// Is Value V is escaping somewhere in the function
-  bool isEscapedForFunc(const Value *V,
-                        std::optional<std::reference_wrapper<EscReasonTy>>
-                            EscReason = std::nullopt) const;
+  bool isEscapedForFunc(const ObjAndPath &OAP,
+                        EscReasonTy *EscReason = nullptr) const;
 
   EscReasonTy findObjInBBEscState(const BasicBlock *BB,
-                                     const Value *V) const;
+                                  const ObjAndPath &OAP) const;
 
   /// Return escape reason for V in BB
-  EscReasonTy getFullEscReasonForBB(const BasicBlock *BB, const Value *V) const;
+  EscReasonTy getFullEscReasonForBB(const BasicBlock *BB,
+                                    const ObjAndPath &OAP) const;
 
   /// Is Value V is escaping in some path from Entry to BB?
-  bool isEscapedForBBImpl(const BasicBlock *BB, const Value *V,
+  bool isEscapedForBBImpl(const BasicBlock *BB, const ObjAndPath &OAP,
                           EscReasonTy *EscReason, bool UseIPA) const;
-  bool isEscapedForBB(const BasicBlock *BB, const Value *V,
+  bool isEscapedForBB(const BasicBlock *BB, const ObjAndPath &OAP,
                       EscReasonTy *EscReason = nullptr) const;
-  bool isEscapedForBBIPA(const BasicBlock *BB, const Value *V,
-                      EscReasonTy *EscReason = nullptr) const;
+  bool isEscapedForBBIPA(const BasicBlock *BB, const ObjAndPath &OAP,
+                         EscReasonTy *EscReason = nullptr) const;
 
-  void forEachPointeeDo(const Value *Obj, const BasicBlock *BB,
-                        std::function<void(const Value *)> Action) const {
-    const auto It = BBEscapeStates.find(BB);
-    assert(It != BBEscapeStates.end());
-    It->second.forEachPointeeDo(Obj, Action);
-  }
+  /// Make action for each pointee, if given object points to something
+  void
+  forEachPointeeDo(const ObjAndPath &OAP, const BasicBlock *BB,
+                   const std::function<void(const ObjAndPath &)> &Action) const;
 
 private:
   // Types of object escaping states
@@ -121,8 +149,8 @@ private:
   // Reference to the function being analyzed.
   const Function &AnalyzedFunc;
 
-  // Resulting type: list of escaping objects
-  using EscapedObjectsTy = DenseMap<const Value *, EscReasonTy>;
+  // List of escaping objects corresponding to each path in the object
+  using EscapedObjectsTy = std::map<ObjAndPath, EscReasonTy>;
 
   // IPA information about arguments escapes (bottom-top)
   std::shared_ptr<IPABottomTopMap> IPABottomTopInfo;
@@ -137,15 +165,27 @@ private:
   /// Map of basic blocks to their escape analysis states.
   DenseMap<const BasicBlock *, EscapeState> BBEscapeStates;
 
-  class PointsToRelTy {
-    friend struct EscapeState;
+  /// List of functions whose arguments don't escape
+  std::shared_ptr<NonEscapingFuncsMap> NonEscapingFuncs;
 
-    using PointeeListTy = SmallPtrSet<const Value *, 8>;
-    DenseMap<const Value *, PointeeListTy> PointsToMap;
+  class PointsToRelTy {
+    using PointeeListTy = SmallSet<ObjAndPath, 4>;
+    using PathToPointeeMap = std::map<FieldPathTy, PointeeListTy>;
+    DenseMap<const Value *, PathToPointeeMap> PointsToMap;
 
   public:
+    /// Merge with other PointsToRel object (needed in basic data flow analysis)
+    void merge(const PointsToRelTy &Other);
+
+    /// Add an points-to relation between two objects.
+    void addPointsToPair(const ObjAndPath &Pointer, const ObjAndPath &Pointee);
+
+    /// Check whether points-to relation contains Pointer-Pointee pair
+    bool containsPointsToPair(const ObjAndPath &Pointer,
+                              const ObjAndPath &Pointee);
+
     /// Traverse the (implicit) tree of aliases and get the list of aliases
-    std::optional<PointeeListTy> getPointees(const Value *V) const;
+    std::optional<PointeeListTy> getPointees(const ObjAndPath &Pointer) const;
 
     /// We need it to check if something changed in the data-flow analysis
     bool operator==(const PointsToRelTy &Other) const;
@@ -161,39 +201,42 @@ private:
 
     /// Make list of escaping object + its aliases, and add them to the list
     /// of escaping object
-    void addEscapingObject(const Value *EscObj, EscReasonTy EscReason);
+    void addEscObj(const ObjAndPath &EscObj, EscReasonTy EscReason,
+                   const Instruction *I);
 
     /// Adds an object to the list of escaped objects with a specified escape
     /// reason. If the object is already in the list, update escape reason.
-    void addEscapeObjOrReason(const Value *EscObj, const EscReasonTy EscReason);
+    void addEscObjOrReason(const ObjAndPath &OAP, EscReasonTy EscReason,
+                           const Instruction *I);
 
     /// Check CheckedObj escape status (as [maybe] external object)
     /// and update AffectedObj if needed
-    void checkAndUpdEscStatus(const Value *CheckedObj, const Value *AffectedObj,
-                              const EscapeAnalysisInfo *EAI);
+    void checkAndUpdEscStatus(const ObjAndPath &Pointer,
+                              const ObjAndPath &Pointee,
+                              const EscapeAnalysisInfo *EAI,
+                              const Instruction *I);
 
-    void forEachPointeeDo(const Value *Obj,
-                          std::function<void(const Value *)> Action) const;
+    void forEachPointeeDo(
+        const ObjAndPath &OAP,
+        const std::function<void(const ObjAndPath &)> &Action) const;
 
     /// Adds an alias relationship between a given alias and a pointee value
     /// in the escape analysis information. If the pointee value has previously
     /// escaped or if the alias itself is an escaping pointer, the alias is
     /// also marked as escaping.
-    void addPointsTo(const UnderlObjInfo &Pointer, const UnderlObjInfo &Pointee,
-                     const EscapeAnalysisInfo *EAI);
+    void addPointsTo(const UnderlObjTy &Pointer, const UnderlObjTy &Pointee,
+                     const EscapeAnalysisInfo *EAI, const Instruction *I);
 
     void merge(const EscapeState &OtherES, const EscapeAnalysisInfo *EAI) {
-      mergeAliases(OtherES, EAI);
+      PointsTo.merge(OtherES.PointsTo);
       mergeEscapedObjects(OtherES);
     }
 
-    const EscapedObjectsTy &getEscapedObjs() const { return EscapedObjs; };
+    const EscapedObjectsTy &getEscObjs() const { return EscapedObjs; };
     const PointsToRelTy &getPointsTo() const { return PointsTo; }
 
-    void print(raw_ostream &OS) const;
-
     /// Try to find object in the EscapedObjects and return escape reason
-    EscReasonTy getEscReason(const Value *V) const;
+    EscReasonTy getEscReason(const ObjAndPath &OAP) const;
 
   private:
     // Set of allocations that escape in this block.
@@ -203,19 +246,15 @@ private:
     // Note that a Value may be the alias of multiple Allocas
     PointsToRelTy PointsTo;
 
-    /// Merge two Alias relations into one
-    void mergeAliases(const EscapeState &OtherES,
-                      const EscapeAnalysisInfo *EAI);
-
     /// Merge lists of escaped objects for two escape states (BBs)
     void mergeEscapedObjects(const EscapeState &OtherES);
   };
 
   /// Check if function returns escaped object, and update function return
   /// escape status
-  void updRetEscStatus(EscapeState &ES, const BasicBlock *BB,
-                       const SmallVectorImpl<UnderlObjInfo> &UnderlObjs);
-  void addEscapedPtrArgs(EscapeState &ES);
+  void updRetEscStatus(const EscapeState &ES, const BasicBlock *BB,
+                       const SmallVectorImpl<UnderlObjTy> &UnderlObjs);
+  void addEscapedPtrArgs(EscapeState &ES) const;
 
   /// Compute the resulting escape state for BB
   void compBBEscapeState(const BasicBlock *BB, EscapeState &ES);
@@ -233,13 +272,12 @@ private:
 
   /// Get escape status of the object and if it's a pointer argument,
   /// lookup in the top-bottom argument escape analysis
-  EscReasonTy
-  getExtObjStatusIPA(const Value *V) const;
+  EscReasonTy getExtObjStatusIPA(const Value *V) const;
 
   /// Determine what kind of escape behaviour V may exhibit.
   struct EscInfoTy {
     EscKindTy EscKind;
-    std::optional<std::variant<EscReasonTy, SmallVector<UnderlObjInfo>>>
+    std::optional<std::variant<EscReasonTy, SmallVector<UnderlObjTy>>>
         EscDetails = std::nullopt;
   };
 
@@ -266,21 +304,22 @@ private:
   /// Check whether type contains pointers
   static bool structContainsPointerType(const Type *Ty);
 
-  /// Escaping state for the function is union of all BBs' escape states
-  const EscapedObjectsTy &getFuncEscState() const;
-
   /// Find in ArgsEscapes given argument and return escape status
   EscReasonTy getArgEscBottomTopIPA(unsigned ArgNo, const Function *Func) const;
 
   /// Find argument in the from-callers (top-bottom) escape info
-  EscReasonTy getArgEscTopDownIPA(const unsigned ArgNo,
-                                         const Function *Func) const;
+  EscReasonTy getArgEscTopDownIPA(unsigned ArgNo, const Function *Func) const;
 };
 
 /// Interface to access safety global (interprocedural) analysis results.
 class EscapeAnalysisGlobalInfo {
   Module &M;
   DenseMap<const Function *, EscapeAnalysisInfo> FuncEscapeInfo;
+
+  /// List of functions whose arguments don't escape
+  static constexpr auto FuncWhiteListFileName = "ea-func-whitelist.txt";
+  std::shared_ptr<EscapeAnalysisInfo::NonEscapingFuncsMap> NonEscapingFuncs =
+      std::make_shared<EscapeAnalysisInfo::NonEscapingFuncsMap>();
 
   /// Map for escape information for function arguments from inside of the
   /// function (escape comes from inner objects).
@@ -290,8 +329,8 @@ class EscapeAnalysisGlobalInfo {
   /// Map for escape information about argument from outside of the function
   /// (escape comes from passing parameters to the function calls)
   std::shared_ptr<EscapeAnalysisInfo::IPAArgEscFromCallsMap>
-  IPATopDownArgEscInfo =
-      std::make_shared<EscapeAnalysisInfo::IPAArgEscFromCallsMap>();
+      IPATopDownArgEscInfo =
+          std::make_shared<EscapeAnalysisInfo::IPAArgEscFromCallsMap>();
 
   /// Traverse SCCs in the call graph, find recursive functions and SCCs
   /// init IPAFuncEscInfo
@@ -300,11 +339,10 @@ class EscapeAnalysisGlobalInfo {
 
   /// Bottom-top traversal of SCCs of the callgraph, do local analysis,
   /// fill FuncEscapeInfo, IPAFuncEscInfo
-  bool traverseCGBottomTop(CallGraph &CG,
-                                 const SmallPtrSetImpl<const Function *> &
-                                 RecursiveFuncs,
-                                 SmallVector<std::vector<CallGraphNode *> > &
-                                 SCCList);
+  bool
+  traverseCGBottomTop(CallGraph &CG,
+                      const SmallPtrSetImpl<const Function *> &RecursiveFuncs,
+                      SmallVector<std::vector<CallGraphNode *>> &SCCList);
 
   /// Init escape status of arguments and return
   static void
@@ -316,7 +354,7 @@ class EscapeAnalysisGlobalInfo {
   getFuncToCallSitesMap();
 
   /// Check weather function passed to the Objective C selector
-  bool isFuncPassedToObjCSelector(const Function *F);
+  bool isFuncPassedToObjCSelector(const Function *F) const;
 
   /// Compute escape status for the function argument based on call instructions
   void traverseCGTopDown(
@@ -325,7 +363,7 @@ class EscapeAnalysisGlobalInfo {
           &FuncCallSites,
       const SmallPtrSetImpl<const Function *> &RecursiveFuncs);
 
-  void printArgEscStatus();
+  void printArgEscStatus() const;
 
   /// Compute escape status for the function argument based on call instructions
   void evalTopDownArgEscStatus(
@@ -337,26 +375,34 @@ class EscapeAnalysisGlobalInfo {
   /// (relevant for SCC with 1 node)
   static bool isRecursiveCallGraphNode(const CallGraphNode *CGN);
   void updIPAFuncEscInfo(const Function *F,
-                          const EscapeAnalysisInfo &EAI) const;
-  void printSCC(const std::vector<CallGraphNode *> &SCC);
+                         const EscapeAnalysisInfo &EAI) const;
+  static void printSCC(const std::vector<CallGraphNode *> &SCC);
+
+  /// Read function names whose arguments don't escape
+  void readNonEscapingFuncs();
+
+  /// Write information on program (non-library) functions whose arguments don't
+  /// escape, based on the IPA analysis
+  void writeIPASummary();
 
 public:
   explicit EscapeAnalysisGlobalInfo(CallGraph &CG, Module &M);
   void print(Module &M, raw_ostream &O) const;
 
   /// For given pointer, get underlying objects, and get escape status for them
-  bool
-  isEscapedUndrlObjOrPointee(const Value *Addr, const BasicBlock *BB,
-                             EscapeAnalysisInfo::EscReasonTy &EscReason);
+  bool isEscapedUndrlObjOrPointee(const Value *Addr, const BasicBlock *BB,
+                                  EscapeAnalysisInfo::EscReasonTy &EscReason);
 
   /// Is Value V is escaping in some path from Entry to BB in the function F
   bool isEscapedForBBTSan(const Function *F, const BasicBlock *BB,
-                          const UnderlObjInfo &UnderlObj,
+                          const UnderlObjTy &UnderlObj,
                           EscapeAnalysisInfo::EscReasonTy &EscReason);
 
   /// This is needed for using with OuterAnalysisManagerProxy
   bool invalidate(Module &, const PreservedAnalyses &,
                   ModuleAnalysisManager::Invalidator &) { return false; }
+
+  static std::ofstream EscFuncsFile;
 };
 
 /// EscapeAnalysisInfo wrapper for the new pass manager.
