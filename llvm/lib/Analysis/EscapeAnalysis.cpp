@@ -1627,7 +1627,7 @@ void EscapeAnalysisGlobalInfo::writeIPASummary() {
   //   SummaryFile.close();
   // }
 
-  const auto SummaryFileName = "func_escape_IPA_" + M.getName() + ".txt";
+  const auto SummaryFileName = "func_nonescape_IPA_" + M.getName() + ".txt";
   std::ofstream SummaryFile(SummaryFileName.str(), std::ios::out);
   if (!SummaryFile.is_open()) {
     errs() << "Error opening summary file: " << SummaryFileName << "\n";
@@ -1635,6 +1635,9 @@ void EscapeAnalysisGlobalInfo::writeIPASummary() {
   }
 
   for (const auto &Entry : *IPABottomTopEscInfo) {
+    if (!Entry.first->hasName())
+      continue;
+
     const auto &ArgEscapes = Entry.second.ArgEscapes;
 
     // Check if all the arguments don't escape
