@@ -22,6 +22,7 @@
 #include "llvm/IR/PassManager.h"
 
 #include <bitset>
+#include <fstream>
 #include <functional>
 #include <variant>
 
@@ -400,6 +401,8 @@ public:
   /// This is needed for using with OuterAnalysisManagerProxy
   bool invalidate(Module &, const PreservedAnalyses &,
                   ModuleAnalysisManager::Invalidator &) { return false; }
+
+  static std::ofstream EscFuncsFile;
 };
 
 /// EscapeAnalysisInfo wrapper for the new pass manager.

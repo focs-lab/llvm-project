@@ -364,18 +364,19 @@ void EscapeAnalysisInfo::EscapeState::addEscObjOrReason(const ObjAndPath &OAP,
     EscapedObjs.insert({OAP, EscReason});
 
     DEBUG_WITH_TYPE(PRINT_ESCAPING_CALLEES,
-    if (I && (EscReason == PASSING_TO_CALL)) {
-          // Print callee function, possible leads to escaping passed arguments
-          if (const auto *CB = dyn_cast<CallBase>(I)) {
-            if (CB->hasName(); const auto *Callee = CB->getCalledFunction()) {
-              dbgs() << "\t\tCallee Function: " << Callee->getName() << "\n";
+      if (I && (EscReason == PASSING_TO_CALL)) {
+        // Print callee function, possible leads to escaping passed arguments
+        if (const auto *CB = dyn_cast<CallBase>(I)) {
+          if (CB->hasName(); const auto *Callee = CB->getCalledFunction()) {
+            EscapeAnalysisGlobalInfo::EscFuncsFile
+                << "Callee Function: " << Callee->getName().str() << "\n";
 
-              if (const auto &DebugLoc = I->getDebugLoc())
-                dbgs() << "\t\tSource Line: " << DebugLoc.getLine() << "\n";
-            }
+            if (const auto &DebugLoc = I->getDebugLoc())
+              EscapeAnalysisGlobalInfo::EscFuncsFile
+                  << "Source Line: " << DebugLoc.getLine() << "\n";
           }
         }
-    );
+      });
   }
 }
 
@@ -559,8 +560,7 @@ EscapeAnalysisInfo::getExtObjStatusIPA(const Value *V) const {
 //===----------------------------------------------------------------------===//
 
 EscapeAnalysisInfo::EscapeAnalysisInfo(
-    const Function &Fn,
-    std::shared_ptr<NonEscapingFuncsMap> NonEscapingFuncs_,
+    const Function &Fn, std::shared_ptr<NonEscapingFuncsMap> NonEscapingFuncs_,
     std::shared_ptr<IPABottomTopMap> IPABottomTopInfo_,
     std::shared_ptr<IPAArgEscFromCallsMap> IPAArgEscFromCallers_)
     : AnalyzedFunc(Fn), IPABottomTopInfo(IPABottomTopInfo_),
@@ -1492,8 +1492,16 @@ void EscapeAnalysisGlobalInfo::readNonEscapingFuncs() {
   WhiteListFile.close();
 }
 
+std::ofstream EscapeAnalysisGlobalInfo::EscFuncsFile;
+
 EscapeAnalysisGlobalInfo::EscapeAnalysisGlobalInfo(CallGraph &CG, Module &M_)
     : M(M_) {
+  DEBUG_WITH_TYPE(PRINT_ESCAPING_CALLEES,
+    const auto FileName = "escaping_callees_" + M.getName().str() + ".txt";
+    EscFuncsFile.open(FileName);
+    if (!EscFuncsFile.is_open())
+    dbgs() << "Warning: Could not open " << FileName << " for appending.\n");
+
   readNonEscapingFuncs();
 
   // We do a bottom-up SCC traversal of the call graph.  In other words, we
@@ -1541,6 +1549,9 @@ EscapeAnalysisGlobalInfo::EscapeAnalysisGlobalInfo(CallGraph &CG, Module &M_)
   LLVM_DEBUG(printArgEscStatus(););
 
   writeIPASummary();
+
+  DEBUG_WITH_TYPE(PRINT_ESCAPING_CALLEES,
+      if (EscFuncsFile.is_open()) { EscFuncsFile.close(); });
 }
 
 /// For given pointer, get underlying objects, and get escape status for them
@@ -1597,8 +1608,8 @@ void EscapeAnalysisGlobalInfo::print(Module &M, raw_ostream &O) const {
 
 void EscapeAnalysisGlobalInfo::writeIPASummary() {
   // {
-  //   const auto SummaryFileName = "func_escape_summary_" + M.getName() + ".txt";
-  //   std::ofstream SummaryFile(SummaryFileName.str(), std::ios::out);
+  //   const auto SummaryFileName = "func_escape_summary_" + M.getName() +
+  //   ".txt"; std::ofstream SummaryFile(SummaryFileName.str(), std::ios::out);
   //   if (!SummaryFile.is_open()) {
   //     errs() << "Error opening summary file: " << SummaryFileName << "\n";
   //     return;
@@ -1616,8 +1627,7 @@ void EscapeAnalysisGlobalInfo::writeIPASummary() {
   //   SummaryFile.close();
   // }
 
-  const auto SummaryFileName =
-      "func_escape_summary_" + M.getName() + ".txt";
+  const auto SummaryFileName = "func_escape_IPA_" + M.getName() + ".txt";
   std::ofstream SummaryFile(SummaryFileName.str(), std::ios::out);
   if (!SummaryFile.is_open()) {
     errs() << "Error opening summary file: " << SummaryFileName << "\n";
