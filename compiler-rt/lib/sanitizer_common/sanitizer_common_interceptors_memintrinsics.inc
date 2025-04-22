@@ -31,7 +31,8 @@
 #include "interception/interception.h"
 #include "sanitizer_platform_interceptors.h"
 
-extern "C" bool InterceptorEnabled;
+extern "C" __attribute__((visibility("default")))
+bool InterceptorEnabled;
 
 // Platform-specific options.
 #if SANITIZER_APPLE

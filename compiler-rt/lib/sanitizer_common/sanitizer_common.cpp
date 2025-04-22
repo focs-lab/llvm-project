@@ -20,7 +20,8 @@
 #include "sanitizer_libc.h"
 #include "sanitizer_placement_new.h"
 
-extern "C" bool InterceptorEnabled = true;
+extern "C" __attribute__((visibility("default")))
+bool InterceptorEnabled = true;
 
 namespace __sanitizer {
 

@@ -26,6 +26,7 @@
 #include "llvm/IR/PassManager.h"
 
 #include <deque>
+#include <filesystem>
 #include <fstream>
 #include <sstream>
 
@@ -1494,13 +1495,31 @@ void EscapeAnalysisGlobalInfo::readNonEscapingFuncs() {
 
 std::ofstream EscapeAnalysisGlobalInfo::EscFuncsFile;
 
+static std::string getFileNameFromPath(std::string Path) {
+  std::replace(Path.begin(), Path.end(), '/', '_');
+  return Path;
+}
+
+const std::string LogDir = "ea-logs";
+static void createLogDir() {
+  std::error_code EC;
+  if (!std::filesystem::exists(LogDir))
+    if (!std::filesystem::create_directory(LogDir, EC) && EC)
+      errs() << "Error creating directory " << LogDir << ": " << EC.message()
+             << "\n";
+}
+
 EscapeAnalysisGlobalInfo::EscapeAnalysisGlobalInfo(CallGraph &CG, Module &M_)
     : M(M_) {
+  createLogDir();
+
   DEBUG_WITH_TYPE(PRINT_ESCAPING_CALLEES,
-    const auto FileName = "escaping_callees_" + M.getName().str() + ".txt";
+    const auto FileName = LogDir + "/escaping_callees_" +
+                          getFileNameFromPath(M.getName().str()) + ".txt";
     EscFuncsFile.open(FileName);
     if (!EscFuncsFile.is_open())
-    dbgs() << "Warning: Could not open " << FileName << " for appending.\n");
+      dbgs() << "Warning: Could not open " << FileName << " for appending.\n"
+  );
 
   readNonEscapingFuncs();
 
@@ -1607,14 +1626,6 @@ void EscapeAnalysisGlobalInfo::print(Module &M, raw_ostream &O) const {
 }
 
 void EscapeAnalysisGlobalInfo::writeIPASummary() {
-  // {
-  //   const auto SummaryFileName = "func_escape_summary_" + M.getName() +
-  //   ".txt"; std::ofstream SummaryFile(SummaryFileName.str(), std::ios::out);
-  //   if (!SummaryFile.is_open()) {
-  //     errs() << "Error opening summary file: " << SummaryFileName << "\n";
-  //     return;
-  //   }
-  //
   //   for (const auto &Entry : *IPATopDownArgEscInfo) {
   //     const Function *F = Entry.first;
   //     const SmallVector<bool> &EscapedArgs = Entry.second;
@@ -1627,8 +1638,10 @@ void EscapeAnalysisGlobalInfo::writeIPASummary() {
   //   SummaryFile.close();
   // }
 
-  const auto SummaryFileName = "func_nonescape_IPA_" + M.getName() + ".txt";
-  std::ofstream SummaryFile(SummaryFileName.str(), std::ios::out);
+  const auto SummaryFileName =
+      LogDir + "/func_nonescape_IPA_" +
+      getFileNameFromPath(getFileNameFromPath(M.getName().str())) + ".txt";
+  std::ofstream SummaryFile(SummaryFileName, std::ios::out);
   if (!SummaryFile.is_open()) {
     errs() << "Error opening summary file: " << SummaryFileName << "\n";
     return;
