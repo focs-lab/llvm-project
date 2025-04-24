@@ -1,0 +1,111 @@
+//==- LockOwnership.h - --==//
+//
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+//
+// This file implements the generic Lock Ownership interface.
+//
+//===----------------------------------------------------------------------===//
+
+#ifndef LLVM_ANALYSIS_LOCKOWNERSHIP_H
+#define LLVM_ANALYSIS_LOCKOWNERSHIP_H
+
+#include "llvm/Analysis/CallGraph.h"
+#include "llvm/IR/PassManager.h"
+
+namespace llvm {
+
+// Represents the lock state for a single mutex
+struct LockState {
+  bool IsLocked = false;
+  const Instruction *LockInstr = nullptr; // Where it was locked
+
+  // Comparison operator needed for state comparison
+  bool operator==(const LockState &other) const {
+    return IsLocked == other.IsLocked && LockInstr == other.LockInstr;
+  }
+  bool operator!=(const LockState &other) const { return !(*this == other); }
+};
+
+// Map of the lock to the instruction where it was locked
+using LockStateTy = SmallDenseMap<const Value *, LockState>;
+
+/// Interface to access safety global (interprocedural) analysis results.
+class LockOwnershipInfo {
+public:
+  explicit LockOwnershipInfo(CallGraph &CG, Module &M);
+  void print(raw_ostream &O) const;
+
+private:
+  Module &M;
+  Function *LockFunc = nullptr;
+  Function *UnlockFunc = nullptr;
+
+  enum class LockCallType { NONE, LOCK, UNLOCK };
+  std::pair<LockCallType, Value *> getLockCallInfo(const Instruction *I);
+
+  // Dataflow state for each basic block
+  using BBStateMap = SmallDenseMap<const BasicBlock*, LockStateTy>;
+  struct FuncStateTy {
+    BBStateMap InStates, OutStates;
+    LockStateTy ExitState;
+  };
+  SmallDenseMap<const Function *, FuncStateTy> FuncStates;
+
+  // Found lock/unlock pairs
+  SmallDenseSet<std::pair<const Instruction *, const Instruction *>>
+      LockUnlockPairs;
+
+  SmallVector<std::vector<CallGraphNode *>> getTopDownSCCList(CallGraph &CG);
+  void buildSummary(const Function *F);
+
+  /// Meet Operator: Intersects the lock states from predecessors
+  LockStateTy computeMeet(const BasicBlock* BB, BBStateMap &OutStates);
+
+  /// Intersect lock states of two BBs
+  LockStateTy intersectLockStates(LockStateTy MeetState,
+                                  const LockStateTy &PredOutState);
+
+  /// Transfer Function: Applies block's instructions to the in-state
+  /// Returns true if the out-state *changes* as a result
+  bool applyTransferFunction(const BasicBlock *BB, LockStateTy &CurrState,
+                             BBStateMap &OutStates);
+
+  /// Process mutex lock & unlock, which we met
+  void handleLock(LockStateTy &CurrState, const Instruction &Inst,
+                  const Value *Lock);
+  void handleUnlock(LockStateTy &CurrState, const Instruction &Inst,
+                    const Value *Lock);
+
+  /// Find pthread lock/unlock functions
+  bool findPthreadFunctions();
+
+};
+
+/// This pass performs the global (interprocedural) escape analysis.
+class LockOwnership : public AnalysisInfoMixin<LockOwnership> {
+  friend AnalysisInfoMixin<LockOwnership>;
+  static AnalysisKey Key;
+
+public:
+  using Result = LockOwnershipInfo;
+  Result run(Module &M, ModuleAnalysisManager &AM);
+};
+
+/// Printer pass for the \c OwnershipAnalysis results.
+class LockOwnershipPrinterPass
+    : public PassInfoMixin<LockOwnershipPrinterPass> {
+  raw_ostream &OS;
+
+public:
+  explicit LockOwnershipPrinterPass(raw_ostream &OS) : OS(OS) {}
+  PreservedAnalyses run(Module &M, ModuleAnalysisManager &AM) const;
+  static bool isRequired() { return true; }
+};
+
+} // end namespace llvm
+
+#endif // LLVM_ANALYSIS_LOCKOWNERSHIP_H

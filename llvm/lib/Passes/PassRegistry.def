@@ -30,6 +30,7 @@ MODULE_ANALYSIS("profile-summary", ProfileSummaryAnalysis())
 MODULE_ANALYSIS("stack-safety", StackSafetyGlobalAnalysis())
 MODULE_ANALYSIS("verify", VerifierAnalysis())
 MODULE_ANALYSIS("escape-analysis-global", EscapeAnalysisGlobal())
+MODULE_ANALYSIS("lock-ownership", LockOwnership())
 
 #ifndef MODULE_ALIAS_ANALYSIS
 #define MODULE_ALIAS_ANALYSIS(NAME, CREATE_PASS)                               \
@@ -117,6 +118,7 @@ MODULE_PASS("print-stack-safety", StackSafetyGlobalPrinterPass(dbgs()))
 MODULE_PASS("print<inline-advisor>", InlineAdvisorAnalysisPrinterPass(dbgs()))
 MODULE_PASS("print<module-debuginfo>", ModuleDebugInfoPrinterPass(dbgs()))
 MODULE_PASS("print<escape-analysis-global>", EscapeAnalysisGlobalPrinterPass(dbgs()))
+MODULE_PASS("print<lock-ownership>", LockOwnershipPrinterPass(dbgs()))
 MODULE_PASS("pseudo-probe", SampleProfileProbePass(TM))
 MODULE_PASS("pseudo-probe-update", PseudoProbeUpdatePass())
 MODULE_PASS("recompute-globalsaa", RecomputeGlobalsAAPass())
