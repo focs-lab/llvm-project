@@ -10,8 +10,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "llvm/IR/CFG.h"
 #include "llvm/Analysis/LockOwnership.h"
+#include "llvm/IR/CFG.h"
 
 #include "llvm/ADT/PostOrderIterator.h"
 #include "llvm/ADT/SCCIterator.h"
@@ -36,13 +36,17 @@ LockOwnershipInfo::intersectLockStates(LockStateTy MeetState,
                                        const LockStateTy &PredOutState) {
   LockStateTy NextMeetState;
   for (auto const &[Lock, State] : MeetState) {
-    // Check if this mutex exists and has the *exact same* state in
-    // predOutState
-    auto PredIt = PredOutState.find(Lock);
+    // Check if this mutex exists and has been also locked in predOutState
+    const auto PredIt = PredOutState.find(Lock);
     if (PredIt != PredOutState.end() &&
-        PredIt->second == State /* && State.IsLocked */) {
-      // Only keep if state is identical in both
-      NextMeetState[Lock] = State;
+        PredIt->second.IsLocked == State.IsLocked) {
+      // Only keep if the state is identical in both
+      if (PredIt->second.LockInstr == State.LockInstr)
+        NextMeetState[Lock] = {State.IsLocked, State.LockInstr};
+      else
+        // This unlock point is no more unambiguous now because of merge
+        // of control flows
+        NextMeetState[Lock] = {State.IsLocked, nullptr};
     }
     // Otherwise, the state diverges, so we don't include it in the 'must be
     // locked' state
@@ -64,7 +68,7 @@ LockStateTy LockOwnershipInfo::computeMeet(const BasicBlock *BB,
       // worklist init) Treat as if nothing is locked coming from this path
       continue; // Or return an empty map / handle error
     }
-    const LockStateTy& PredOutState = It->second;
+    const LockStateTy &PredOutState = It->second;
 
     if (FirstPred) {
       MeetState = PredOutState; // Initialize with the first predecessor's state
@@ -75,7 +79,8 @@ LockStateTy LockOwnershipInfo::computeMeet(const BasicBlock *BB,
     }
   }
 
-  // If a block has no predecessors (entry block), the meet result is an empty map (initial state)
+  // If a block has no predecessors (entry block), the meet result is an empty
+  // map (initial state)
   if (pred_empty(BB))
     return LockStateTy(); // Initial state: nothing locked
 
@@ -83,7 +88,7 @@ LockStateTy LockOwnershipInfo::computeMeet(const BasicBlock *BB,
 }
 
 std::pair<LockOwnershipInfo::LockCallType, Value *>
-LockOwnershipInfo::getLockCallInfo(const Instruction *I) {
+LockOwnershipInfo::getLockCallInfo(const Instruction *I) const {
   if (!I)
     return {LockCallType::NONE, nullptr};
 
@@ -116,93 +121,106 @@ void LockOwnershipInfo::handleLock(LockStateTy &CurrState,
 }
 
 void LockOwnershipInfo::handleUnlock(LockStateTy &CurrState,
-                                     const Instruction &Inst, const Value *Lock) {
+                                     const Instruction &Inst,
+                                     const Value *Lock) {
   const auto It = CurrState.find(Lock);
   if (It != CurrState.end()) {
     // Was locked, now unlocked. Record the pair.
-    dbgs() << "Found lock/unlock pair: " << *It->second.LockInstr << "\n";
+    // dbgs() << "Found lock/unlock pair: " << *It->second.LockInstr << "\n";
     LockUnlockPairs.insert({It->second.LockInstr, &Inst});
     // Remove locks, for which we found pairs
     CurrState.erase(It);
   } else {
     // Unlocking a mutex that wasn't locked (or state diverged earlier)
-    // dbgs() << "Potential unlock of mutex that is not held\n";
     CurrState[Lock] = {false, nullptr};
   }
 }
 
 /// Transfer Function: Applies block's instructions to the in-state
 /// Returns true if the out-state *changes* as a result
-bool LockOwnershipInfo::applyTransferFunction(const BasicBlock *BB,
-                                              LockStateTy &CurrState,
-                                              BBStateMap &OutStates) {
-  for (const Instruction &Inst : *BB) {
-    dbgs() << "\tInstr: " << Inst << "\n";
+bool LockOwnershipInfo::applyTransferFunc(const BasicBlock *BB,
+                                          LockStateTy &InState,
+                                          LockStateTy &OutState,
+                                          bool InstrToLockFlag) {
+  for (const Instruction &I : *BB) {
+    dbgs() << "\n\tInstr: " << I << "\n";
+    const auto [CallType, Lock] = getLockCallInfo(&I);
 
-    auto [CallType, Lock] = getLockCallInfo(&Inst);
-
-    // Process lock acquire and release
+    // 1. Process lock acquire and release
     if (CallType == LockCallType::LOCK && Lock) {
-      handleLock(CurrState, Inst, Lock);
+      handleLock(InState, I, Lock);
       continue;
     }
 
     if (CallType == LockCallType::UNLOCK && Lock) {
-      handleUnlock(CurrState, Inst, Lock);
+      handleUnlock(InState, I, Lock);
       continue;
     }
 
-    // Process calls
-    const auto *Call = dyn_cast<CallBase>(&Inst);
-    if (!Call)
-      continue;
-    const auto *CalledFunc = Call->getCalledFunction();
-    if (!CalledFunc || !CalledFunc->isDeclaration())
-      continue;
+    // 2. Process calls
+    if (const auto *Call = dyn_cast<CallBase>(&I)) {
+      const auto *CalledFunc = Call->getCalledFunction();
+      if (!CalledFunc || CalledFunc->isDeclaration())
+        continue;
 
-    // Get a function state if it exists
-    const auto FuncStateIt = FuncStates.find(CalledFunc);
-    if (FuncStateIt != FuncStates.end()) {
-      // Update current state with callee's exit state
-      for (const auto &[Lock, State] : FuncStateIt->second.ExitState) {
-        if (State.IsLocked)
-          handleLock(CurrState, Inst, Lock);
-        else
-          handleUnlock(CurrState, Inst, Lock);
+      // Get a function state if it exists
+      const auto FuncStateIt = FuncStates.find(CalledFunc);
+      if (FuncStateIt != FuncStates.end()) {
+        // Update the current state with callee's exit state
+        for (const auto &[Lock, State] : FuncStateIt->second.ExitState) {
+          if (State.IsLocked && State.LockInstr)
+            dbgs() << " at " << *State.LockInstr;
+          dbgs() << "\n";
+
+          if (State.IsLocked)
+            handleLock(InState, I, Lock);
+          else
+            handleUnlock(InState, I, Lock);
+        }
       }
+      continue;
+    }
+
+    // 3. Process other instructions - only if the flag is set
+    if (InstrToLockFlag) {
+      dbgs() << "\tInstr to lock map: " << I << "\n";
+      // Record all currently held locks for this instruction
+      SmallPtrSet<const Value *, 4> HeldLocks;
+      for (const auto &[Lock, State] : InState) {
+        if (State.IsLocked)
+          HeldLocks.insert(Lock);
+      }
+      if (!HeldLocks.empty())
+        InstrToLockMap[&I] = HeldLocks;
     }
   }
 
   // Check if the calculated out-state differs from the stored one
-  auto &OutState = OutStates[BB]; // Will insert if not present
-  if (OutState != CurrState) {
-    OutState = CurrState; // Update the stored state
+  if (OutState != InState) {
+    OutState = InState; // Update the stored state
     return true;          // State changed
   }
   return false; // State did not change
 }
 
-void LockOwnershipInfo::buildSummary(const Function *F) {
-  dbgs() << "\nBuilding summary for function: " << F->getName() << "\n";
+void LockOwnershipInfo::buildSummary(const Function *F, bool InstrToLockFlag) {
+  dbgs() << "\n===============================================\n";
+  dbgs() << "Building summary for function: " << F->getName() << "\n";
 
-  auto [It, _] = FuncStates.insert({F, FuncStateTy()});
-  BBStateMap &InStates = It->second.InStates;
-  BBStateMap &OutStates = It->second.OutStates;
-  LockStateTy &ExitState = It->second.ExitState;
+  auto [FuncStateIt, _] = FuncStates.try_emplace(F, FuncStateTy());
+  BBStateMap &InStates = FuncStateIt->second.InStates;
+  BBStateMap &OutStates = FuncStateIt->second.OutStates;
 
-  std::deque<const BasicBlock *> WorkList;
-  SmallPtrSet<const BasicBlock *, 8> Visited;
-
+  // SmallPtrSet<const BasicBlock *, 8> Visited;
   const BasicBlock &EntryBB = F->getEntryBlock();
 
+  std::deque<const BasicBlock *> WorkList;
   WorkList.push_back(&EntryBB);
-  bool FirstPred = true;
 
   while (!WorkList.empty()) {
     const BasicBlock *BB = WorkList.front();
-    dbgs() << "\nProcessing BB: " << BB->getName() << "\n";
-
     WorkList.pop_front();
+    dbgs() << "\nProcessing BB: " << BB->getName() << "\n";
 
     // 1. Compute IN state by meeting OUT states of predecessors
     // Skip for entry block as it's already initialized
@@ -212,31 +230,31 @@ void LockOwnershipInfo::buildSummary(const Function *F) {
     // 2. Apply transfer function to get OUT state
     LockStateTy CurrOutState = InStates[BB]; // Start with IN state
     // Modifies currentOutState in place
-    bool StateChanged = applyTransferFunction(BB, CurrOutState, OutStates);
+    const bool StateChanged =
+        applyTransferFunc(BB, CurrOutState, OutStates[BB], InstrToLockFlag);
 
     // 3. If OUT state changed, add successors to the worklist
     if (StateChanged) {
-      // Check if it's terminal BB, and update ExitState if needed
-      if (succ_empty(BB)) {
-        if (FirstPred) {
-          ExitState = CurrOutState; // First exit block, initialize exit state
-          FirstPred = false;
+      for (const BasicBlock *Succ : successors(BB))
+        WorkList.push_back(Succ);
+    }
+  }
+
+  // 4. Compute the exit state by meeting IN states of successors
+  // Check if it's terminal BB and update ExitState if needed
+  LockStateTy &ExitState = FuncStateIt->second.ExitState;
+  bool FirstExitBlock = true;
+  // Iterate over all blocks to find terminal ones
+  for (const BasicBlock &BB : *F) {
+    if (succ_empty(&BB)) {
+      const auto OutIt = OutStates.find(&BB);
+      if (OutIt != OutStates.end()) {
+        if (FirstExitBlock) {
+          ExitState = OutIt->second; // First exit block, initialize exit state
+          FirstExitBlock = false;
         } else {
           // Intersect meetState with predOutState
-          ExitState = intersectLockStates(ExitState, CurrOutState);
-        }
-        continue;
-      }
-
-      for (const BasicBlock *Succ : successors(BB)) {
-        // Add to worklist if not already processed enough or state might change
-        // Simple approach: always add if state changed. Visited set prevents
-        // infinite loops. A more refined approach checks if the *input* to the
-        // successor would change.
-        if (Visited.find(Succ) == Visited.end() ||
-            StateChanged) { // Re-add if predecessor changed
-          WorkList.push_back(Succ);
-          Visited.insert(Succ);
+          ExitState = intersectLockStates(ExitState, OutIt->second);
         }
       }
     }
@@ -249,40 +267,47 @@ void LockOwnershipInfo::buildSummary(const Function *F) {
   // }
 }
 
-LockOwnershipInfo::LockOwnershipInfo(CallGraph &CG, Module &M_) : M(M_) {
+void LockOwnershipInfo::doIPALockOwnershipAnalysis(bool InstrToLockFlag) {
+  for (auto It = scc_begin(&CG); !It.isAtEnd(); ++It) {
+    const std::vector<CallGraphNode *> &SCC = *It;
+    assert(!SCC.empty() && "SCC with no functions?");
+
+    // Process SCC
+    bool Changed = false;
+    do {
+      Changed = false;
+      for (const CallGraphNode *CGN : SCC) {
+        const auto *F = CGN->getFunction();
+        if (!F || F->isDeclaration())
+          continue;
+
+        // Store the previous function exit state
+        LockStateTy PrevExitState;
+        const auto FuncStateIt = FuncStates.find(F);
+        if (FuncStateIt != FuncStates.end())
+          PrevExitState = FuncStateIt->second.ExitState;
+
+        // Analyze function and build function state
+        buildSummary(F, InstrToLockFlag);
+
+        // Check if ExitState changed
+        if (FuncStates[F].ExitState != PrevExitState)
+          Changed = true;
+      }
+    } while (Changed);
+  }
+}
+
+LockOwnershipInfo::LockOwnershipInfo(CallGraph &CG_, Module &MM_)
+    : M(MM_), CG(CG_) {
   if (!findPthreadFunctions())
     return;
 
   // Get top-down callgraph list and traverse it
   // const auto SCCList = getTopDownSCCList(CG);
-  // for (auto It = SCCList.rbegin(); It != SCCList.rend(); ++It) {
-  //   const std::vector<CallGraphNode *> &SCC = *It;
-  //   dbgs() << "\nSSC: ";
-  //   for (const CallGraphNode *CGN : SCC) {
-  //     const Function *F = CGN->getFunction();
-  //     if (!F || F->isDeclaration())
-  //       continue;
-  //     if (F->hasName())
-  //       dbgs() << "Func: " << F->getName() << "\n";
-  //   }
-  // }
 
-  for (auto It = scc_begin(&CG); !It.isAtEnd(); ++It) {
-    const std::vector<CallGraphNode *> &SCC = *It;
-    assert(!SCC.empty() && "SCC with no functions?");
-    for (const CallGraphNode *CGN : SCC) {
-      const auto *F = CGN->getFunction();
-      if (!F || F->isDeclaration())
-        continue;
-      buildSummary(F);
-    }
-  }
-
-  // for (const Function &F : M) {
-  //   if (F.isDeclaration() || F.empty())
-  //     continue;
-  //   buildSummary(F);
-  // }
+  doIPALockOwnershipAnalysis(false);
+  doIPALockOwnershipAnalysis(true);
 }
 
 bool LockOwnershipInfo::findPthreadFunctions() {
@@ -300,53 +325,84 @@ bool LockOwnershipInfo::findPthreadFunctions() {
 void LockOwnershipInfo::print(raw_ostream &OS) const {
   auto PrintState = [&](const LockStateTy &State) {
     for (const auto &LockEntry : State) {
-      dbgs() << "  Mutex:       " << *LockEntry.first << "\n";
+      OS << "  Mutex:       " << *LockEntry.first << "\n";
       if (LockEntry.second.IsLocked)
-        dbgs() << "  Locked at: " << *LockEntry.second.LockInstr << "\n";
+        OS << "  Locked at: " << *LockEntry.second.LockInstr << "\n";
       else
-        dbgs() << "  Unlocked\n";
-      dbgs() << "  .............................\n";
+        OS << "  Unlocked\n";
+      OS << "  .............................\n";
     }
   };
 
-  dbgs() << "============= Lock Ownership Analysis =============\n";
-  dbgs() << "Module: " << M.getName() << "\n";
-  dbgs() << "===============================================\n\n";
+  OS << "============= Lock Ownership Analysis =============\n";
+  OS << "Module: " << M.getName() << "\n";
+  OS << "===============================================\n\n";
 
-  dbgs() << "########## Lock/Unlock Pairs Found ###########n";
+  OS << "########## Lock/Unlock Pairs Found ###########n";
   for (const auto &[LockInstr, UnlockInstr] : LockUnlockPairs) {
-    dbgs() << "----------------------------------------\n";
-    dbgs() << "Lock:   " << *LockInstr << "\n";
-    dbgs() << "Unlock: " << *UnlockInstr << "\n";
+    OS << "----------------------------------------\n";
+    OS << "Lock:   " << *LockInstr << "\n";
+    if (UnlockInstr)
+      OS << "Unlock: " << *UnlockInstr << "\n";
+    else
+      OS << "Unlock: ambiguous (different lock instructions at merge)\n";
   }
-  dbgs() << "##########################################\n\n";
+  OS << "##########################################\n\n";
 
   for (const auto &FuncEntry : FuncStates) {
-    dbgs() << "\n======== Lock States by Basic Block for Function "
+    OS << "\n======== Lock States by Basic Block for Function "
            << FuncEntry.first->getName() << " =========\n";
     for (const auto &[BB, State] : FuncEntry.second.OutStates) {
       if (State.empty())
         continue;
-      dbgs() << "----------------------------------------\n";
-      dbgs() << "Basic Block: ";
+      OS << "----------------------------------------\n";
+      OS << "Basic Block: ";
       if (BB->hasName())
-        dbgs() << BB->getName();
+        OS << BB->getName();
       else
-        dbgs() << "[unnamed]";
-      dbgs() << "\n";
+        OS << "[unnamed]";
+      OS << "\n";
 
       PrintState(State);
     }
-    dbgs() << "===========================================================\n\n";
+    OS << "===========================================================\n\n";
 
-    dbgs() << "\n%%%%%%%%%%%%% Exit State for Function "
-           << FuncEntry.first->getName() << " %%%%%%%%%%%%%%\n";
+    OS << "\n%%%%%%%%%%%%% Exit State for Function "
+       << FuncEntry.first->getName() << " %%%%%%%%%%%%%%\n";
     if (FuncEntry.second.ExitState.empty()) {
-      dbgs() << "  <empty>\n";
+      OS << "  <empty>\n";
     } else {
       PrintState(FuncEntry.second.ExitState);
     }
-    dbgs() << "%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%\n\n";
+    OS << "%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%\n\n";
+  }
+
+  OS << "\nInstruction to Lock Map:\n";
+  if (InstrToLockMap.empty()) {
+    OS << "  (empty)\n";
+    return;
+  }
+
+  for (const auto &Pair : InstrToLockMap) {
+    const Instruction *Inst = Pair.first;
+    const auto &Locks = Pair.second;
+
+    OS << "  Instruction: ";
+    Inst->print(OS);
+    OS << "\n";
+
+    OS << "    Locks Held: {";
+    bool FirstLock = true;
+    for (const Value *Lock : Locks) {
+      if (!FirstLock)
+        OS << ", ";
+      if (Lock->hasName())
+        OS << Lock->getName();
+      else
+        Lock->print(OS);
+      FirstLock = false;
+    }
+    OS << "}\n";
   }
 }
 

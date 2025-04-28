@@ -24,10 +24,10 @@ struct LockState {
   const Instruction *LockInstr = nullptr; // Where it was locked
 
   // Comparison operator needed for state comparison
-  bool operator==(const LockState &other) const {
-    return IsLocked == other.IsLocked && LockInstr == other.LockInstr;
+  bool operator==(const LockState &Other) const {
+    return IsLocked == Other.IsLocked && LockInstr == Other.LockInstr;
   }
-  bool operator!=(const LockState &other) const { return !(*this == other); }
+  bool operator!=(const LockState &Other) const { return !(*this == Other); }
 };
 
 // Map of the lock to the instruction where it was locked
@@ -36,19 +36,23 @@ using LockStateTy = SmallDenseMap<const Value *, LockState>;
 /// Interface to access safety global (interprocedural) analysis results.
 class LockOwnershipInfo {
 public:
-  explicit LockOwnershipInfo(CallGraph &CG, Module &M);
+  explicit LockOwnershipInfo(CallGraph &CG_, Module &M);
   void print(raw_ostream &O) const;
 
 private:
   Module &M;
+  CallGraph &CG;
   Function *LockFunc = nullptr;
   Function *UnlockFunc = nullptr;
 
+  // Whether this Instruction belongs to some critical section of some lock
+  DenseMap<const Instruction *, SmallPtrSet<const Value *, 4>> InstrToLockMap;
+
   enum class LockCallType { NONE, LOCK, UNLOCK };
-  std::pair<LockCallType, Value *> getLockCallInfo(const Instruction *I);
+  std::pair<LockCallType, Value *> getLockCallInfo(const Instruction *I) const;
 
   // Dataflow state for each basic block
-  using BBStateMap = SmallDenseMap<const BasicBlock*, LockStateTy>;
+  using BBStateMap = SmallDenseMap<const BasicBlock *, LockStateTy>;
   struct FuncStateTy {
     BBStateMap InStates, OutStates;
     LockStateTy ExitState;
@@ -59,30 +63,33 @@ private:
   SmallDenseSet<std::pair<const Instruction *, const Instruction *>>
       LockUnlockPairs;
 
-  SmallVector<std::vector<CallGraphNode *>> getTopDownSCCList(CallGraph &CG);
-  void buildSummary(const Function *F);
+  static SmallVector<std::vector<CallGraphNode *>>
+  getTopDownSCCList(CallGraph &CG);
+  void buildSummary(const Function *F, bool InstrToLockFlag);
+
+  /// Main analysis function
+  void doIPALockOwnershipAnalysis(bool InstrToLockFlag);
 
   /// Meet Operator: Intersects the lock states from predecessors
-  LockStateTy computeMeet(const BasicBlock* BB, BBStateMap &OutStates);
+  LockStateTy computeMeet(const BasicBlock *BB, BBStateMap &OutStates);
 
   /// Intersect lock states of two BBs
   LockStateTy intersectLockStates(LockStateTy MeetState,
-                                  const LockStateTy &PredOutState);
+                                         const LockStateTy &PredOutState);
 
   /// Transfer Function: Applies block's instructions to the in-state
   /// Returns true if the out-state *changes* as a result
-  bool applyTransferFunction(const BasicBlock *BB, LockStateTy &CurrState,
-                             BBStateMap &OutStates);
+  bool applyTransferFunc(const BasicBlock *BB, LockStateTy &InState,
+                         LockStateTy &OutState, bool InstrToLockFlag);
 
-  /// Process mutex lock & unlock, which we met
+  /// Process mutex lock and unlock, which we met
   void handleLock(LockStateTy &CurrState, const Instruction &Inst,
-                  const Value *Lock);
+                         const Value *Lock);
   void handleUnlock(LockStateTy &CurrState, const Instruction &Inst,
                     const Value *Lock);
 
   /// Find pthread lock/unlock functions
   bool findPthreadFunctions();
-
 };
 
 /// This pass performs the global (interprocedural) escape analysis.
@@ -92,7 +99,7 @@ class LockOwnership : public AnalysisInfoMixin<LockOwnership> {
 
 public:
   using Result = LockOwnershipInfo;
-  Result run(Module &M, ModuleAnalysisManager &AM);
+  static Result run(Module &M, ModuleAnalysisManager &AM);
 };
 
 /// Printer pass for the \c OwnershipAnalysis results.
