@@ -26,6 +26,7 @@
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/Analysis/CaptureTracking.h"
 #include "llvm/Analysis/EscapeAnalysis.h"
+#include "llvm/Analysis/LockOwnership.h"
 #include "llvm/Analysis/TargetLibraryInfo.h"
 #include "llvm/Analysis/ValueTracking.h"
 #include "llvm/IR/DataLayout.h"
@@ -93,6 +94,11 @@ static cl::opt<bool> ClUseEscapeAnalysisGlobal(
     cl::desc(
         "Use global (IPA) escape analysis to eliminate extra instrumentation"),
     cl::Hidden);
+static cl::opt<bool> ClUseLockOwnershipAnalysis(
+    "tsan-use-lock-ownership", cl::init(false),
+    cl::desc(
+        "Use lock ownership analysis to eliminate extra instrumentation"),
+    cl::Hidden);
 
 STATISTIC(NumInstrumentedReads, "Number of instrumented reads");
 STATISTIC(NumInstrumentedWrites, "Number of instrumented writes");
@@ -151,7 +157,8 @@ struct ThreadSanitizer {
   bool sanitizeFunction(
       Function &F, const TargetLibraryInfo &TLI,
       const std::optional<EscapeAnalysisInfo> &EAI = std::nullopt,
-      std::optional<EscapeAnalysisGlobalInfo*> EAIGlobal = std::nullopt);
+      std::optional<EscapeAnalysisGlobalInfo*> EAIGlobal = std::nullopt,
+      std::optional<LockOwnershipInfo*> LOI = std::nullopt);
 
 private:
   // Internal Instruction wrapper that contains more information about the
@@ -180,7 +187,8 @@ private:
       SmallVectorImpl<Instruction *> &Local,
       SmallVectorImpl<InstructionInfo> &All, const DataLayout &DL,
       const std::optional<EscapeAnalysisInfo> &EAI = std::nullopt,
-      std::optional<EscapeAnalysisGlobalInfo*> EAIGlobal = std::nullopt);
+      std::optional<EscapeAnalysisGlobalInfo*> EAIGlobal = std::nullopt,
+      std::optional<LockOwnershipInfo*> LOI = std::nullopt);
   bool addrPointsToConstantData(Value *Addr);
   int getMemoryAccessFuncIndex(Type *OrigTy, Value *Addr, const DataLayout &DL);
   void InsertRuntimeIgnores(Function &F);
@@ -232,12 +240,17 @@ PreservedAnalyses ThreadSanitizerPass::run(Function &F,
                                            FunctionAnalysisManager &FAM) {
   ThreadSanitizer TSan;
 
-  if (ClUseEscapeAnalysisGlobal) {
+  if (ClUseLockOwnershipAnalysis || ClUseEscapeAnalysisGlobal) {
     auto &MAMProxy = FAM.getResult<ModuleAnalysisManagerFunctionProxy>(F);
-    auto *EAGI = MAMProxy.getCachedResult<EscapeAnalysisGlobal>(*F.getParent());
+    std::optional<LockOwnershipInfo *> LOI = std::nullopt;
+    std::optional<EscapeAnalysisGlobalInfo *> EAGI = std::nullopt;
+    if (ClUseLockOwnershipAnalysis)
+      LOI = MAMProxy.getCachedResult<LockOwnership>(*F.getParent());
+    if (ClUseEscapeAnalysisGlobal)
+      EAGI = MAMProxy.getCachedResult<EscapeAnalysisGlobal>(*F.getParent());
+
     if (TSan.sanitizeFunction(F, FAM.getResult<TargetLibraryAnalysis>(F),
-                          std::nullopt,
-                          std::optional<EscapeAnalysisGlobalInfo*>(EAGI)))
+                              std::nullopt, EAGI, LOI))
       return PreservedAnalyses::none();
   } else if (ClUseEscapeAnalysis) {
     if (TSan.sanitizeFunction(F, FAM.getResult<TargetLibraryAnalysis>(F),
@@ -256,12 +269,20 @@ PreservedAnalyses ModuleThreadSanitizerPass::run(Module &M,
   if (ClUseEscapeAnalysis)
     dbgs() << "-- Using Escape Analysis for Module " << M.getName() << " --\n";
   else if (ClUseEscapeAnalysisGlobal)
-    dbgs() << "-- Using Global Escape Analysis for Module " << M.getName() << " --\n";
+    dbgs() << "-- Using Global Escape Analysis for Module " << M.getName()
+           << " --\n";
   else
     dbgs() << "-- Using Capture Tracker for Module " << M.getName() << " --\n";
 
+  if (ClUseLockOwnershipAnalysis)
+    dbgs() << "-- Using Lock Ownership Analysis for Module " << M.getName()
+           << " --\n";
+
   if (ClUseEscapeAnalysisGlobal)
     MAM.getResult<EscapeAnalysisGlobal>(M);
+
+  if (ClUseLockOwnershipAnalysis)
+    MAM.getResult<LockOwnership>(M);
 
   insertModuleCtor(M);
 
@@ -519,7 +540,8 @@ void ThreadSanitizer::chooseInstructionsToInstrument(
     SmallVectorImpl<Instruction *> &Local,
     SmallVectorImpl<InstructionInfo> &All, const DataLayout &DL,
     const std::optional<EscapeAnalysisInfo> &EAI,
-    std::optional<EscapeAnalysisGlobalInfo*> EAIGlobal) {
+    std::optional<EscapeAnalysisGlobalInfo*> EAIGlobal,
+    std::optional<LockOwnershipInfo*> LOI) {
   DenseMap<Value *, size_t> WriteTargets; // Map of addresses to index in All
   // Iterate from the end.
   for (Instruction *I : reverse(Local)) {
@@ -556,6 +578,7 @@ void ThreadSanitizer::chooseInstructionsToInstrument(
       }
     }
 
+    // 1. Default (capture tracking)
     if (isa<AllocaInst>(getUnderlyingObject(Addr))) {
       if (!PointerMayBeCaptured(Addr, true, true)) {
         LLVM_DEBUG(dbgs() << "PointerMayBeCaptured -- Instruction omitted\n");
@@ -564,6 +587,7 @@ void ThreadSanitizer::chooseInstructionsToInstrument(
       }
     }
 
+    // 2. If escape analysis is enabled
     if (EAI.has_value()) {
       bool InstrOmitted = false;
       for (const UnderlObjTy &UnderlObj :
@@ -586,13 +610,23 @@ void ThreadSanitizer::chooseInstructionsToInstrument(
       EscReasonTy EscReason;
       if (!EAIGlobal.value()->isEscapedUndrlObjOrPointee(Addr, I->getParent(),
                                                          EscReason)) {
-        LLVM_DEBUG(dbgs() << "Instruction omitted\n");
+        LLVM_DEBUG(dbgs() << "Instruction omitted due to escape analysis\n");
         NumOmittedNonEscaped++;
         continue;
       }
       updateEscapeStatistics(EscReason);
-      LLVM_DEBUG(dbgs() << "Instruction instrumented\n");
     }
+
+    // 3. If lock ownership analysis is available
+    if (LOI.has_value()) {
+      LLVM_DEBUG(dbgs() << "Lock ownership analysis\n");
+      if (LOI.value()->isInsideCriticalSection(I)) {
+        LLVM_DEBUG(dbgs() << "Instruction omitted due to lock ownership\n");
+        continue;
+      }
+    }
+
+    LLVM_DEBUG(dbgs() << "Instruction instrumented\n");
 
     // Instrument this instruction.
     All.emplace_back(I);
@@ -628,7 +662,8 @@ void ThreadSanitizer::InsertRuntimeIgnores(Function &F) {
 bool ThreadSanitizer::sanitizeFunction(
     Function &F, const TargetLibraryInfo &TLI,
     const std::optional<EscapeAnalysisInfo> &EAI,
-    std::optional<EscapeAnalysisGlobalInfo*> EAIGlobal) {
+    std::optional<EscapeAnalysisGlobalInfo*> EAIGlobal,
+    std::optional<LockOwnershipInfo*> LOI) {
 
   LLVM_DEBUG(dbgs() <<
     "\n%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%\n"
@@ -667,7 +702,7 @@ bool ThreadSanitizer::sanitizeFunction(
   SmallVector<CallInst*, 8> EnableDisableFuncCleanupList;
 
   // Counter for considering nesting __tsan_disable/__tsan_enable
-  int disableEnableNesting = 0;
+  int enableDisableTSanCntr = 0;
 
   // Traverse all instructions, collect loads/stores/returns, check for calls.
   for (auto &BB : F) {
@@ -684,19 +719,19 @@ bool ThreadSanitizer::sanitizeFunction(
         if (CalledFunc) {
           // errs() << "CalledFunc: " << CalledFunc->getName() << "\n";
           if (CalledFunc->getName() == "__tsan_disable") {
-            disableEnableNesting++;
+            enableDisableTSanCntr++;
             EnableDisableFuncCleanupList.push_back(CI);
             continue;
           }
           if (CalledFunc->getName() == "__tsan_enable") {
-            disableEnableNesting--;
+            enableDisableTSanCntr--;
             EnableDisableFuncCleanupList.push_back(CI);
             continue;
           }
         }
       }
 
-      if (disableEnableNesting > 0)
+      if (enableDisableTSanCntr > 0)
         continue;
       ///////////////////////////////////////////////////////////////////////////////
 
@@ -731,11 +766,11 @@ bool ThreadSanitizer::sanitizeFunction(
         if (!IsIntr && !IsInterc)
           HasCalls = true;
         chooseInstructionsToInstrument(LocalLoadsAndStores, AllLoadsAndStores,
-                                       DL, EAI, EAIGlobal);
+                                       DL, EAI, EAIGlobal, LOI);
       }
     }
     chooseInstructionsToInstrument(LocalLoadsAndStores, AllLoadsAndStores, DL,
-                                   EAI, EAIGlobal);
+                                   EAI, EAIGlobal, LOI);
   }
 
   //////////////////////////////////////////////////////////////////////////////

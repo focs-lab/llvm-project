@@ -39,6 +39,17 @@ public:
   explicit LockOwnershipInfo(CallGraph &CG_, Module &M);
   void print(raw_ostream &O) const;
 
+  /// This is needed for using with OuterAnalysisManagerProxy
+  bool invalidate(Module &, const PreservedAnalyses &,
+                  ModuleAnalysisManager::Invalidator &) { return false; }
+
+  /// Returns true if the given instruction is inside at least one critical
+  /// section
+  bool isInsideCriticalSection(const Instruction *I) const {
+    const auto It = InstrToLockMap.find(I);
+    return It != InstrToLockMap.end() && !It->second.empty();
+  }
+
 private:
   Module &M;
   CallGraph &CG;
