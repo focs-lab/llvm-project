@@ -21,7 +21,7 @@
 namespace llvm {
 
 // Add names of known thread creation functions here
-const std::set<std::string> KnownThreadCreators = { "pthread_create" };
+const std::set<std::string> KnownThreadCreators = {"pthread_create"};
 
 /// Interface to access safety global (interprocedural) analysis results.
 class SingleThreadedInfo {
@@ -31,20 +31,41 @@ public:
 
   /// This is needed for using with OuterAnalysisManagerProxy
   bool invalidate(Module &, const PreservedAnalyses &,
-                  ModuleAnalysisManager::Invalidator &) { return false; }
+                  ModuleAnalysisManager::Invalidator &) {
+    return false;
+  }
 
 private:
   Module &M;
   CallGraph &CG;
 
-  // true, is the function is executed in single-threaded context
-  DenseMap<const Function *, bool> IsSingleThreadedFunc;
+  enum class FuncContext {
+    ThreadCreator, // Function that creates new threads
+    MultiThreaded, // Function executed in multithreaded context
+    SingleThreaded // Function executed in single-threaded context
+  };
 
-  // Set of functions which create threads
-  SmallPtrSet<const Function *, 4> ThreadCreatorFunctions;
+  static const char *toString(FuncContext FC);
 
-  // Find all functions-thread creators
-  void identifyThreadCreators();
+  /// Returns true if the given function is executed in a multithreaded context
+  /// or creates threads
+  bool isMultithreaded(const Function *F) const;
+
+  // Maps Function pointers to their threading context (whether they create
+  // threads or are executed in a multithreaded environment)
+  using FuncTypeMap = SmallDenseMap<const Function *, FuncContext>;
+  FuncTypeMap FuncType;
+
+  SmallVector<const GlobalVariable *> ReadOnlyGlobals;
+
+  /// Find all base functions-thread creators
+  void identifyBaseThreadCreators();
+
+  /// Identifies global variables that are only read (not written to) in
+  /// multithreaded functions This analysis helps identify global variables that
+  /// can be safely accessed concurrently without synchronization in
+  /// multithreaded contexts, since they are never modified.
+  void findReadOnlyGlobals();
 };
 
 /// This pass performs the global (interprocedural) escape analysis.
