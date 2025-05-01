@@ -123,6 +123,7 @@ add_llvm_component_library(LLVMAnalysis
   ScalarEvolutionAliasAnalysis.cpp
   ScalarEvolutionDivision.cpp
   ScalarEvolutionNormalization.cpp
+  SingleThreaded.cpp
   StackLifetime.cpp
   StackSafetyAnalysis.cpp
   StructuralHash.cpp
