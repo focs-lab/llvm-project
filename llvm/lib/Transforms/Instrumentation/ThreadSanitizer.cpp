@@ -27,6 +27,7 @@
 #include "llvm/Analysis/CaptureTracking.h"
 #include "llvm/Analysis/EscapeAnalysis.h"
 #include "llvm/Analysis/LockOwnership.h"
+#include "llvm/Analysis/SingleThreaded.h"
 #include "llvm/Analysis/TargetLibraryInfo.h"
 #include "llvm/Analysis/ValueTracking.h"
 #include "llvm/IR/DataLayout.h"
@@ -99,6 +100,16 @@ static cl::opt<bool> ClUseLockOwnershipAnalysis(
     cl::desc(
         "Use lock ownership analysis to eliminate extra instrumentation"),
     cl::Hidden);
+static cl::opt<bool> ClUseSingleThreadedAnalysis(
+    "tsan-use-single-threaded", cl::init(false),
+    cl::desc("Use single-threaded/multiple-threaded analysis to eliminate "
+             "extra instrumentation"),
+    cl::Hidden);
+static cl::opt<bool> ClUseSWMRAnalysis(
+    "tsan-use-swmr", cl::init(false),
+    cl::desc("Use single-writer/multiple-reader analysis to eliminate "
+             "extra instrumentation"),
+    cl::Hidden);
 
 STATISTIC(NumInstrumentedReads, "Number of instrumented reads");
 STATISTIC(NumInstrumentedWrites, "Number of instrumented writes");
@@ -156,9 +167,10 @@ struct ThreadSanitizer {
 
   bool sanitizeFunction(
       Function &F, const TargetLibraryInfo &TLI,
-      const std::optional<EscapeAnalysisInfo> &EAI = std::nullopt,
+      const std::optional<EscapeAnalysisInfo> &EAI,
       std::optional<EscapeAnalysisGlobalInfo*> EAIGlobal = std::nullopt,
-      std::optional<LockOwnershipInfo*> LOI = std::nullopt);
+      std::optional<LockOwnershipInfo*> LOI = std::nullopt,
+      std::optional<SingleThreadedInfo*> STI = std::nullopt);
 
 private:
   // Internal Instruction wrapper that contains more information about the
@@ -186,9 +198,10 @@ private:
   void chooseInstructionsToInstrument(
       SmallVectorImpl<Instruction *> &Local,
       SmallVectorImpl<InstructionInfo> &All, const DataLayout &DL,
-      const std::optional<EscapeAnalysisInfo> &EAI = std::nullopt,
+      const std::optional<EscapeAnalysisInfo> &EAI,
       std::optional<EscapeAnalysisGlobalInfo*> EAIGlobal = std::nullopt,
-      std::optional<LockOwnershipInfo*> LOI = std::nullopt);
+      std::optional<LockOwnershipInfo*> LOI = std::nullopt,
+      std::optional<SingleThreadedInfo*> STI = std::nullopt);
   bool addrPointsToConstantData(Value *Addr);
   int getMemoryAccessFuncIndex(Type *OrigTy, Value *Addr, const DataLayout &DL);
   void InsertRuntimeIgnores(Function &F);
@@ -240,26 +253,28 @@ PreservedAnalyses ThreadSanitizerPass::run(Function &F,
                                            FunctionAnalysisManager &FAM) {
   ThreadSanitizer TSan;
 
-  if (ClUseLockOwnershipAnalysis || ClUseEscapeAnalysisGlobal) {
-    auto &MAMProxy = FAM.getResult<ModuleAnalysisManagerFunctionProxy>(F);
-    std::optional<LockOwnershipInfo *> LOI = std::nullopt;
-    std::optional<EscapeAnalysisGlobalInfo *> EAGI = std::nullopt;
-    if (ClUseLockOwnershipAnalysis)
-      LOI = MAMProxy.getCachedResult<LockOwnership>(*F.getParent());
-    if (ClUseEscapeAnalysisGlobal)
-      EAGI = MAMProxy.getCachedResult<EscapeAnalysisGlobal>(*F.getParent());
-
+  if (ClUseEscapeAnalysis) {
     if (TSan.sanitizeFunction(F, FAM.getResult<TargetLibraryAnalysis>(F),
-                              std::nullopt, EAGI, LOI))
-      return PreservedAnalyses::none();
-  } else if (ClUseEscapeAnalysis) {
-    if (TSan.sanitizeFunction(F, FAM.getResult<TargetLibraryAnalysis>(F),
-                          FAM.getResult<EscapeAnalysis>(F)))
-      return PreservedAnalyses::none();
-  } else {
-    if (TSan.sanitizeFunction(F, FAM.getResult<TargetLibraryAnalysis>(F)))
+                              FAM.getResult<EscapeAnalysis>(F)))
       return PreservedAnalyses::none();
   }
+
+  std::optional<EscapeAnalysisGlobalInfo *> EAGI = std::nullopt;
+  std::optional<LockOwnershipInfo *> LOI = std::nullopt;
+  std::optional<SingleThreadedInfo *> STI = std::nullopt;
+
+  const auto &MAMProxy = FAM.getResult<ModuleAnalysisManagerFunctionProxy>(F);
+
+  if (ClUseEscapeAnalysisGlobal)
+    EAGI = MAMProxy.getCachedResult<EscapeAnalysisGlobal>(*F.getParent());
+  if (ClUseSingleThreadedAnalysis || ClUseSWMRAnalysis)
+    STI = MAMProxy.getCachedResult<SingleThreaded>(*F.getParent());
+  if (ClUseLockOwnershipAnalysis)
+    LOI = MAMProxy.getCachedResult<LockOwnership>(*F.getParent());
+
+  if (TSan.sanitizeFunction(F, FAM.getResult<TargetLibraryAnalysis>(F),
+                            std::nullopt, EAGI, LOI, STI))
+    return PreservedAnalyses::none();
 
   return PreservedAnalyses::all();
 }
@@ -278,11 +293,23 @@ PreservedAnalyses ModuleThreadSanitizerPass::run(Module &M,
     dbgs() << "-- Using Lock Ownership Analysis for Module " << M.getName()
            << " --\n";
 
+  if (ClUseSingleThreadedAnalysis) {
+    dbgs() << "-- Using Single / Multiple Threaded Analysis for Module "
+           << M.getName() << " --\n";
+    LLVM_DEBUG(dbgs() << "Enabling SingleThreaded analysis\n");
+  }
+
+  if (ClUseSWMRAnalysis)
+    dbgs() << "-- Using SWMR Analysis for Module " << M.getName() << " --\n";
+
   if (ClUseEscapeAnalysisGlobal)
     MAM.getResult<EscapeAnalysisGlobal>(M);
 
   if (ClUseLockOwnershipAnalysis)
     MAM.getResult<LockOwnership>(M);
+
+  if (ClUseSingleThreadedAnalysis || ClUseSWMRAnalysis)
+    MAM.getResult<SingleThreaded>(M);
 
   insertModuleCtor(M);
 
@@ -541,7 +568,8 @@ void ThreadSanitizer::chooseInstructionsToInstrument(
     SmallVectorImpl<InstructionInfo> &All, const DataLayout &DL,
     const std::optional<EscapeAnalysisInfo> &EAI,
     std::optional<EscapeAnalysisGlobalInfo*> EAIGlobal,
-    std::optional<LockOwnershipInfo*> LOI) {
+    std::optional<LockOwnershipInfo*> LOI,
+    std::optional<SingleThreadedInfo*> STI) {
   DenseMap<Value *, size_t> WriteTargets; // Map of addresses to index in All
   // Iterate from the end.
   for (Instruction *I : reverse(Local)) {
@@ -626,6 +654,19 @@ void ThreadSanitizer::chooseInstructionsToInstrument(
       }
     }
 
+    // 4. Skip instrumentation if SWMR (Single-Writer/Multiple-Reader) analysis is
+    // enabled and indicates this global variable is read-only. This
+    if (ClUseSWMRAnalysis) {
+      assert(STI.has_value());
+      if (const Value *V = getUnderlyingObject(Addr)) 
+        if (const auto *GV = dyn_cast<GlobalVariable>(V)) 
+          if (STI.value()->isReadOnly(GV)) {
+            LLVM_DEBUG(dbgs() << "Global variable " << GV->getName()
+                              << " is read-only\n");
+            continue;
+          }
+    }
+
     LLVM_DEBUG(dbgs() << "Instruction instrumented\n");
 
     // Instrument this instruction.
@@ -663,8 +704,8 @@ bool ThreadSanitizer::sanitizeFunction(
     Function &F, const TargetLibraryInfo &TLI,
     const std::optional<EscapeAnalysisInfo> &EAI,
     std::optional<EscapeAnalysisGlobalInfo*> EAIGlobal,
-    std::optional<LockOwnershipInfo*> LOI) {
-
+    std::optional<LockOwnershipInfo*> LOI,
+    std::optional<SingleThreadedInfo*> STI) {
   LLVM_DEBUG(dbgs() <<
     "\n%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%\n"
     "%%%%%%%%%%%%%%%%%%%% Func " << F.getName() << "\t%%%%%%%%%%%%%%%%%%%%%%\n"
@@ -684,6 +725,17 @@ bool ThreadSanitizer::sanitizeFunction(
   // instrumentation.
   if (F.hasFnAttribute(Attribute::DisableSanitizerInstrumentation))
     return false;
+
+  // 0. Skip instrumentation for functions that are proven to be single-threaded
+  if (ClUseSingleThreadedAnalysis) {
+    assert(STI.has_value());
+    if (STI.value()->isSingleThreaded(&F)) {
+      LLVM_DEBUG(
+          dbgs() << "Function is single-threaded, skipping instrumentation: "
+                 << F.getName() << "\n");
+      return false;
+    }
+  }
 
   initialize(*F.getParent(), TLI);
   SmallVector<InstructionInfo, 8> AllLoadsAndStores;
@@ -766,11 +818,11 @@ bool ThreadSanitizer::sanitizeFunction(
         if (!IsIntr && !IsInterc)
           HasCalls = true;
         chooseInstructionsToInstrument(LocalLoadsAndStores, AllLoadsAndStores,
-                                       DL, EAI, EAIGlobal, LOI);
+                                       DL, EAI, EAIGlobal, LOI, STI);
       }
     }
     chooseInstructionsToInstrument(LocalLoadsAndStores, AllLoadsAndStores, DL,
-                                   EAI, EAIGlobal, LOI);
+                                   EAI, EAIGlobal, LOI, STI);
   }
 
   //////////////////////////////////////////////////////////////////////////////

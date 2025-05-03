@@ -35,6 +35,20 @@ public:
     return false;
   }
 
+  /// Returns true if the given function is executed in a multithreaded context
+  /// or creates threads
+  // bool isMultithreaded(const Function *F) const;
+
+  /// Returns true if the given function is executed in a single-threaded
+  /// context and doesn't create threads
+  bool isSingleThreaded(const Function *F) const;
+
+  /// Returns true if the given global variable is only read (not written to) in
+  /// multithreaded functions
+  bool isReadOnly(const GlobalVariable *GV) const {
+    return ReadOnlyGlobals.contains(GV);
+  }
+
 private:
   Module &M;
   CallGraph &CG;
@@ -47,16 +61,12 @@ private:
 
   static const char *toString(FuncContext FC);
 
-  /// Returns true if the given function is executed in a multithreaded context
-  /// or creates threads
-  bool isMultithreaded(const Function *F) const;
-
   // Maps Function pointers to their threading context (whether they create
   // threads or are executed in a multithreaded environment)
   using FuncTypeMap = SmallDenseMap<const Function *, FuncContext>;
   FuncTypeMap FuncType;
 
-  SmallVector<const GlobalVariable *> ReadOnlyGlobals;
+  SmallPtrSet<const GlobalVariable *, 4> ReadOnlyGlobals;
 
   /// Find all base functions-thread creators
   void identifyBaseThreadCreators();

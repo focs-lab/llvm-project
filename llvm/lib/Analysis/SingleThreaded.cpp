@@ -31,10 +31,10 @@ const char *SingleThreadedInfo::toString(FuncContext FC) {
   return "Unknown";
 }
 
-bool SingleThreadedInfo::isMultithreaded(const Function *F) const {
-  auto It = FuncType.find(F);
-  return It != FuncType.end() && (It->second == FuncContext::ThreadCreator ||
-                                  It->second == FuncContext::MultiThreaded);
+bool SingleThreadedInfo::isSingleThreaded(const Function *F) const {
+  const auto It = FuncType.find(F);
+  return It != FuncType.end() && It->second != FuncContext::ThreadCreator &&
+         It->second != FuncContext::MultiThreaded;
 }
 
 void SingleThreadedInfo::identifyBaseThreadCreators() {
@@ -171,7 +171,7 @@ void SingleThreadedInfo::findReadOnlyGlobals() {
     for (const User *U : GV.users()) {
       if (const auto *I = dyn_cast<Instruction>(U)) {
         // Skip if the function is not multithreaded
-        if (!isMultithreaded(I->getFunction()))
+        if (isSingleThreaded(I->getFunction()))
           continue;
 
         // Check if this is a write operation
@@ -187,7 +187,7 @@ void SingleThreadedInfo::findReadOnlyGlobals() {
     }
 
     if (IsRead && !IsWritten)
-      ReadOnlyGlobals.push_back(&GV);
+      ReadOnlyGlobals.insert(&GV);
   }
 }
 
