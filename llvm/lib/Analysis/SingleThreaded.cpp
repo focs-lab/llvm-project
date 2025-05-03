@@ -14,6 +14,7 @@
 
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/PassManager.h"
+#include <fstream>
 
 using namespace llvm;
 
@@ -33,8 +34,7 @@ const char *SingleThreadedInfo::toString(FuncContext FC) {
 
 bool SingleThreadedInfo::isSingleThreaded(const Function *F) const {
   const auto It = FuncType.find(F);
-  return It != FuncType.end() && It->second != FuncContext::ThreadCreator &&
-         It->second != FuncContext::MultiThreaded;
+  return It != FuncType.end() && It->second == FuncContext::SingleThreaded;
 }
 
 void SingleThreadedInfo::identifyBaseThreadCreators() {
@@ -47,19 +47,13 @@ void SingleThreadedInfo::identifyBaseThreadCreators() {
   }
 }
 
-SingleThreadedInfo::SingleThreadedInfo(CallGraph &CG_, Module &MM_)
-    : M(MM_), CG(CG_) {
-  LLVM_DEBUG(dbgs() << "\n=== Single Threaded Analysis ===\n");
-
-  // Find all functions which create threads
-  identifyBaseThreadCreators();
-
-  // Check whether main exists
+bool SingleThreadedInfo::runSTMTAnalysis() {
+  // Locate main() function as entry point for analysis
   Function *MainFunc = M.getFunction("main");
   if (!MainFunc) {
     errs() << "WARNING: 'main' function not found in module " << M.getName()
            << ". Cannot perform single-threaded analysis.\n";
-    return;
+    return true;
   }
 
   FuncType[MainFunc] = FuncContext::SingleThreaded;
@@ -72,7 +66,7 @@ SingleThreadedInfo::SingleThreadedInfo(CallGraph &CG_, Module &MM_)
 
     // Examine each function in the call graph to identify thread creators
     // and propagate thread creation status to their callees
-    for (const auto &[F, CGN] : CG) {
+    for (const auto &[F, CGN] : *CG) {
       if (!F || F == MainFunc)
         continue;
 
@@ -150,8 +144,23 @@ SingleThreadedInfo::SingleThreadedInfo(CallGraph &CG_, Module &MM_)
         dbgs() << "----------------------------------------\n";);
     // sleep(1);
   } while (FuncTypeNew != FuncType);
+  return false;
+}
 
+SingleThreadedInfo::SingleThreadedInfo(CallGraph &CG_, Module &MM_)
+    : M(MM_), CG(&CG_) {
+  LLVM_DEBUG(dbgs() << "\n=== Single Threaded Analysis ===\n");
+
+  // Find all functions which create threads
+  identifyBaseThreadCreators();
+
+  // Run STMT analysis to identify single-threaded functions
+  runSTMTAnalysis();
+
+  // Run SWMR analysis
   findReadOnlyGlobals();
+
+  writeSummary();
 }
 
 //===----------------------------------------------------------------------===//
@@ -163,6 +172,10 @@ void SingleThreadedInfo::findReadOnlyGlobals() {
 
   // For each global, check if it's only read in multithreaded functions
   for (const auto &GV : M.globals()) {
+    // Skip constant global variables
+    if (GV.isConstant())
+      continue;
+
     LLVM_DEBUG(dbgs() << "Checking global: " << GV.getName() << "\n");
     bool IsWritten = false;
     bool IsRead = false;
@@ -170,11 +183,11 @@ void SingleThreadedInfo::findReadOnlyGlobals() {
     // Check all uses of this global
     for (const User *U : GV.users()) {
       if (const auto *I = dyn_cast<Instruction>(U)) {
-        // Skip if the function is not multithreaded
+        // Skip if the function is single-threaded
         if (isSingleThreaded(I->getFunction()))
           continue;
 
-        // Check if this is a write operation
+        // For multithreaded functions, check if this is a write operation
         if (const StoreInst *SI = dyn_cast<StoreInst>(I)) {
           if (SI->getPointerOperand() == &GV) {
             IsWritten = true;
@@ -192,21 +205,23 @@ void SingleThreadedInfo::findReadOnlyGlobals() {
 }
 
 void SingleThreadedInfo::print(raw_ostream &OS) const {
-  OS << "\n============================================\n"
-     << "            Thread Creator Functions          \n"
-     << "============================================\n\n";
-  for (const auto &[Func, Context] : FuncType)
-    if (!Func->isDeclaration() && Func->hasName() &&
-        Context == FuncContext::ThreadCreator)
-      OS << "  " << Func->getName() << "\n";
+  if (!ReadFromSummary) {
+    OS << "\n============================================\n"
+       << "            Thread Creator Functions          \n"
+       << "============================================\n\n";
+    for (const auto &[Func, Context] : FuncType)
+      if (!Func->isDeclaration() && Func->hasName() &&
+          Context == FuncContext::ThreadCreator)
+        OS << "  " << Func->getName() << "\n";
 
-  OS << "\n============================================\n"
-     << "           Multi-Threaded Functions          \n"
-     << "============================================\n\n";
-  for (const auto &[Func, Context] : FuncType)
-    if (!Func->isDeclaration() && Func->hasName() &&
-        Context == FuncContext::MultiThreaded)
-      OS << "  " << Func->getName() << "\n";
+    OS << "\n============================================\n"
+       << "           Multi-Threaded Functions          \n"
+       << "============================================\n\n";
+    for (const auto &[Func, Context] : FuncType)
+      if (!Func->isDeclaration() && Func->hasName() &&
+          Context == FuncContext::MultiThreaded)
+        OS << "  " << Func->getName() << "\n";
+  }
 
   OS << "\n============================================\n"
      << "           Single-Threaded Functions          \n"
@@ -216,12 +231,14 @@ void SingleThreadedInfo::print(raw_ostream &OS) const {
         Context == FuncContext::SingleThreaded)
       OS << "  " << Func->getName() << "\n";
 
-  OS << "\n============================================\n"
-     << "            Unclassified Functions           \n"
-     << "============================================\n\n";
-  for (const auto &[F, CGN] : CG)
-    if (F && !F->isDeclaration() && F->hasName() && !FuncType.contains(F))
-      OS << "  " << F->getName() << "\n";
+  if (!ReadFromSummary) {
+    OS << "\n============================================\n"
+       << "            Unclassified Functions           \n"
+       << "============================================\n\n";
+    for (const auto &[F, CGN] : *CG)
+      if (F && !F->isDeclaration() && F->hasName() && !FuncType.contains(F))
+        OS << "  " << F->getName() << "\n";
+  }
 
   OS << "\n============================================\n"
      << "              Read-Only Globals              \n"
@@ -230,10 +247,81 @@ void SingleThreadedInfo::print(raw_ostream &OS) const {
     OS << "  " << GV->getName() << "\n";
 }
 
+void SingleThreadedInfo::writeSummary() const {
+  std::ofstream Summary(SummaryFileName);
+  if (!Summary.is_open()) {
+    errs() << "Error: Could not open file " << SummaryFileName << " for writing\n";
+    return;
+  }
+  LLVM_DEBUG(dbgs() << "Writing analysis results to " << SummaryFileName << "\n");
+
+  Summary << SummaryHeaderST << "\n";
+  for (const auto &[Func, Context] : FuncType)
+    if (!Func->isDeclaration() && Func->hasName() &&
+        Context == FuncContext::SingleThreaded)
+      Summary << Func->getName().str() << "\n";
+  Summary << "\n";
+
+  Summary << SummaryHeaderSWMR << "\n";
+  for (const GlobalVariable *GV : ReadOnlyGlobals)
+    Summary << GV->getName().str()<< "\n";
+
+  Summary.close();
+}
+
+void SingleThreadedInfo::readSummary() {
+  // Clear existing analysis results
+  FuncType.clear();
+  ReadOnlyGlobals.clear();
+
+  std::ifstream Summary(SummaryFileName);
+  if (!Summary.is_open()) {
+    errs() << "Error: Could not open file " << SummaryFileName
+           << " for reading\n";
+    return;
+  }
+  LLVM_DEBUG(dbgs() << "Reading analysis results from " << SummaryFileName << "\n");
+
+  std::string Line;
+  bool ReadingST = false;
+  bool ReadingSWMR = false;
+
+  while (std::getline(Summary, Line)) {
+    if (Line == SummaryHeaderST) {
+      ReadingST = true;
+      ReadingSWMR = false;
+    } else if (Line == SummaryHeaderSWMR) {
+      ReadingST = false;
+      ReadingSWMR = true;
+    } else if (Line.empty()) {
+      ReadingST = false;
+      ReadingSWMR = false;
+      continue;
+    }
+
+    if (ReadingST) {
+      if (const Function *F = M.getFunction(Line))
+        FuncType[F] = FuncContext::SingleThreaded;
+    } else if (ReadingSWMR) {
+      if (const GlobalVariable *GV = M.getGlobalVariable(Line))
+        ReadOnlyGlobals.insert(GV);
+    }
+  }
+
+  Summary.close();
+}
+
+
 AnalysisKey SingleThreaded::Key;
 
 SingleThreaded::Result SingleThreaded::run(Module &M,
                                            ModuleAnalysisManager &AM) {
+  if (std::ifstream SummaryFile(SummaryFileName); SummaryFile.good()) {
+    LLVM_DEBUG(dbgs() << "Found existing summary file. Loading cached results.\n");
+    SummaryFile.close();
+    return SingleThreadedInfo(M);
+  }
+  LLVM_DEBUG(dbgs() << "No summary file found. Running full analysis.\n");
   return SingleThreadedInfo(AM.getResult<CallGraphAnalysis>(M), M);
 }
 

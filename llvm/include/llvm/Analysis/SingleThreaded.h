@@ -20,14 +20,48 @@
 
 namespace llvm {
 
+const std::string SummaryFileName = "st_summary.txt";
+const std::string SummaryHeaderST = "--- Single-Threaded Functions ---";
+const std::string SummaryHeaderSWMR =
+    "--- Read-Only Global Variables (in Multi-Threaded Context) ---";
+
 // Add names of known thread creation functions here
 const std::set<std::string> KnownThreadCreators = {"pthread_create"};
 
 /// Interface to access safety global (interprocedural) analysis results.
 class SingleThreadedInfo {
 public:
+  /// Constructs SingleThreadedInfo using provided CallGraph and Module
+  /// Performs initialization and analysis of thread contexts
   explicit SingleThreadedInfo(CallGraph &CG_, Module &M);
+
+  /// Default constructor that initializes SingleThreadedInfo by reading
+  /// analysis results from a previously written summary file.
+  explicit SingleThreadedInfo(Module &MM) : M(MM), ReadFromSummary(true) {
+    readSummary();
+  }
+
+  /// Performs single-threaded/multi-threaded analysis on the module
+  /// This function analyzes the call graph to identify:
+  /// - Thread creator functions (functions that create new threads)
+  /// - Multi-threaded functions (functions that run in multiple threads)
+  /// - Single-threaded functions (functions that run in a single thread)
+  ///
+  /// The analysis works by:
+  /// 1. Starting with main() as single-threaded
+  /// 2. Identifying thread creators based on function signatures
+  /// 3. Propagating thread creation information through the call graph
+  /// 4. Iterating until a fixed point is reached (no new thread creators found)
+  ///
+  /// @return false on success, true if analysis cannot be performed
+  bool runSTMTAnalysis();
+
   void print(raw_ostream &O) const;
+
+  /// Reads analysis results from a previously written summary file. This allows
+  /// reusing previously computed analysis results for single-threaded functions
+  /// and read-only globals across different compilation units
+  void readSummary();
 
   /// This is needed for using with OuterAnalysisManagerProxy
   bool invalidate(Module &, const PreservedAnalyses &,
@@ -51,7 +85,8 @@ public:
 
 private:
   Module &M;
-  CallGraph &CG;
+  CallGraph *CG = nullptr;
+  const bool ReadFromSummary = false;
 
   enum class FuncContext {
     ThreadCreator, // Function that creates new threads
@@ -70,12 +105,18 @@ private:
 
   /// Find all base functions-thread creators
   void identifyBaseThreadCreators();
+  bool runSTMTAnalysis(SingleThreadedInfo &value1);
 
   /// Identifies global variables that are only read (not written to) in
   /// multithreaded functions This analysis helps identify global variables that
   /// can be safely accessed concurrently without synchronization in
   /// multithreaded contexts, since they are never modified.
   void findReadOnlyGlobals();
+
+  /// Writes analysis results to a summary file. The summary includes lists of
+  /// single-threaded functions and read-only global variables that are safe
+  /// in multi-threaded contexts
+  void writeSummary() const;
 };
 
 /// This pass performs the global (interprocedural) escape analysis.
