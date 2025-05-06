@@ -51,14 +51,17 @@ void SingleThreadedInfo::markFuncAndAllCalleesAsMultithreaded(
     const Function *CallerFunc, const CallGraphNode &CGN,
     FuncTypeMap &FuncTypeNew) {
   const auto FuncTypeIt = FuncTypeNew.find(CallerFunc);
-  if (FuncTypeIt == FuncTypeNew.end() ||
-      FuncTypeIt->second != FuncContext::ThreadCreator)
-    FuncTypeNew[CallerFunc] = FuncContext::MultiThreaded;
+  if ((FuncTypeIt != FuncTypeNew.end()) &&
+      ((FuncTypeIt->second == FuncContext::MultiThreaded) ||
+       (FuncTypeIt->second == FuncContext::ThreadCreator)))
+    return;
+
+  FuncTypeNew[CallerFunc] = FuncContext::MultiThreaded;
 
   for (const auto &[CallSite2, CalleeCGN] : CGN) {
     const Function *CalleeFunc = CalleeCGN->getFunction();
 
-    if (needToSkipFunc(CalleeFunc))
+    if (needToSkipFunc(CalleeFunc) || (CallerFunc == CalleeFunc))
       continue;
 
     markFuncAndAllCalleesAsMultithreaded(CalleeFunc, *CalleeCGN, FuncTypeNew);
@@ -94,7 +97,8 @@ bool SingleThreadedInfo::runSTMTAnalysis() {
       // Check if the function is used in indirect calls
       // Find and mark functions whose addresses are taken as multi-threaded
       if (F->hasAddressTaken()) {
-        LLVM_DEBUG(dbgs() << "Function " << F->getName()
+        LLVM_DEBUG(
+            dbgs() << "Function " << F->getName()
                    << " has its address taken - marking as multi-threaded\n");
         markFuncAndAllCalleesAsMultithreaded(F, *CGN, FuncTypeNew);
       } else {
@@ -256,12 +260,14 @@ void SingleThreadedInfo::print(raw_ostream &OS) const {
 }
 
 void SingleThreadedInfo::writeSummary() const {
-  std::ofstream Summary(SummaryFileName);
+  std::ofstream Summary(SingleThreadedSummaryFileName);
   if (!Summary.is_open()) {
-    errs() << "Error: Could not open file " << SummaryFileName << " for writing\n";
+    errs() << "Error: Could not open file " << SingleThreadedSummaryFileName
+           << " for writing\n";
     return;
   }
-  LLVM_DEBUG(dbgs() << "Writing analysis results to " << SummaryFileName << "\n");
+  LLVM_DEBUG(dbgs() << "Writing analysis results to "
+                    << SingleThreadedSummaryFileName << "\n");
 
   Summary << SummaryHeaderST << "\n";
   for (const auto &[Func, Context] : FuncType)
@@ -272,7 +278,7 @@ void SingleThreadedInfo::writeSummary() const {
 
   Summary << SummaryHeaderSWMR << "\n";
   for (const GlobalVariable *GV : ReadOnlyGlobals)
-    Summary << GV->getName().str()<< "\n";
+    Summary << GV->getName().str() << "\n";
 
   Summary.close();
 }
@@ -282,13 +288,14 @@ void SingleThreadedInfo::readSummary() {
   FuncType.clear();
   ReadOnlyGlobals.clear();
 
-  std::ifstream Summary(SummaryFileName);
+  std::ifstream Summary(SingleThreadedSummaryFileName);
   if (!Summary.is_open()) {
-    errs() << "Error: Could not open file " << SummaryFileName
+    errs() << "Error: Could not open file " << SingleThreadedSummaryFileName
            << " for reading\n";
     return;
   }
-  LLVM_DEBUG(dbgs() << "Reading analysis results from " << SummaryFileName << "\n");
+  LLVM_DEBUG(dbgs() << "Reading analysis results from "
+                    << SingleThreadedSummaryFileName << "\n");
 
   std::string Line;
   bool ReadingST = false;
@@ -319,13 +326,13 @@ void SingleThreadedInfo::readSummary() {
   Summary.close();
 }
 
-
 AnalysisKey SingleThreaded::Key;
 
 SingleThreaded::Result SingleThreaded::run(Module &M,
                                            ModuleAnalysisManager &AM) {
-  if (std::ifstream SummaryFile(SummaryFileName); SummaryFile.good()) {
-    LLVM_DEBUG(dbgs() << "Found existing summary file. Loading cached results.\n");
+  if (std::ifstream SummaryFile(SingleThreadedSummaryFileName);
+      SummaryFile.good()) {
+    LLVM_DEBUG(dbgs() << "Found existing summary file. Loading results.\n");
     SummaryFile.close();
     return SingleThreadedInfo(M);
   }

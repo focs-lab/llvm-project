@@ -21,7 +21,7 @@
 
 namespace llvm {
 
-const std::string SummaryFileName = "st_summary.txt";
+const std::string SingleThreadedSummaryFileName = "st_summary.txt";
 const std::string SummaryHeaderST = "--- Single-Threaded Functions ---";
 const std::string SummaryHeaderSWMR =
     "--- Read-Only Global Variables (in Multi-Threaded Context) ---";
