@@ -38,7 +38,7 @@ bool SingleThreadedInfo::isSingleThreaded(const Function *F) const {
 }
 
 void SingleThreadedInfo::identifyBaseThreadCreators() {
-  for (const std::string &CreatorName : KnownThreadCreators) {
+  for (const auto CreatorName : KnownThreadCreators) {
     Function *CreatorFunc = M.getFunction(CreatorName);
     if (CreatorFunc) {
       FuncType[CreatorFunc] = FuncContext::ThreadCreator;
@@ -47,9 +47,30 @@ void SingleThreadedInfo::identifyBaseThreadCreators() {
   }
 }
 
+void SingleThreadedInfo::markFuncAndAllCalleesAsMultithreaded(
+    const Function *CallerFunc, const CallGraphNode &CGN,
+    FuncTypeMap &FuncTypeNew) {
+  const auto FuncTypeIt = FuncTypeNew.find(CallerFunc);
+  if (FuncTypeIt == FuncTypeNew.end() ||
+      FuncTypeIt->second != FuncContext::ThreadCreator)
+    FuncTypeNew[CallerFunc] = FuncContext::MultiThreaded;
+
+  for (const auto &[CallSite2, CalleeCGN] : CGN) {
+    const Function *CalleeFunc = CalleeCGN->getFunction();
+
+    if (needToSkipFunc(CalleeFunc))
+      continue;
+
+    markFuncAndAllCalleesAsMultithreaded(CalleeFunc, *CalleeCGN, FuncTypeNew);
+    LLVM_DEBUG(if (CalleeFunc->hasName()) dbgs()
+               << "\tMarking function " << CalleeFunc->getName()
+               << " as multi-threaded\n");
+  }
+}
+
 bool SingleThreadedInfo::runSTMTAnalysis() {
   // Locate main() function as entry point for analysis
-  Function *MainFunc = M.getFunction("main");
+  MainFunc = M.getFunction("main");
   if (!MainFunc) {
     errs() << "WARNING: 'main' function not found in module " << M.getName()
            << ". Cannot perform single-threaded analysis.\n";
@@ -67,24 +88,28 @@ bool SingleThreadedInfo::runSTMTAnalysis() {
     // Examine each function in the call graph to identify thread creators
     // and propagate thread creation status to their callees
     for (const auto &[F, CGN] : *CG) {
-      if (!F || F == MainFunc)
+      if (needToSkipFunc(F))
         continue;
 
-      const auto FuncTypeIt = FuncTypeNew.find(F);
-      if (FuncTypeIt == FuncTypeNew.end()) {
-        // Check if function matches pthread_create thread function signature
-        // void* (*)(void*) or equivalent
-        if (F->getFunctionType()->getNumParams() == 1 &&
-            F->getFunctionType()->getReturnType()->isPointerTy() &&
-            F->getFunctionType()->getParamType(0)->isPointerTy()) {
-          FuncTypeNew[F] = FuncContext::MultiThreaded;
-        } else {
+      // Check if the function is used in indirect calls
+      // Find and mark functions whose addresses are taken as multi-threaded
+      if (F->hasAddressTaken()) {
+        LLVM_DEBUG(dbgs() << "Function " << F->getName()
+                   << " has its address taken - marking as multi-threaded\n");
+        markFuncAndAllCalleesAsMultithreaded(F, *CGN, FuncTypeNew);
+      } else {
+        const auto FuncTypeIt = FuncTypeNew.find(F);
+        if (FuncTypeIt == FuncTypeNew.end())
           FuncTypeNew[F] = FuncContext::SingleThreaded;
-        }
       }
 
-      LLVM_DEBUG(if (F->hasName()) dbgs()
-                     << "\nFunction: " << F->getName() << "\n";);
+      LLVM_DEBUG(if (F->hasName()) {
+        dbgs() << "\nFunction: " << F->getName();
+        auto It = FuncTypeNew.find(F);
+        if (It != FuncTypeNew.end())
+          dbgs() << "\t(" << toString(It->second) << ")";
+        dbgs() << "\n";
+      });
 
       // Examine each callee to check if it's a thread creator. If so, mark the
       // current function and its callees as multithreaded
@@ -98,7 +123,8 @@ bool SingleThreadedInfo::runSTMTAnalysis() {
 
         const auto FuncTypeIt = FuncTypeNew.find(Callee);
         if (FuncTypeIt == FuncTypeNew.end()) {
-          FuncType[Callee] = FuncContext::SingleThreaded;
+          // We reached this function, mark as single-threaded
+          FuncTypeNew[Callee] = FuncContext::SingleThreaded;
           continue;
         }
 
@@ -108,24 +134,7 @@ bool SingleThreadedInfo::runSTMTAnalysis() {
           FuncTypeNew[F] = FuncContext::ThreadCreator;
 
           // Mark all callees of F as multithreaded
-          for (const auto &[CallSite2, CalleeNode2] : *CGN) {
-            const Function *CalleeFunc = CalleeNode2->getFunction();
-
-            if (CalleeFunc == MainFunc)
-              continue;
-
-            const auto FuncTypeIt = FuncTypeNew.find(CalleeFunc);
-            if (FuncTypeIt != FuncTypeNew.end()) {
-              if (FuncTypeIt->second == FuncContext::ThreadCreator)
-                // It's a stronger property than MultiThreaded, leave it as is
-                continue;
-            }
-
-            FuncTypeNew[CalleeFunc] = FuncContext::MultiThreaded;
-            LLVM_DEBUG(if (CalleeFunc->hasName()) dbgs()
-                       << "\tMarking function " << CalleeFunc->getName()
-                       << " as multi-threaded\n");
-          }
+          markFuncAndAllCalleesAsMultithreaded(F, *CGN, FuncTypeNew);
           break;
         }
       }
@@ -142,7 +151,6 @@ bool SingleThreadedInfo::runSTMTAnalysis() {
             dbgs()
         << "  " << Func->getName() << ": " << toString(Context) << "\n";
         dbgs() << "----------------------------------------\n";);
-    // sleep(1);
   } while (FuncTypeNew != FuncType);
   return false;
 }

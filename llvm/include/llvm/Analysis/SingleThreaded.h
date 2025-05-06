@@ -1,4 +1,4 @@
-//==- LockOwnership.h - --==//
+//==- SingleThreaded.h - --==//
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -6,7 +6,8 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// This file implements the generic Lock Ownership interface.
+// This file implements Single-threaded/Multiple-threaded analysis
+// and Single-writer/Multiple-reader analysis.
 //
 //===----------------------------------------------------------------------===//
 
@@ -26,7 +27,7 @@ const std::string SummaryHeaderSWMR =
     "--- Read-Only Global Variables (in Multi-Threaded Context) ---";
 
 // Add names of known thread creation functions here
-const std::set<std::string> KnownThreadCreators = {"pthread_create"};
+const SmallDenseSet<StringRef, 4> KnownThreadCreators = {"pthread_create"};
 
 /// Interface to access safety global (interprocedural) analysis results.
 class SingleThreadedInfo {
@@ -39,6 +40,59 @@ public:
   /// analysis results from a previously written summary file.
   explicit SingleThreadedInfo(Module &MM) : M(MM), ReadFromSummary(true) {
     readSummary();
+  }
+
+  void print(raw_ostream &O) const;
+
+  /// Reads analysis results from a previously written summary file. This allows
+  /// reusing previously computed analysis results for single-threaded functions
+  /// and read-only globals across different compilation units
+  void readSummary();
+
+  /// This is needed for using with OuterAnalysisManagerProxy
+  bool invalidate(Module &, const PreservedAnalyses &,
+                  ModuleAnalysisManager::Invalidator &) {
+    return false;
+  }
+
+  /// Returns true if the given function is executed in a single-threaded
+  /// context and doesn't create threads
+  bool isSingleThreaded(const Function *F) const;
+
+  /// Returns true if the given function is executed in a multithreaded context
+  /// or creates threads
+  bool isMultithreaded(const Function *F) const { return !isSingleThreaded(F); }
+
+  /// Returns true if the given global variable is only read (not written to) in
+  /// multithreaded functions
+  bool isReadOnly(const GlobalVariable *GV) const {
+    return ReadOnlyGlobals.contains(GV);
+  }
+
+private:
+  Module &M;
+  CallGraph *CG = nullptr;
+  const bool ReadFromSummary = false;
+  Function *MainFunc = nullptr;
+
+  enum class FuncContext {
+    ThreadCreator, // Function that creates new threads
+    MultiThreaded, // Function executed in multithreaded context
+    SingleThreaded // Function executed in single-threaded context
+  };
+
+  static const char *toString(FuncContext FC);
+
+  // Maps Function pointers to their threading context (whether they create
+  // threads or are executed in a multithreaded environment)
+  using FuncTypeMap = SmallDenseMap<const Function *, FuncContext>;
+  FuncTypeMap FuncType;
+
+  SmallPtrSet<const GlobalVariable *, 4> ReadOnlyGlobals;
+
+  /// Consider only defined functions
+  bool needToSkipFunc(const Function *F) {
+    return !F || F->isDeclaration() || F == MainFunc;
   }
 
   /// Performs single-threaded/multi-threaded analysis on the module
@@ -56,56 +110,16 @@ public:
   /// @return false on success, true if analysis cannot be performed
   bool runSTMTAnalysis();
 
-  void print(raw_ostream &O) const;
-
-  /// Reads analysis results from a previously written summary file. This allows
-  /// reusing previously computed analysis results for single-threaded functions
-  /// and read-only globals across different compilation units
-  void readSummary();
-
-  /// This is needed for using with OuterAnalysisManagerProxy
-  bool invalidate(Module &, const PreservedAnalyses &,
-                  ModuleAnalysisManager::Invalidator &) {
-    return false;
-  }
-
-  /// Returns true if the given function is executed in a multithreaded context
-  /// or creates threads
-  // bool isMultithreaded(const Function *F) const;
-
-  /// Returns true if the given function is executed in a single-threaded
-  /// context and doesn't create threads
-  bool isSingleThreaded(const Function *F) const;
-
-  /// Returns true if the given global variable is only read (not written to) in
-  /// multithreaded functions
-  bool isReadOnly(const GlobalVariable *GV) const {
-    return ReadOnlyGlobals.contains(GV);
-  }
-
-private:
-  Module &M;
-  CallGraph *CG = nullptr;
-  const bool ReadFromSummary = false;
-
-  enum class FuncContext {
-    ThreadCreator, // Function that creates new threads
-    MultiThreaded, // Function executed in multithreaded context
-    SingleThreaded // Function executed in single-threaded context
-  };
-
-  static const char *toString(FuncContext FC);
-
-  // Maps Function pointers to their threading context (whether they create
-  // threads or are executed in a multithreaded environment)
-  using FuncTypeMap = SmallDenseMap<const Function *, FuncContext>;
-  FuncTypeMap FuncType;
-
-  SmallPtrSet<const GlobalVariable *, 4> ReadOnlyGlobals;
-
   /// Find all base functions-thread creators
   void identifyBaseThreadCreators();
-  bool runSTMTAnalysis(SingleThreadedInfo &value1);
+
+  /// Recursively marks all callees of a function as multi-threaded in the
+  /// function type map. This is used when a function is identified as a thread
+  /// creator or multi-threaded, and we need to propagate that status to all
+  /// functions it can call.
+  void markFuncAndAllCalleesAsMultithreaded(const Function *CallerFunc,
+                                            const CallGraphNode &CGN,
+                                            FuncTypeMap &FuncTypeNew);
 
   /// Identifies global variables that are only read (not written to) in
   /// multithreaded functions This analysis helps identify global variables that
@@ -142,4 +156,4 @@ public:
 
 } // end namespace llvm
 
-#endif // LLVM_ANALYSIS_LOCKOWNERSHIP_H
+#endif // LLVM_ANALYSIS_SINGLETHREADED_H
