@@ -653,13 +653,22 @@ void ThreadSanitizer::chooseInstructionsToInstrument(
         continue;
       }
     }
+    // if (LOI.has_value()) {
+    //   LLVM_DEBUG(dbgs() << "Lock ownership analysis\n");
+    //   if (const Value *V = getUnderlyingObject(Addr))
+    //     if (const auto *GV = dyn_cast<GlobalVariable>(V))
+    //       if (LOI.value()->isProtectedGV(GV)) {
+    //         LLVM_DEBUG(dbgs() << "Instruction omitted due to lock ownership\n");
+    //         continue;
+    //       }
+    // }
 
     // 4. Skip instrumentation if SWMR (Single-Writer/Multiple-Reader) analysis is
     // enabled and indicates this global variable is read-only. This
     if (ClUseSWMRAnalysis) {
       assert(STI.has_value());
-      if (const Value *V = getUnderlyingObject(Addr)) 
-        if (const auto *GV = dyn_cast<GlobalVariable>(V)) 
+      if (const Value *V = getUnderlyingObject(Addr))
+        if (const auto *GV = dyn_cast<GlobalVariable>(V))
           if (STI.value()->isReadOnly(GV)) {
             LLVM_DEBUG(dbgs() << "Global variable " << GV->getName()
                               << " is read-only\n");

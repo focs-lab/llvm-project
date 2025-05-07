@@ -15,10 +15,15 @@
 
 #include "llvm/ADT/PostOrderIterator.h"
 #include "llvm/ADT/SCCIterator.h"
+#include "llvm/Analysis/ValueTracking.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/PassManager.h"
 
+#include <fstream>
+
 using namespace llvm;
+
+#define DEBUG_TYPE "lock-ownership"
 
 SmallVector<std::vector<CallGraphNode *>>
 LockOwnershipInfo::getTopDownSCCList(CallGraph &CG) {
@@ -43,10 +48,20 @@ LockOwnershipInfo::intersectLockStates(LockStateTy MeetState,
       // Only keep if the state is identical in both
       if (PredIt->second.LockInstr == State.LockInstr)
         NextMeetState[Lock] = {State.IsLocked, State.LockInstr};
-      else
+      else {
         // This unlock point is no more unambiguous now because of merge
         // of control flows
-        NextMeetState[Lock] = {State.IsLocked, nullptr};
+        LLVM_DEBUG(dbgs() << "WARNING: Lock point is unambiguous: " << *Lock
+                          << "\n");
+        LLVM_DEBUG(dbgs() << "  Pred lock instr: " << *PredIt->second.LockInstr
+                          << "\n");
+        LLVM_DEBUG(dbgs() << "  Current lock instr: " << *State.LockInstr
+                          << "\n");
+
+        // NextMeetState[Lock] = {State.IsLocked, nullptr};
+        // NextMeetState.erase(Lock);
+        NextMeetState[Lock] = {State.IsLocked, PredIt->second.LockInstr};
+      }
     }
     // Otherwise, the state diverges, so we don't include it in the 'must be
     // locked' state
@@ -87,51 +102,62 @@ LockStateTy LockOwnershipInfo::computeMeet(const BasicBlock *BB,
   return MeetState;
 }
 
-std::pair<LockOwnershipInfo::LockCallType, Value *>
+std::pair<LockOwnershipInfo::LockCallType, const Value *>
 LockOwnershipInfo::getLockCallInfo(const Instruction *I) const {
   if (!I)
     return {LockCallType::NONE, nullptr};
 
   if (const auto *CS = dyn_cast<CallBase>(I)) {
     Function *CalledFunc = CS->getCalledFunction();
+
     if (!CalledFunc || !CalledFunc->isDeclaration() ||
         (CS->getNumOperands() == 0))
       return {LockCallType::NONE, nullptr};
 
-    if (CalledFunc == LockFunc)
-      return {LockCallType::LOCK, CS->getArgOperand(0)};
-    if (CalledFunc == UnlockFunc)
-      return {LockCallType::UNLOCK, CS->getArgOperand(0)};
+    if (isLockFunc(CalledFunc))
+      return {LockCallType::LOCK, getUnderlyingObject(CS->getArgOperand(0))};
+    if (isUnLockFunc(CalledFunc))
+      return {LockCallType::UNLOCK, getUnderlyingObject(CS->getArgOperand(0))};
   }
   return {LockCallType::NONE, nullptr};
 }
 
 void LockOwnershipInfo::handleLock(LockStateTy &CurrState,
-                                   const Instruction &Inst, const Value *Lock) {
+                                   const Instruction &Instr,
+                                   const Value *Lock) {
+  LLVM_DEBUG(dbgs() << "\nLOCK Instr: " << Instr << "\n");
   const auto It = CurrState.find(Lock);
   if (It != CurrState.end()) {
     // Already locked! Potential double lock.
-    dbgs() << "Warning: Double lock on mutex: " << *Lock << "\n";
-    // Keep tracking the *latest* lock instruction for this path
-    It->second.LockInstr = &Inst;
+    LLVM_DEBUG(dbgs() << "WARNING: Double lock on mutex: " << *Lock << "\n");
+    // Keep tracking the *first* lock instruction for this path
+    // It->second.LockInstr = &Instr;
   } else {
     // Not locked or not present, mark as locked
-    CurrState[Lock] = {true, &Inst};
+    LLVM_DEBUG(dbgs() << "Lock: " << *Lock << "\n");
+    CurrState[Lock] = {true, &Instr};
   }
 }
 
 void LockOwnershipInfo::handleUnlock(LockStateTy &CurrState,
-                                     const Instruction &Inst,
+                                     const Instruction &Instr,
                                      const Value *Lock) {
+  LLVM_DEBUG(dbgs() << "\nUNLOCK Instr: " << Instr << "\n");
+
   const auto It = CurrState.find(Lock);
   if (It != CurrState.end()) {
     // Was locked, now unlocked. Record the pair.
-    // dbgs() << "Found lock/unlock pair: " << *It->second.LockInstr << "\n";
-    LockUnlockPairs.insert({It->second.LockInstr, &Inst});
+    LLVM_DEBUG(dbgs() << "Lock: " << *Lock << "\n");
+    assert(It->second.LockInstr && "LockInstr should be set");
+    LLVM_DEBUG(dbgs() << "Lock Instr: " << *It->second.LockInstr << "\n\n");
+
+    LockUnlockPairs.insert({It->second.LockInstr, &Instr});
     // Remove locks, for which we found pairs
     CurrState.erase(It);
   } else {
     // Unlocking a mutex that wasn't locked (or state diverged earlier)
+    LLVM_DEBUG(dbgs() << "WARNING: Unlocking a mutex that wasn't locked: "
+                      << *Lock << "\n");
     CurrState[Lock] = {false, nullptr};
   }
 }
@@ -143,7 +169,7 @@ bool LockOwnershipInfo::applyTransferFunc(const BasicBlock *BB,
                                           LockStateTy &OutState,
                                           bool InstrToLockFlag) {
   for (const Instruction &I : *BB) {
-    dbgs() << "\n\tInstr: " << I << "\n";
+    // LLVM_DEBUG(dbgs() << "\n\tInstr: " << I << "\n");
     const auto [CallType, Lock] = getLockCallInfo(&I);
 
     // 1. Process lock acquire and release
@@ -169,8 +195,8 @@ bool LockOwnershipInfo::applyTransferFunc(const BasicBlock *BB,
         // Update the current state with callee's exit state
         for (const auto &[Lock, State] : FuncStateIt->second.ExitState) {
           if (State.IsLocked && State.LockInstr)
-            dbgs() << " at " << *State.LockInstr;
-          dbgs() << "\n";
+            LLVM_DEBUG(dbgs() << " at " << *State.LockInstr);
+          LLVM_DEBUG(dbgs() << "\n");
 
           if (State.IsLocked)
             handleLock(InState, I, Lock);
@@ -183,7 +209,7 @@ bool LockOwnershipInfo::applyTransferFunc(const BasicBlock *BB,
 
     // 3. Process other instructions - only if the flag is set
     if (InstrToLockFlag) {
-      dbgs() << "\tInstr to lock map: " << I << "\n";
+      // LLVM_DEBUG(dbgs() << "\tInstr to lock map: " << I << "\n");
       // Record all currently held locks for this instruction
       SmallPtrSet<const Value *, 4> HeldLocks;
       for (const auto &[Lock, State] : InState) {
@@ -198,14 +224,15 @@ bool LockOwnershipInfo::applyTransferFunc(const BasicBlock *BB,
   // Check if the calculated out-state differs from the stored one
   if (OutState != InState) {
     OutState = InState; // Update the stored state
-    return true;          // State changed
+    return true;        // State changed
   }
   return false; // State did not change
 }
 
 void LockOwnershipInfo::buildSummary(const Function *F, bool InstrToLockFlag) {
-  dbgs() << "\n===============================================\n";
-  dbgs() << "Building summary for function: " << F->getName() << "\n";
+  LLVM_DEBUG(dbgs() << "\n===============================================\n");
+  LLVM_DEBUG(dbgs() << "Building summary for function: " << F->getName()
+                    << "\n");
 
   auto [FuncStateIt, _] = FuncStates.try_emplace(F, FuncStateTy());
   BBStateMap &InStates = FuncStateIt->second.InStates;
@@ -220,7 +247,7 @@ void LockOwnershipInfo::buildSummary(const Function *F, bool InstrToLockFlag) {
   while (!WorkList.empty()) {
     const BasicBlock *BB = WorkList.front();
     WorkList.pop_front();
-    dbgs() << "\nProcessing BB: " << BB->getName() << "\n";
+    // LLVM_DEBUG(dbgs() << "\nProcessing BB: " << BB->getName() << "\n");
 
     // 1. Compute IN state by meeting OUT states of predecessors
     // Skip for entry block as it's already initialized
@@ -268,7 +295,7 @@ void LockOwnershipInfo::buildSummary(const Function *F, bool InstrToLockFlag) {
 }
 
 void LockOwnershipInfo::doIPALockOwnershipAnalysis(bool InstrToLockFlag) {
-  for (auto It = scc_begin(&CG); !It.isAtEnd(); ++It) {
+  for (auto It = scc_begin(CG); !It.isAtEnd(); ++It) {
     const std::vector<CallGraphNode *> &SCC = *It;
     assert(!SCC.empty() && "SCC with no functions?");
 
@@ -298,9 +325,49 @@ void LockOwnershipInfo::doIPALockOwnershipAnalysis(bool InstrToLockFlag) {
   }
 }
 
-LockOwnershipInfo::LockOwnershipInfo(CallGraph &CG_, Module &MM_)
-    : M(MM_), CG(CG_) {
-  if (!findPthreadFunctions())
+void LockOwnershipInfo::readSummary() {
+  // Clear existing analysis results
+  ProtectedGVs.clear();
+
+  std::ifstream Summary(LockOwnershipSummaryFileName);
+  if (!Summary.is_open()) {
+    errs() << "Error: Could not open file " << LockOwnershipSummaryFileName
+           << " for reading\n";
+    return;
+  }
+  LLVM_DEBUG(dbgs() << "Reading analysis results from "
+                    << LockOwnershipSummaryFileName << "\n");
+
+  std::string Line;
+
+  while (std::getline(Summary, Line)) {
+    if (const GlobalVariable *GV = M.getGlobalVariable(Line))
+      ProtectedGVs.insert(GV);
+  }
+
+  Summary.close();
+}
+
+void LockOwnershipInfo::writeSummary() const {
+  std::ofstream Summary(LockOwnershipSummaryFileName);
+  if (!Summary.is_open()) {
+    errs() << "Error: Could not open file " << LockOwnershipSummaryFileName
+           << " for writing\n";
+    return;
+  }
+  LLVM_DEBUG(dbgs() << "Writing analysis results to "
+                    << LockOwnershipSummaryFileName << "\n");
+
+  for (const GlobalVariable *GV : ProtectedGVs)
+    Summary << GV->getName().str() << "\n";
+
+  Summary.close();
+}
+
+LockOwnershipInfo::LockOwnershipInfo(CallGraph &CG_, Module &MM_,
+                                     SingleThreadedInfo &STI)
+    : M(MM_), CG(&CG_) {
+  if (!findLockUnlockFunctions())
     return;
 
   // Get top-down callgraph list and traverse it
@@ -308,21 +375,146 @@ LockOwnershipInfo::LockOwnershipInfo(CallGraph &CG_, Module &MM_)
 
   doIPALockOwnershipAnalysis(false);
   doIPALockOwnershipAnalysis(true);
+
+  print(errs());
+
+  findProtectedGlobalVariables(STI);
 }
 
-bool LockOwnershipInfo::findPthreadFunctions() {
-  LockFunc = M.getFunction("pthread_mutex_lock");
-  UnlockFunc = M.getFunction("pthread_mutex_unlock");
+bool LockOwnershipInfo::findLockUnlockFunctions() {
+  // Common lock function names and patterns
+  const SmallVector<StringRef> LockNames = {"pthread_mutex_lock",
+                                            "pthread_mutex_trylock",
+                                            "pthread_mutex_timedlock",
+                                            "pthread_spin_lock",
+                                            "pthread_spin_trylock",
+                                            "pthread_rwlock_rdlock",
+                                            "pthread_rwlock_tryrdlock",
+                                            "pthread_rwlock_timedrdlock",
+                                            "pthread_rwlock_wrlock",
+                                            "pthread_rwlock_trywrlock",
+                                            "pthread_rwlock_timedwrlock",
+                                            "mtx_lock",
+                                            "_mutex_lock",
+                                            "spinlock_lock",
+                                            "acquire_lock",
+                                            "rwlock_rdlock",
+                                            "rwlock_wrlock"};
 
-  if (!LockFunc || !UnlockFunc) {
-    errs() << "Warning: pthread_mutex_lock/pthread_mutex_unlock not found '"
-           << "in the module " << M.getName() << "\n";
+  const SmallVector<StringRef> UnlockNames = {
+      "pthread_mutex_unlock",  "pthread_spin_unlock",
+      "pthread_rwlock_unlock", "mtx_unlock",
+      "_mutex_unlock",         "spinlock_unlock",
+      "release_lock",          "unlock",
+      "rwlock_unlock"};
+
+  // Find all functions that match lock/unlock patterns
+  for (const Function &F : M.functions()) {
+    StringRef CurrFuncName = F.getName();
+
+    auto matchPatterns = [&CurrFuncName,
+                          &F](const SmallVector<StringRef> &FuncNames,
+                              SmallPtrSet<const Function *, 4> &FuncSet) {
+      for (const auto &FuncName : FuncNames) {
+        if (CurrFuncName.contains(FuncName)) {
+          FuncSet.insert(&F);
+          return;
+        }
+      }
+    };
+
+    // Fill lock and unlock functions
+    matchPatterns(LockNames, LockFuncs);
+    matchPatterns(UnlockNames, UnlockFuncs);
+  }
+
+  if (LockFuncs.empty() || UnlockFuncs.empty()) {
+    errs() << "Warning: No lock/unlock functions found in module "
+           << M.getName() << "\n";
     return false;
   }
   return true;
 }
 
+SmallPtrSet<const Value *, 4>
+LockOwnershipInfo::getLocksProtecting(const Instruction *I) const {
+  const auto It = InstrToLockMap.find(I);
+  if (It != InstrToLockMap.end()) {
+    for (auto *Lock : It->second) {
+      LLVM_DEBUG(dbgs() << "  Lock: " << *Lock << "\n");
+    }
+    return It->second;
+  }
+  LLVM_DEBUG(dbgs() << "  No locks found for instruction: " << *I << "\n");
+  return {};
+}
+
+void LockOwnershipInfo::findProtectedGlobalVariables(SingleThreadedInfo &STI) {
+  LLVM_DEBUG(
+      dbgs() << "\n@@@@@@@@@ Finding protected global variables @@@@@@@@@\n");
+  for (const GlobalVariable &GV : M.globals()) {
+    if (GV.user_empty() || GV.isConstant())
+      continue;
+
+    LLVM_DEBUG(dbgs() << "\nChecking GV: " << GV.getName() << "\n");
+    SmallPtrSet<const Value *, 4> CommonLocksForGV;
+    bool IsFirstAccess = true;
+    bool AllAccessesProtected = true;
+
+    for (const User *U : GV.users()) {
+      const Instruction *I = dyn_cast<Instruction>(U);
+      if (!I)
+        continue;
+
+      // Don't consider accesses in single-threaded functions
+      if (STI.isSingleThreaded(I->getFunction()))
+        continue;
+
+      LLVM_DEBUG(dbgs() << "\tAccess: " << *I << "\n");
+      const auto LocksForCurrentAccess = getLocksProtecting(I);
+
+      if (LocksForCurrentAccess.empty()) {
+        LLVM_DEBUG(dbgs() << "\t\tNo locks found for this access in function: "
+                          << I->getFunction()->getName() << "\n");
+        AllAccessesProtected = false;
+        break;
+      }
+
+      if (IsFirstAccess) {
+        LLVM_DEBUG(dbgs() << "\t\tFirst access, setting common locks\n");
+        CommonLocksForGV = LocksForCurrentAccess;
+        IsFirstAccess = false;
+      } else {
+        // Find an intersection between the current set of common locks
+        // and locks for this access.
+        SmallPtrSet<const Value *, 4> NewCommonLocks;
+        for (const Value *Lock : CommonLocksForGV)
+          if (LocksForCurrentAccess.contains(Lock))
+            NewCommonLocks.insert(Lock);
+        CommonLocksForGV = NewCommonLocks;
+
+        if (CommonLocksForGV.empty()) {
+          // No common locks found for all accesses
+          AllAccessesProtected = false;
+          break;
+        }
+      }
+    }
+
+    if (AllAccessesProtected && !CommonLocksForGV.empty()) {
+      // All accesses are protected, and there is at least one common lock.
+      // GV.user_empty() was already checked at the beginning.
+      // isFirstAccess must be false if there were users.
+      LLVM_DEBUG(
+          dbgs()
+          << "\t\tAll accesses are protected, adding GV to protected list\n");
+      ProtectedGVs.insert(&GV);
+    }
+  }
+}
+
 void LockOwnershipInfo::print(raw_ostream &OS) const {
+  /*
   auto PrintState = [&](const LockStateTy &State) {
     for (const auto &LockEntry : State) {
       OS << "  Mutex:       " << *LockEntry.first << "\n";
@@ -351,7 +543,7 @@ void LockOwnershipInfo::print(raw_ostream &OS) const {
 
   for (const auto &FuncEntry : FuncStates) {
     OS << "\n======== Lock States by Basic Block for Function "
-           << FuncEntry.first->getName() << " =========\n";
+       << FuncEntry.first->getName() << " =========\n";
     for (const auto &[BB, State] : FuncEntry.second.OutStates) {
       if (State.empty())
         continue;
@@ -404,12 +596,37 @@ void LockOwnershipInfo::print(raw_ostream &OS) const {
     }
     OS << "}\n";
   }
+  */
+
+  OS << "\n@@@@@@@@@ Protected Global Variables @@@@@@@@@\n";
+  OS << "===============================================\n";
+  if (ProtectedGVs.empty()) {
+    OS << "  (empty)\n";
+    return;
+  }
+
+  for (const GlobalVariable *GV : ProtectedGVs) {
+    OS << "  * ";
+    if (GV->hasName())
+      OS << GV->getName();
+    else
+      GV->print(OS);
+    OS << "\n";
+  }
+  OS << "===============================================\n";
 }
 
 AnalysisKey LockOwnership::Key;
 
 LockOwnership::Result LockOwnership::run(Module &M, ModuleAnalysisManager &AM) {
-  return LockOwnershipInfo(AM.getResult<CallGraphAnalysis>(M), M);
+  if (std::ifstream SummaryFile(LockOwnershipSummaryFileName);
+      SummaryFile.good()) {
+    LLVM_DEBUG(dbgs() << "Found existing summary file. Loading results.\n");
+    SummaryFile.close();
+    return LockOwnershipInfo(M);
+  }
+  auto &CG = AM.getResult<CallGraphAnalysis>(M);
+  return LockOwnershipInfo(CG, M, AM.getResult<SingleThreaded>(M));
 }
 
 PreservedAnalyses
@@ -419,5 +636,3 @@ LockOwnershipPrinterPass::run(Module &M, ModuleAnalysisManager &AM) const {
   AM.getResult<LockOwnership>(M).print(OS);
   return PreservedAnalyses::all();
 }
-
-#define DEBUG_TYPE "ownership"
