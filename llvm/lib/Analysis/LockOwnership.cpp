@@ -205,10 +205,11 @@ bool LockOwnershipInfo::applyTransferFunc(const BasicBlock *BB,
 
     // 3. Process other instructions - only if the flag is set
     if (InstrToLockFlag) {
-      // LLVM_DEBUG(dbgs() << "\tInstr to lock map: " << I << "\n");
+      LLVM_DEBUG(dbgs() << "\tInstr to lock map: " << I << "\n");
       // Record all currently held locks for this instruction
       SmallPtrSet<const Value *, 4> HeldLocks;
       for (const auto &[Lock, State] : InState) {
+        LLVM_DEBUG(dbgs() << "\t\tLock: " << *Lock << "\n");
         if (State.IsLocked)
           HeldLocks.insert(Lock);
       }
@@ -238,12 +239,19 @@ void LockOwnershipInfo::buildSummary(const Function *F, bool InstrToLockFlag) {
   const BasicBlock &EntryBB = F->getEntryBlock();
 
   std::deque<const BasicBlock *> WorkList;
-  WorkList.push_back(&EntryBB);
+
+  if (InstrToLockFlag) {
+    // Here we must iterate through all BBs, so need to add all of them
+    for (const BasicBlock &BB : *F)
+      WorkList.push_back(&BB);
+  } else {
+    WorkList.push_back(&EntryBB);
+  }
 
   while (!WorkList.empty()) {
     const BasicBlock *BB = WorkList.front();
     WorkList.pop_front();
-    // LLVM_DEBUG(dbgs() << "\nProcessing BB: " << BB->getName() << "\n");
+    LLVM_DEBUG(dbgs() << "\nProcessing BB: " << BB->getName() << "\n");
 
     // 1. Compute IN state by meeting OUT states of predecessors
     // Skip for entry block as it's already initialized
@@ -500,7 +508,7 @@ void LockOwnershipInfo::findProtectedGlobalVariables(SingleThreadedInfo &STI) {
       }
     }
 
-    if (IsFirstAccess || (AllAccessesProtected && !CommonLocksForGV.empty())) {
+    if (AllAccessesProtected && (IsFirstAccess || !CommonLocksForGV.empty())) {
       // All accesses are protected, and there is at least one common lock.
       // GV.user_empty() was already checked at the beginning.
       // isFirstAccess must be false if there were users.
