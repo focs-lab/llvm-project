@@ -100,6 +100,12 @@ static cl::opt<bool> ClUseLockOwnershipAnalysis(
     cl::desc(
         "Use lock ownership analysis to eliminate extra instrumentation"),
     cl::Hidden);
+static cl::opt<bool> ClUseLockOwnershipAnalysisUpperbound(
+    "tsan-use-lock-ownership-upperbound", cl::init(false),
+    cl::desc("Use lock ownership analysis to eliminate extra instrumentation "
+             "-- upper bound estimation (not code inside critical sections "
+             "instrumented)"),
+    cl::Hidden);
 static cl::opt<bool> ClUseSingleThreadedAnalysis(
     "tsan-use-single-threaded", cl::init(false),
     cl::desc("Use single-threaded/multiple-threaded analysis to eliminate "
@@ -269,7 +275,7 @@ PreservedAnalyses ThreadSanitizerPass::run(Function &F,
     EAGI = MAMProxy.getCachedResult<EscapeAnalysisGlobal>(*F.getParent());
   if (ClUseSingleThreadedAnalysis || ClUseSWMRAnalysis)
     STI = MAMProxy.getCachedResult<SingleThreaded>(*F.getParent());
-  if (ClUseLockOwnershipAnalysis)
+  if (ClUseLockOwnershipAnalysis || ClUseLockOwnershipAnalysisUpperbound)
     LOI = MAMProxy.getCachedResult<LockOwnership>(*F.getParent());
 
   if (TSan.sanitizeFunction(F, FAM.getResult<TargetLibraryAnalysis>(F),
@@ -305,7 +311,11 @@ PreservedAnalyses ModuleThreadSanitizerPass::run(Module &M,
   if (ClUseEscapeAnalysisGlobal)
     MAM.getResult<EscapeAnalysisGlobal>(M);
 
-  if (ClUseLockOwnershipAnalysis)
+  if (ClUseLockOwnershipAnalysis && ClUseLockOwnershipAnalysisUpperbound)
+    dbgs() << "Only one from tsan-use-lock-ownership or "
+              "tsan-use-lock-ownership-upperbound in one time";
+
+  if (ClUseLockOwnershipAnalysis || ClUseLockOwnershipAnalysisUpperbound)
     MAM.getResult<LockOwnership>(M);
 
   if (ClUseSingleThreadedAnalysis || ClUseSWMRAnalysis)
@@ -647,21 +657,23 @@ void ThreadSanitizer::chooseInstructionsToInstrument(
 
     // 3. If lock ownership analysis is available
     if (LOI.has_value()) {
-      LLVM_DEBUG(dbgs() << "Lock ownership analysis\n");
-      if (LOI.value()->isInsideCriticalSection(I)) {
-        LLVM_DEBUG(dbgs() << "Instruction omitted due to lock ownership\n");
-        continue;
+      if (ClUseLockOwnershipAnalysisUpperbound) {
+        LLVM_DEBUG(dbgs() << "Lock ownership analysis -- upper bound\n");
+        if (LOI.value()->isInsideCriticalSection(I)) {
+          LLVM_DEBUG(dbgs() << "Instruction omitted due to lock ownership\n");
+          continue;
+        }
+      } else if (ClUseLockOwnershipAnalysis) {
+        LLVM_DEBUG(dbgs() << "Lock ownership analysis\n");
+        if (const Value *V = getUnderlyingObject(Addr))
+          if (const auto *GV = dyn_cast<GlobalVariable>(V))
+            if (LOI.value()->isProtectedGV(GV)) {
+              LLVM_DEBUG(dbgs()
+                         << "Instruction omitted due to lock ownership\n");
+              continue;
+            }
       }
     }
-    // if (LOI.has_value()) {
-    //   LLVM_DEBUG(dbgs() << "Lock ownership analysis\n");
-    //   if (const Value *V = getUnderlyingObject(Addr))
-    //     if (const auto *GV = dyn_cast<GlobalVariable>(V))
-    //       if (LOI.value()->isProtectedGV(GV)) {
-    //         LLVM_DEBUG(dbgs() << "Instruction omitted due to lock ownership\n");
-    //         continue;
-    //       }
-    // }
 
     // 4. Skip instrumentation if SWMR (Single-Writer/Multiple-Reader) analysis is
     // enabled and indicates this global variable is read-only. This

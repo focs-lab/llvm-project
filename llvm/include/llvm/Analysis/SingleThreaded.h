@@ -17,8 +17,6 @@
 #include "llvm/Analysis/CallGraph.h"
 #include "llvm/IR/PassManager.h"
 
-#include <set>
-
 namespace llvm {
 
 const std::string SingleThreadedSummaryFileName = "st_summary.txt";

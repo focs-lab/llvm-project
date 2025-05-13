@@ -194,10 +194,6 @@ bool LockOwnershipInfo::applyTransferFunc(const BasicBlock *BB,
       if (FuncStateIt != FuncStates.end()) {
         // Update the current state with callee's exit state
         for (const auto &[Lock, State] : FuncStateIt->second.ExitState) {
-          if (State.IsLocked && State.LockInstr)
-            LLVM_DEBUG(dbgs() << " at " << *State.LockInstr);
-          LLVM_DEBUG(dbgs() << "\n");
-
           if (State.IsLocked)
             handleLock(InState, I, Lock);
           else
@@ -376,8 +372,6 @@ LockOwnershipInfo::LockOwnershipInfo(CallGraph &CG_, Module &MM_,
   doIPALockOwnershipAnalysis(false);
   doIPALockOwnershipAnalysis(true);
 
-  print(errs());
-
   findProtectedGlobalVariables(STI);
 }
 
@@ -467,8 +461,13 @@ void LockOwnershipInfo::findProtectedGlobalVariables(SingleThreadedInfo &STI) {
         continue;
 
       // Don't consider accesses in single-threaded functions
-      if (STI.isSingleThreaded(I->getFunction()))
+      if (STI.isSingleThreaded(I->getFunction())) {
+        LLVM_DEBUG(dbgs() << "  Function: " << I->getFunction()->getName()
+                          << " ST\n");
         continue;
+      }
+      LLVM_DEBUG(dbgs() << "  Function: " << I->getFunction()->getName()
+                        << " MT\n");
 
       LLVM_DEBUG(dbgs() << "\tAccess: " << *I << "\n");
       const auto LocksForCurrentAccess = getLocksProtecting(I);
@@ -501,7 +500,7 @@ void LockOwnershipInfo::findProtectedGlobalVariables(SingleThreadedInfo &STI) {
       }
     }
 
-    if (AllAccessesProtected && !CommonLocksForGV.empty()) {
+    if (IsFirstAccess || (AllAccessesProtected && !CommonLocksForGV.empty())) {
       // All accesses are protected, and there is at least one common lock.
       // GV.user_empty() was already checked at the beginning.
       // isFirstAccess must be false if there were users.
