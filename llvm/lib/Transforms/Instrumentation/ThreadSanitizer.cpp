@@ -116,6 +116,11 @@ static cl::opt<bool> ClUseSWMRAnalysis(
     cl::desc("Use single-writer/multiple-reader analysis to eliminate "
              "extra instrumentation"),
     cl::Hidden);
+static cl::opt<bool> ClUseDominanceAnalysis(
+    "tsan-use-dominance-analysis", cl::init(false),
+    cl::desc(
+        "Eliminate duplicating instructions which dominate given instruction"),
+    cl::Hidden);
 
 STATISTIC(NumInstrumentedReads, "Number of instrumented reads");
 STATISTIC(NumInstrumentedWrites, "Number of instrumented writes");
@@ -174,9 +179,10 @@ struct ThreadSanitizer {
   bool sanitizeFunction(
       Function &F, const TargetLibraryInfo &TLI,
       const std::optional<EscapeAnalysisInfo> &EAI,
-      std::optional<EscapeAnalysisGlobalInfo*> EAIGlobal = std::nullopt,
-      std::optional<LockOwnershipInfo*> LOI = std::nullopt,
-      std::optional<SingleThreadedInfo*> STI = std::nullopt);
+      std::optional<EscapeAnalysisGlobalInfo *> EAIGlobal = std::nullopt,
+      std::optional<LockOwnershipInfo *> LOI = std::nullopt,
+      std::optional<SingleThreadedInfo *> STI = std::nullopt,
+      const DominatorTree *DT = nullptr, AAResults *AA = nullptr);
 
 private:
   // Internal Instruction wrapper that contains more information about the
@@ -208,6 +214,13 @@ private:
       std::optional<EscapeAnalysisGlobalInfo*> EAIGlobal = std::nullopt,
       std::optional<LockOwnershipInfo*> LOI = std::nullopt,
       std::optional<SingleThreadedInfo*> STI = std::nullopt);
+  void eliminateDominatingInstr(SmallVectorImpl<InstructionInfo> &AllInstr,
+                                const DominatorTree *DT, AAResults *AA,
+                                const TargetLibraryInfo &TLI);
+  bool isTSanDangerous(const Instruction *instruction,
+                       const TargetLibraryInfo &TLI);
+  bool isPathClear(Instruction *DomInst, Instruction *CurrInst,
+                   const DominatorTree *DT, const TargetLibraryInfo &TLI);
   bool addrPointsToConstantData(Value *Addr);
   int getMemoryAccessFuncIndex(Type *OrigTy, Value *Addr, const DataLayout &DL);
   void InsertRuntimeIgnores(Function &F);
@@ -259,9 +272,18 @@ PreservedAnalyses ThreadSanitizerPass::run(Function &F,
                                            FunctionAnalysisManager &FAM) {
   ThreadSanitizer TSan;
 
+  DominatorTree *DT = nullptr;
+  AAResults *AA = nullptr;
+
+  if (ClUseDominanceAnalysis) {
+    DT = &FAM.getResult<DominatorTreeAnalysis>(F);
+    AA = &FAM.getResult<AAManager>(F);
+  }
+
   if (ClUseEscapeAnalysis) {
     if (TSan.sanitizeFunction(F, FAM.getResult<TargetLibraryAnalysis>(F),
-                              FAM.getResult<EscapeAnalysis>(F)))
+                              FAM.getResult<EscapeAnalysis>(F), std::nullopt,
+                              std::nullopt, std::nullopt, DT))
       return PreservedAnalyses::none();
   }
 
@@ -279,7 +301,7 @@ PreservedAnalyses ThreadSanitizerPass::run(Function &F,
     LOI = MAMProxy.getCachedResult<LockOwnership>(*F.getParent());
 
   if (TSan.sanitizeFunction(F, FAM.getResult<TargetLibraryAnalysis>(F),
-                            std::nullopt, EAGI, LOI, STI))
+                            std::nullopt, EAGI, LOI, STI, DT, AA))
     return PreservedAnalyses::none();
 
   return PreservedAnalyses::all();
@@ -701,6 +723,157 @@ void ThreadSanitizer::chooseInstructionsToInstrument(
   Local.clear();
 }
 
+// TODO: check if we consider the case when I1 dominates I2 within the _same_ BB
+void ThreadSanitizer::eliminateDominatingInstr(
+    SmallVectorImpl<InstructionInfo> &AllInstr, const DominatorTree *DT,
+    AAResults *AA, const TargetLibraryInfo &TLI) {
+  if (AllInstr.empty())
+    return;
+
+  // For efficiency, create a map from Instruction* to its index in AllInstr.
+  // This helps to quickly find dominating instructions in AllInstr.
+  DenseMap<Instruction *, size_t> InstToIndexInAll;
+  for (size_t i = 0; i < AllInstr.size(); ++i)
+    if (AllInstr[i].Inst) // Ensure the instruction hasn't been removed
+      InstToIndexInAll[AllInstr[i].Inst] = i;
+
+  SmallVector<bool, 16> ToRemove(AllInstr.size(), false);
+  unsigned RemovedCount = 0;
+
+  for (size_t i = 0; i < AllInstr.size(); ++i) {
+    if (ToRemove[i])
+      continue; // Already marked for removal
+
+    const InstructionInfo &CurrII = AllInstr[i];
+    Instruction *CurrInst = CurrII.Inst;
+    const BasicBlock *CurrBB = CurrInst->getParent();
+    Value *CurrAddr = getLoadStorePointerOperand(CurrInst);
+    const Value *CurrUnderlyingObj = getUnderlyingObject(CurrAddr);
+
+    DomTreeNode *CurrNode = DT->getNode(CurrBB);
+    if (!CurrNode)
+      continue;
+
+    // Traverse up the dominator tree
+    DomTreeNode *IDomNode = CurrNode->getIDom();
+    while (IDomNode && IDomNode->getBlock()) {
+      BasicBlock *DomBB = IDomNode->getBlock();
+
+      // Look for a suitable dominating instrumented instruction in DomBB
+      for (Instruction &PotentialDomInst : *DomBB) {
+        // Check if PotentialDomInst is dominating and instrumented
+        auto It = InstToIndexInAll.find(&PotentialDomInst);
+        if (It == InstToIndexInAll.end() || ToRemove[It->second]) {
+          // Not found in AllInstr or already marked for removal
+          continue;
+        }
+
+        const size_t DomIndex = It->second;
+        InstructionInfo &DomII = AllInstr[DomIndex];
+        Instruction *DomInst = DomII.Inst;
+
+        // Dominance condition: DomInst must be in a block that dominates
+        // CurrInst, and DomInst itself must execute before CurrInst.
+        // DT.dominates(DomInst, CurrInst) checks this.
+        //
+        // FIXME: Does it consider the case when DomBB == CurrBB? Do we need it?
+        if (!DT->dominates(DomInst, CurrInst))
+          continue;
+
+        Value *DomAddr = getLoadStorePointerOperand(DomInst);
+        Value *DomUnderlyingObj = getUnderlyingObject(DomAddr);
+
+        // FIXME: Check for the same object (or MustAlias)
+        // For simplicity, using getUnderlyingObject, but AA.isMustAlias would
+        // be better.
+        if (CurrUnderlyingObj == DomUnderlyingObj ||
+            (CurrUnderlyingObj && DomUnderlyingObj &&
+             AA->isMustAlias(CurrAddr, DomAddr))) {
+          const bool CurrIsWr = isa<StoreInst>(*CurrInst) ||
+                                (CurrII.Flags & InstructionInfo::kCompoundRW);
+          const bool DomIsWr = isa<StoreInst>(*DomInst) ||
+                               (DomII.Flags & InstructionInfo::kCompoundRW);
+
+          // Check compatibility logic:
+          // 1. If DomInst is a write, it covers both read and write of
+          // CurrInst.
+          // 2. If DomInst is a read, it only covers a read of CurrInst.
+          if (DomIsWr || !CurrIsWr) { // DomInst covers CurrInst
+            if (isPathClear(DomInst, CurrInst, DT, TLI)) {
+              LLVM_DEBUG(dbgs()
+                         << "TSAN: Omitting instrumentation for: " << *CurrInst
+                         << " (covered by: " << *DomInst << ")\n");
+              ToRemove[i] = true;
+              RemovedCount++;
+              goto next_instruction_to_prune;
+            }
+          }
+        }
+      }
+      IDomNode = IDomNode->getIDom();
+    }
+  next_instruction_to_prune:;
+  }
+}
+
+/// Checks if the path from (excluding) DomInst to (excluding) CurrInst
+/// is clear along the dominator tree.
+bool ThreadSanitizer::isPathClear(Instruction *DomInst, Instruction *CurrInst,
+                                  const DominatorTree *DT,
+                                  const TargetLibraryInfo &TLI) {
+  const BasicBlock *DomBB = DomInst->getParent();
+  BasicBlock *CurrBB = CurrInst->getParent();
+
+  // 1. Check instructions in DomBB after DomInst
+  for (Instruction *I = DomInst->getNextNode(); I && I->getParent() == DomBB;
+       I = I->getNextNode()) {
+    if (I == CurrInst && DomBB == CurrBB)
+      break; // Reached target instruction in the same block
+    if (isTSanDangerous(I, TLI))
+      return false;
+  }
+
+  // FIXME: double check this
+  if (DomBB == CurrBB)
+    return true; // The path is clear within the same block
+
+  // 2. Check blocks on the dominance path between DomBB and CurrBB (excluding
+  // DomBB, excluding CurrBB) Traverse up from CurrBB along the immediate
+  // dominator tree until DomBB is reached
+  const DomTreeNode *CurrNode = DT->getNode(CurrBB);
+  assert(CurrNode && "DomNode not found");
+
+  DomTreeNode *IDomNode = CurrNode->getIDom();
+  while (IDomNode && IDomNode->getBlock() && IDomNode->getBlock() != DomBB) {
+    BasicBlock *IntermediateBB = IDomNode->getBlock();
+    for (const Instruction &InterI : *IntermediateBB) {
+      if (isTSanDangerous(&InterI, TLI))
+        return false;
+    }
+    IDomNode = IDomNode->getIDom();
+  }
+
+  // If IDomNode->getBlock() became DomBB, then DomBB indeed dominates CurrBB
+  // and we've checked all intermediate blocks on the dominator path.
+  if (!IDomNode || !IDomNode->getBlock() || IDomNode->getBlock() != DomBB) {
+    // This shouldn't happen if DomInst dominates CurrInst.
+    // Perhaps DomInst doesn't strictly dominate CurrInst, or there's a logic
+    // error. Conservatively return false.
+    llvm_unreachable("TSAN: Path not clear, dominator chain broken or "
+                     "DomInst not strictly dominating?\n");
+  }
+
+  // 3. Check instructions in CurrBB before CurrInst
+  for (const Instruction &I : *CurrBB) {
+    if (&I == CurrInst)
+      break;
+    if (isTSanDangerous(&I, TLI))
+      return false;
+  }
+
+  return true;
+}
+
 static bool isTsanAtomic(const Instruction *I) {
   // TODO: Ask TTI whether synchronization scope is between threads.
   auto SSID = getAtomicSyncScopeID(I);
@@ -709,6 +882,54 @@ static bool isTsanAtomic(const Instruction *I) {
   if (isa<LoadInst>(I) || isa<StoreInst>(I))
     return *SSID != SyncScope::SingleThread;
   return true;
+}
+
+// Helper function to check for "dangerous" instructions
+// Returns true if the instruction might change TSan's synchronization state.
+bool ThreadSanitizer::isTSanDangerous(const Instruction *Inst,
+                                      const TargetLibraryInfo &TLI) {
+  if (!Inst)
+    return false;
+
+  // Check for atomic instructions, memory barriers or memory intrinsics
+  if (isTsanAtomic(Inst) || isa<FenceInst>(Inst) || isa<MemIntrinsic>(Inst))
+    return true;
+
+  if (const CallInst *CI = dyn_cast<CallInst>(Inst)) {
+    if (const Function *Callee = CI->getCalledFunction()) {
+      // Check for known "safe" functions (without synchronization).
+      // This is a complex part, requiring analysis of function attributes or
+      // interprocedural analysis. To start, one can consider all unknown calls
+      // dangerous. TLI can help for standard library functions.
+      // TODO: implement (use summary from the file or just check for defined
+      // functions)
+      // if (!TLI.isSyncFree(Callee)) // isSyncFree - a hypothetical
+      // TLI function or our own
+      //   return true;
+
+      // If a function is known to be sync-free (e.g., @llvm.sqrt), then false.
+      // Otherwise - true.
+      // TODO: implement check for intrinsics
+      // if (Callee->isIntrinsic() &&
+      //     (Callee->getIntrinsicID() == Intrinsic::sqrt || /* other safe intrinsics */
+      //      Callee->getIntrinsicID() == Intrinsic::fabs))
+      //   return false;
+
+      // Conservatively: any non-intrinsic and not explicitly safe call is
+      // dangerous
+      if (!Callee->isIntrinsic() &&
+          !Callee->hasFnAttribute(Attribute::ReadNone) &&
+          !Callee->hasFnAttribute(Attribute::ReadOnly))
+        return true;
+    } else {
+      // Indirect call - always dangerous for simplicity
+      return true;
+    }
+  }
+
+  // ... Other potentially dangerous instructions (architecture-specific, etc.)
+
+  return false;
 }
 
 void ThreadSanitizer::InsertRuntimeIgnores(Function &F) {
@@ -724,11 +945,12 @@ void ThreadSanitizer::InsertRuntimeIgnores(Function &F) {
 bool ThreadSanitizer::sanitizeFunction(
     Function &F, const TargetLibraryInfo &TLI,
     const std::optional<EscapeAnalysisInfo> &EAI,
-    std::optional<EscapeAnalysisGlobalInfo*> EAIGlobal,
-    std::optional<LockOwnershipInfo*> LOI,
-    std::optional<SingleThreadedInfo*> STI) {
-  LLVM_DEBUG(dbgs() <<
-    "\n%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%\n"
+    std::optional<EscapeAnalysisGlobalInfo *> EAIGlobal,
+    std::optional<LockOwnershipInfo *> LOI,
+    std::optional<SingleThreadedInfo *> STI, const DominatorTree *DT,
+    AAResults *AA) {
+  LLVM_DEBUG(dbgs() << "\n%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%"
+                       "%%%%%%%%%%%%%%%%%\n"
     "%%%%%%%%%%%%%%%%%%%% Func " << F.getName() << "\t%%%%%%%%%%%%%%%%%%%%%%\n"
     "%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%\n");
 
@@ -840,6 +1062,7 @@ bool ThreadSanitizer::sanitizeFunction(
           HasCalls = true;
         chooseInstructionsToInstrument(LocalLoadsAndStores, AllLoadsAndStores,
                                        DL, EAI, EAIGlobal, LOI, STI);
+        eliminateDominatingInstr(AllLoadsAndStores, DT, AA, TLI);
       }
     }
     chooseInstructionsToInstrument(LocalLoadsAndStores, AllLoadsAndStores, DL,
@@ -849,13 +1072,11 @@ bool ThreadSanitizer::sanitizeFunction(
   //////////////////////////////////////////////////////////////////////////////
   // This is for disabling/enabling TSan instrumentation
   // Disable for now check of matching
-  /*
-  if (disableEnableNesting != 0) {
+  /* if (disableEnableNesting != 0) {
     // Error: __tsan_enable without __tsan_disable
     report_fatal_error("Unmatched __tsan_enable__ call in function " +
                        F.getName());
-  }
-  */
+  } */
 
   // Erase all __tsan_disable/enable functions
   for (auto *CI: EnableDisableFuncCleanupList)
