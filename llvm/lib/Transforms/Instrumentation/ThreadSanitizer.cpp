@@ -33,6 +33,7 @@
 #include "llvm/IR/DataLayout.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/IRBuilder.h"
+#include "llvm/IR/InstIterator.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/IntrinsicInst.h"
 #include "llvm/IR/Intrinsics.h"
@@ -146,6 +147,7 @@ STATISTIC(NumEscVolatile, "Number of escapes due to volatile");
 STATISTIC(NumEscOther, "Number of escapes due to other reasons");
 STATISTIC(NumEscInvalid, "Number of escapes due to invalid reasons");
 STATISTIC(NumEscCall, "Number of escapes due to escaped calls");
+STATISTIC(NumOmittedByDominance, "Number of accesses ignored due to dominance");
 
 const char kTsanModuleCtorName[] = "tsan.module_ctor";
 const char kTsanInitName[] = "__tsan_init";
@@ -283,7 +285,7 @@ PreservedAnalyses ThreadSanitizerPass::run(Function &F,
   if (ClUseEscapeAnalysis) {
     if (TSan.sanitizeFunction(F, FAM.getResult<TargetLibraryAnalysis>(F),
                               FAM.getResult<EscapeAnalysis>(F), std::nullopt,
-                              std::nullopt, std::nullopt, DT))
+                              std::nullopt, std::nullopt, DT, AA))
       return PreservedAnalyses::none();
   }
 
@@ -814,6 +816,17 @@ void ThreadSanitizer::eliminateDominatingInstr(
     }
   next_instruction_to_prune:;
   }
+
+  // Do removal
+  if (RemovedCount > 0) {
+    SmallVector<InstructionInfo, 8> NewAllInstr;
+    NewAllInstr.reserve(AllInstr.size() - RemovedCount);
+    for (size_t k = 0; k < AllInstr.size(); ++k)
+      if (!ToRemove[k])
+        NewAllInstr.push_back(AllInstr[k]);
+    AllInstr.swap(NewAllInstr);
+    NumOmittedByDominance += RemovedCount; // Statistics
+  }
 }
 
 /// Checks if the path from (excluding) DomInst to (excluding) CurrInst
@@ -825,17 +838,17 @@ bool ThreadSanitizer::isPathClear(Instruction *DomInst, Instruction *CurrInst,
   BasicBlock *CurrBB = CurrInst->getParent();
 
   // 1. Check instructions in DomBB after DomInst
-  for (Instruction *I = DomInst->getNextNode(); I && I->getParent() == DomBB;
-       I = I->getNextNode()) {
+  for (const Instruction *I = DomInst->getNextNode();
+       I && I->getParent() == DomBB; I = I->getNextNode()) {
     if (I == CurrInst && DomBB == CurrBB)
-      break; // Reached target instruction in the same block
+      return true; // Reached target instruction in the same block
     if (isTSanDangerous(I, TLI))
       return false;
   }
 
-  // FIXME: double check this
-  if (DomBB == CurrBB)
-    return true; // The path is clear within the same block
+  // FIXME: double-check this
+  // if (DomBB == CurrBB)
+  //   return true; // The path is clear within the same block
 
   // 2. Check blocks on the dominance path between DomBB and CurrBB (excluding
   // DomBB, excluding CurrBB) Traverse up from CurrBB along the immediate
@@ -859,8 +872,11 @@ bool ThreadSanitizer::isPathClear(Instruction *DomInst, Instruction *CurrInst,
     // This shouldn't happen if DomInst dominates CurrInst.
     // Perhaps DomInst doesn't strictly dominate CurrInst, or there's a logic
     // error. Conservatively return false.
-    llvm_unreachable("TSAN: Path not clear, dominator chain broken or "
-                     "DomInst not strictly dominating?\n");
+    LLVM_DEBUG(dbgs() << "TSAN: Path integrity issue or DomInst not strictly "
+                         "dominating CurrInst.\n"
+                      << "DomInst: " << *DomInst << "\nCurrInst: " << *CurrInst
+                      << "\n");
+    return false;
   }
 
   // 3. Check instructions in CurrBB before CurrInst
@@ -892,39 +908,43 @@ bool ThreadSanitizer::isTSanDangerous(const Instruction *Inst,
     return false;
 
   // Check for atomic instructions, memory barriers or memory intrinsics
-  if (isTsanAtomic(Inst) || isa<FenceInst>(Inst) || isa<MemIntrinsic>(Inst))
+  if (isTsanAtomic(Inst))
     return true;
 
   if (const CallInst *CI = dyn_cast<CallInst>(Inst)) {
-    if (const Function *Callee = CI->getCalledFunction()) {
+    if (Function *Callee = CI->getCalledFunction()) {
       // Check for known "safe" functions (without synchronization).
       // This is a complex part, requiring analysis of function attributes or
       // interprocedural analysis. To start, one can consider all unknown calls
       // dangerous. TLI can help for standard library functions.
-      // TODO: implement (use summary from the file or just check for defined
-      // functions)
-      // if (!TLI.isSyncFree(Callee)) // isSyncFree - a hypothetical
-      // TLI function or our own
-      //   return true;
+      LibFunc Func;
+      if (TLI.getLibFunc(*Callee, Func))
+        return !TLI.isSyncFree(Func);
 
       // If a function is known to be sync-free (e.g., @llvm.sqrt), then false.
       // Otherwise - true.
-      // TODO: implement check for intrinsics
-      // if (Callee->isIntrinsic() &&
-      //     (Callee->getIntrinsicID() == Intrinsic::sqrt || /* other safe intrinsics */
-      //      Callee->getIntrinsicID() == Intrinsic::fabs))
-      //   return false;
+      if (Callee->isIntrinsic())
+        return !Intrinsic::isIntrinsicSyncFree(Callee->getIntrinsicID());
+
+      if (Callee->hasFnAttribute(Attribute::NoSync) ||
+          Callee->hasFnAttribute(Attribute::ReadNone))
+          // || Callee->hasFnAttribute(Attribute::ReadOnly))
+        return false;
+
+      // For defined called function, recursively check if they contain any
+      // dangerous instructions
+      // if (!Callee->isDeclaration())
+      //   for (inst_iterator It = inst_begin(Callee), E = inst_end(Callee);
+      //        It != E; ++It)
+      //     if (isTSanDangerous(&*It, TLI))
+      //       return true;
 
       // Conservatively: any non-intrinsic and not explicitly safe call is
       // dangerous
-      if (!Callee->isIntrinsic() &&
-          !Callee->hasFnAttribute(Attribute::ReadNone) &&
-          !Callee->hasFnAttribute(Attribute::ReadOnly))
-        return true;
-    } else {
-      // Indirect call - always dangerous for simplicity
       return true;
     }
+    // Indirect call - always dangerous for simplicity
+    return true;
   }
 
   // ... Other potentially dangerous instructions (architecture-specific, etc.)
@@ -1062,12 +1082,14 @@ bool ThreadSanitizer::sanitizeFunction(
           HasCalls = true;
         chooseInstructionsToInstrument(LocalLoadsAndStores, AllLoadsAndStores,
                                        DL, EAI, EAIGlobal, LOI, STI);
-        eliminateDominatingInstr(AllLoadsAndStores, DT, AA, TLI);
       }
     }
     chooseInstructionsToInstrument(LocalLoadsAndStores, AllLoadsAndStores, DL,
                                    EAI, EAIGlobal, LOI, STI);
   }
+
+  if (ClUseDominanceAnalysis)
+    eliminateDominatingInstr(AllLoadsAndStores, DT, AA, TLI);
 
   //////////////////////////////////////////////////////////////////////////////
   // This is for disabling/enabling TSan instrumentation

@@ -442,6 +442,150 @@ public:
     return false;
   }
 
+  bool isSyncFree(LibFunc F) const {
+    if (getState(F) == TargetLibraryInfoImpl::Unavailable)
+      return false; // If the function is unavailable, it cannot be sync-free
+
+    switch (F) {
+    // Functions that are NOT sync-free (they use synchronization)
+
+    // Direct atomic operations and guard mechanisms:
+    case LibFunc_atomic_load: case LibFunc_atomic_store:
+    case LibFunc_cxa_guard_abort: case LibFunc_cxa_guard_acquire:
+    case LibFunc_cxa_guard_release:
+
+    // Explicit file locks:
+    case LibFunc_flockfile: case LibFunc_ftrylockfile: case LibFunc_funlockfile:
+
+    // Standard I/O (versions without _unlocked suffix imply internal locks):
+    // Operations with FILE* or global stdin/stdout/stderr
+    case LibFunc_fclose: case LibFunc_fdopen: case LibFunc_fflush:
+    case LibFunc_fgetc: case LibFunc_fgetpos: case LibFunc_fgets:
+    case LibFunc_fopen: case LibFunc_fopen64: case LibFunc_fprintf:
+    case LibFunc_fiprintf: // Assumed to be an analog of fprintf for integers to FILE*
+    case LibFunc_small_fprintf: case LibFunc_fputc: case LibFunc_fputs:
+    case LibFunc_fread: case LibFunc_fscanf: case LibFunc_fseek:
+    case LibFunc_fseeko: case LibFunc_fseeko64: case LibFunc_fsetpos:
+    case LibFunc_ftell: case LibFunc_ftello: case LibFunc_ftello64:
+    case LibFunc_fwrite: case LibFunc_getc: case LibFunc_getchar:
+    case LibFunc_gets: // Uses stdio, usually with locking
+    case LibFunc_perror: // Writes to stderr, which is usually locked
+    case LibFunc_printf:
+    case LibFunc_iprintf: // Printing integers, usually to stdout
+    case LibFunc_small_printf: case LibFunc_putc: case LibFunc_putchar:
+    case LibFunc_puts: case LibFunc_rewind: case LibFunc_scanf:
+    case LibFunc_dunder_isoc99_scanf: // This is scanf
+    case LibFunc_setbuf: // Modifies FILE stream buffering, implies synchronization
+    case LibFunc_setvbuf: // Modifies FILE stream buffering, implies synchronization
+    case LibFunc_tmpfile: case LibFunc_tmpfile64: case LibFunc_ungetc:
+    case LibFunc_vfprintf: case LibFunc_vfscanf: case LibFunc_vprintf:
+    case LibFunc_vscanf:
+    case LibFunc_under_IO_getc: // Assumed to be similar to fgetc
+    case LibFunc_under_IO_putc: // Assumed to be similar to fputc
+    case LibFunc_clearerr: // Modifies FILE state, likely requires synchronization
+    case LibFunc_feof:     // Reads FILE state, likely requires synchronization
+    case LibFunc_ferror:   // Reads FILE state, likely requires synchronization
+    case LibFunc_fileno:   // Reads FILE state, conservatively assumed to potentially require synchronization
+
+    // Memory allocation/deallocation (usually internally synchronized):
+    // MSVC new/delete operators
+    case LibFunc_msvc_new_int:
+    case LibFunc_msvc_new_int_nothrow:
+    case LibFunc_msvc_new_longlong:
+    case LibFunc_msvc_new_longlong_nothrow:
+    case LibFunc_msvc_delete_ptr32:
+    case LibFunc_msvc_delete_ptr32_nothrow:
+    case LibFunc_msvc_delete_ptr32_int:
+    case LibFunc_msvc_delete_ptr64:
+    case LibFunc_msvc_delete_ptr64_nothrow:
+    case LibFunc_msvc_delete_ptr64_longlong:
+    case LibFunc_msvc_new_array_int:
+    case LibFunc_msvc_new_array_int_nothrow:
+    case LibFunc_msvc_new_array_longlong:
+    case LibFunc_msvc_new_array_longlong_nothrow:
+    case LibFunc_msvc_delete_array_ptr32:
+    case LibFunc_msvc_delete_array_ptr32_nothrow:
+    case LibFunc_msvc_delete_array_ptr32_int:
+    case LibFunc_msvc_delete_array_ptr64:
+    case LibFunc_msvc_delete_array_ptr64_nothrow:
+    case LibFunc_msvc_delete_array_ptr64_longlong:
+    // Itanium C++ ABI new/delete operators
+    case LibFunc_ZdaPv: case LibFunc_ZdaPvRKSt9nothrow_t:
+    case LibFunc_ZdaPvSt11align_val_t:
+    case LibFunc_ZdaPvSt11align_val_tRKSt9nothrow_t:
+    case LibFunc_ZdaPvj: case LibFunc_ZdaPvjSt11align_val_t:
+    case LibFunc_ZdaPvm: case LibFunc_ZdaPvmSt11align_val_t:
+    case LibFunc_ZdlPv: case LibFunc_ZdlPvRKSt9nothrow_t:
+    case LibFunc_ZdlPvSt11align_val_t:
+    case LibFunc_ZdlPvSt11align_val_tRKSt9nothrow_t:
+    case LibFunc_ZdlPvj: case LibFunc_ZdlPvjSt11align_val_t:
+    case LibFunc_ZdlPvm: case LibFunc_ZdlPvmSt11align_val_t:
+    case LibFunc_Znaj: case LibFunc_ZnajRKSt9nothrow_t:
+    case LibFunc_ZnajSt11align_val_t:
+    case LibFunc_ZnajSt11align_val_tRKSt9nothrow_t:
+    case LibFunc_Znam: case LibFunc_Znam12__hot_cold_t:
+    case LibFunc_ZnamRKSt9nothrow_t:
+    case LibFunc_ZnamRKSt9nothrow_t12__hot_cold_t:
+    case LibFunc_ZnamSt11align_val_t:
+    case LibFunc_ZnamSt11align_val_t12__hot_cold_t:
+    case LibFunc_ZnamSt11align_val_tRKSt9nothrow_t:
+    case LibFunc_ZnamSt11align_val_tRKSt9nothrow_t12__hot_cold_t:
+    case LibFunc_Znwj: case LibFunc_ZnwjRKSt9nothrow_t:
+    case LibFunc_ZnwjSt11align_val_t:
+    case LibFunc_ZnwjSt11align_val_tRKSt9nothrow_t:
+    case LibFunc_Znwm: case LibFunc_Znwm12__hot_cold_t:
+    case LibFunc_ZnwmRKSt9nothrow_t:
+    case LibFunc_ZnwmRKSt9nothrow_t12__hot_cold_t:
+    case LibFunc_ZnwmSt11align_val_t:
+    case LibFunc_ZnwmSt11align_val_t12__hot_cold_t:
+    case LibFunc_ZnwmSt11align_val_tRKSt9nothrow_t:
+    case LibFunc_ZnwmSt11align_val_tRKSt9nothrow_t12__hot_cold_t:
+    // Standard C allocators
+    case LibFunc_aligned_alloc: case LibFunc_calloc: case LibFunc_free:
+    case LibFunc_malloc:
+    case LibFunc_memalign: // Obsolete, but if present, it's an allocator
+    case LibFunc_posix_memalign: case LibFunc_realloc:
+    case LibFunc_reallocf: // Calls realloc, then free on failure
+    case LibFunc_valloc:   // Obsolete, but if present, it's an allocator
+    case LibFunc_strdup:   // Calls malloc
+    case LibFunc_dunder_strdup: // Calls malloc
+    case LibFunc_strndup:  // Calls malloc
+    case LibFunc_dunder_strndup: // Calls malloc
+    // OpenMP runtime allocators
+    case LibFunc___kmpc_alloc_shared: case LibFunc___kmpc_free_shared:
+    // Vector allocators (assuming they might be synchronized like standard ones)
+    case LibFunc_vec_calloc: case LibFunc_vec_free: case LibFunc_vec_malloc:
+    case LibFunc_vec_realloc:
+
+    // Process/system level utilities that are inherently synchronizing
+    // or involve significant system state changes:
+    case LibFunc_fork:
+    case LibFunc_pclose: // Waits for process completion
+    case LibFunc_popen:  // Creates a pipe and process
+    case LibFunc_system: // Creates a shell, involves fork/exec
+    case LibFunc_execl: case LibFunc_execle: case LibFunc_execlp:
+    case LibFunc_execv: case LibFunc_execvP: case LibFunc_execve:
+    case LibFunc_execvp: case LibFunc_execvpe:
+
+    // Other potentially synchronized standard library functions:
+    case LibFunc_atexit:     // Modification of a global list
+    case LibFunc_cxa_atexit: // Modification of a global list
+    case LibFunc_getenv:     // Access to shared environment, may be locked
+    case LibFunc_mktime:     // Access to global/static timezone data
+    case LibFunc_ctermid:    // Often uses a static buffer, potentially requires synchronization
+    case LibFunc_getlogin_r: // System call to get information
+    case LibFunc_getpwnam:   // Access to system database (e.g., /etc/passwd)
+
+      return false; // These functions are NOT sync-free.
+
+    default:
+      // All other functions (mathematical, string operations without memory allocation,
+      // I/O with _unlocked suffix, buffer operations like sprintf/sscanf, etc.)
+      // are considered sync-free.
+      return true;
+    }
+  }
+
   StringRef getName(LibFunc F) const {
     auto State = getState(F);
     if (State == TargetLibraryInfoImpl::Unavailable)
