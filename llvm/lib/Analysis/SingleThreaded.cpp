@@ -96,9 +96,8 @@ bool SingleThreadedInfo::runSTMTAnalysis() {
 
       // Check if the function is used in indirect calls
       // Find and mark functions whose addresses are taken as multi-threaded
-      if (F->hasAddressTaken()) {
-        LLVM_DEBUG(
-            dbgs() << "Function " << F->getName()
+      if (F->hasAddressTaken()) { // && FuncTypeNew[F] == "ST"
+        LLVM_DEBUG(dbgs() << "Function " << F->getName()
                    << " has its address taken - marking as multi-threaded\n");
         markFuncAndAllCalleesAsMultithreaded(F, *CGN, FuncTypeNew);
       } else {

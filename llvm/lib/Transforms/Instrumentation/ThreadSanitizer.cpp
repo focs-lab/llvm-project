@@ -729,6 +729,7 @@ void ThreadSanitizer::chooseInstructionsToInstrument(
 void ThreadSanitizer::eliminateDominatingInstr(
     SmallVectorImpl<InstructionInfo> &AllInstr, const DominatorTree *DT,
     AAResults *AA, const TargetLibraryInfo &TLI) {
+  LLVM_DEBUG(dbgs() << "\n=== Starting dominance-based analysis ===\n");
   if (AllInstr.empty())
     return;
 
@@ -752,23 +753,33 @@ void ThreadSanitizer::eliminateDominatingInstr(
     Value *CurrAddr = getLoadStorePointerOperand(CurrInst);
     const Value *CurrUnderlyingObj = getUnderlyingObject(CurrAddr);
 
+    LLVM_DEBUG(dbgs() << "\nAnalyzing instruction: " << *CurrInst
+                      << "\n  Underlying object: " << *CurrUnderlyingObj
+                      << "\n");
+
     DomTreeNode *CurrNode = DT->getNode(CurrBB);
     if (!CurrNode)
       continue;
 
     // Traverse up the dominator tree
-    DomTreeNode *IDomNode = CurrNode->getIDom();
+    // DomTreeNode *IDomNode = CurrNode->getIDom();
+    DomTreeNode *IDomNode = CurrNode;
     while (IDomNode && IDomNode->getBlock()) {
       BasicBlock *DomBB = IDomNode->getBlock();
+      LLVM_DEBUG(dbgs() << "DomBB = " << DomBB->getName() << "\n");
 
       // Look for a suitable dominating instrumented instruction in DomBB
       for (Instruction &PotentialDomInst : *DomBB) {
+        // This is needed when we consider dominating withing the same BB
+        // dbgs() << "Pot " << PotentialDomInst << "\n";
+        if (CurrBB == DomBB && &PotentialDomInst == CurrInst)
+          break;
+
         // Check if PotentialDomInst is dominating and instrumented
         auto It = InstToIndexInAll.find(&PotentialDomInst);
-        if (It == InstToIndexInAll.end() || ToRemove[It->second]) {
+        if (It == InstToIndexInAll.end() || ToRemove[It->second])
           // Not found in AllInstr or already marked for removal
           continue;
-        }
 
         const size_t DomIndex = It->second;
         InstructionInfo &DomII = AllInstr[DomIndex];
@@ -779,8 +790,8 @@ void ThreadSanitizer::eliminateDominatingInstr(
         // DT.dominates(DomInst, CurrInst) checks this.
         //
         // FIXME: Does it consider the case when DomBB == CurrBB? Do we need it?
-        if (!DT->dominates(DomInst, CurrInst))
-          continue;
+        // if (!DT->dominates(DomInst, CurrInst))
+          // continue;
 
         Value *DomAddr = getLoadStorePointerOperand(DomInst);
         Value *DomUnderlyingObj = getUnderlyingObject(DomAddr);
@@ -791,16 +802,18 @@ void ThreadSanitizer::eliminateDominatingInstr(
         if (CurrUnderlyingObj == DomUnderlyingObj ||
             (CurrUnderlyingObj && DomUnderlyingObj &&
              AA->isMustAlias(CurrAddr, DomAddr))) {
-          const bool CurrIsWr = isa<StoreInst>(*CurrInst) ||
-                                (CurrII.Flags & InstructionInfo::kCompoundRW);
-          const bool DomIsWr = isa<StoreInst>(*DomInst) ||
-                               (DomII.Flags & InstructionInfo::kCompoundRW);
+          const bool CurrIsWrite = isa<StoreInst>(*CurrInst) ||
+                                  (CurrII.Flags & InstructionInfo::kCompoundRW);
+          const bool DomIsWrite = isa<StoreInst>(*DomInst) ||
+                                  (DomII.Flags & InstructionInfo::kCompoundRW);
+          LLVM_DEBUG(dbgs() << "\tCurrIsWrite=" << CurrIsWrite
+                            << ", DomIsWrite=" << DomIsWrite << "\n");
 
-          // Check compatibility logic:
+          // Check compatibility logic (DomInst covers CurrInst):
           // 1. If DomInst is a write, it covers both read and write of
           // CurrInst.
           // 2. If DomInst is a read, it only covers a read of CurrInst.
-          if (DomIsWr || !CurrIsWr) { // DomInst covers CurrInst
+          if (DomIsWrite || !CurrIsWrite) {
             if (isPathClear(DomInst, CurrInst, DT, TLI)) {
               LLVM_DEBUG(dbgs()
                          << "TSAN: Omitting instrumentation for: " << *CurrInst
@@ -817,8 +830,19 @@ void ThreadSanitizer::eliminateDominatingInstr(
   next_instruction_to_prune:;
   }
 
-  // Do removal
+  LLVM_DEBUG(
+      dbgs() << "\n=== Final list of instructions and their status ===\n";
+      for (size_t i = 0; i < AllInstr.size(); ++i)
+        dbgs() << "[" << (ToRemove[i] ? "REMOVED" : "KEPT") << "]\t" <<
+          *AllInstr[i].Inst << "\n"
+      );
+
   if (RemovedCount > 0) {
+    LLVM_DEBUG(dbgs() << "\n=== Updating final instruction list ===\n"
+                      << "Original size: " << AllInstr.size() << "\n"
+                      << "Instructions to remove: " << RemovedCount << "\n"
+                      << "Remaining instructions: "
+                      << (AllInstr.size() - RemovedCount) << "\n");
     SmallVector<InstructionInfo, 8> NewAllInstr;
     NewAllInstr.reserve(AllInstr.size() - RemovedCount);
     for (size_t k = 0; k < AllInstr.size(); ++k)
@@ -826,6 +850,7 @@ void ThreadSanitizer::eliminateDominatingInstr(
         NewAllInstr.push_back(AllInstr[k]);
     AllInstr.swap(NewAllInstr);
     NumOmittedByDominance += RemovedCount; // Statistics
+    LLVM_DEBUG(dbgs() << "=== Dominance analysis complete ===\n");
   }
 }
 
@@ -840,6 +865,7 @@ bool ThreadSanitizer::isPathClear(Instruction *DomInst, Instruction *CurrInst,
   // 1. Check instructions in DomBB after DomInst
   for (const Instruction *I = DomInst->getNextNode();
        I && I->getParent() == DomBB; I = I->getNextNode()) {
+    // dbgs() << "\tisPathClear -- Checking 1: " << *I << "\n";
     if (I == CurrInst && DomBB == CurrBB)
       return true; // Reached target instruction in the same block
     if (isTSanDangerous(I, TLI))
@@ -847,8 +873,8 @@ bool ThreadSanitizer::isPathClear(Instruction *DomInst, Instruction *CurrInst,
   }
 
   // FIXME: double-check this
-  // if (DomBB == CurrBB)
-  //   return true; // The path is clear within the same block
+  if (DomBB == CurrBB)
+    return true; // The path is clear within the same block
 
   // 2. Check blocks on the dominance path between DomBB and CurrBB (excluding
   // DomBB, excluding CurrBB) Traverse up from CurrBB along the immediate
@@ -860,6 +886,7 @@ bool ThreadSanitizer::isPathClear(Instruction *DomInst, Instruction *CurrInst,
   while (IDomNode && IDomNode->getBlock() && IDomNode->getBlock() != DomBB) {
     BasicBlock *IntermediateBB = IDomNode->getBlock();
     for (const Instruction &InterI : *IntermediateBB) {
+      // dbgs() << "\tisPathClear -- Checking 2: " << InterI << "\n";
       if (isTSanDangerous(&InterI, TLI))
         return false;
     }
@@ -881,6 +908,7 @@ bool ThreadSanitizer::isPathClear(Instruction *DomInst, Instruction *CurrInst,
 
   // 3. Check instructions in CurrBB before CurrInst
   for (const Instruction &I : *CurrBB) {
+    // dbgs() << "\tisPathClear -- Checking 3: " << I << "\n";
     if (&I == CurrInst)
       break;
     if (isTSanDangerous(&I, TLI))
