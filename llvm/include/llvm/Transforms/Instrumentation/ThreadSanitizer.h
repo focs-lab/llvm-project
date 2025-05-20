@@ -40,5 +40,39 @@ struct ModuleThreadSanitizerPass
   static bool isRequired() { return true; }
 };
 
+//===----------------------------------------------------------------------===//
+// Sync-free analysis (needed by eliminateDominatingInstr)
+//===----------------------------------------------------------------------===//
+
+// Analysis pass to determine if functions are "dangerous" for TSan.
+// A function is dangerous if it contains TSan-dangerous instructions
+// or calls other dangerous functions.
+class SyncFreeInfo {
+public:
+  explicit SyncFreeInfo(Module &M_, CallGraph &CG_,
+                        const TargetLibraryInfo &TLI_);
+  bool invalidate(Module &, const PreservedAnalyses &,
+                  ModuleAnalysisManager::Invalidator &) { return false; }
+  bool isSyncFree(const Function *F) const {
+    const auto It = IsFuncDangerousMap.find(F);
+    return It != IsFuncDangerousMap.end() && !It->second;
+  }
+
+private:
+  SmallDenseMap<const Function *, bool, 8> IsFuncDangerousMap;
+  const Module &M;
+  const CallGraph &CG;
+  const TargetLibraryInfo &TLI;
+};
+
+class SyncFreeAnalysis : public AnalysisInfoMixin<SyncFreeAnalysis> {
+  friend AnalysisInfoMixin<SyncFreeAnalysis>;
+  static AnalysisKey Key;
+
+public:
+  using Result = SyncFreeInfo;
+  Result run(Module &M, ModuleAnalysisManager &AM);
+};
+
 } // namespace llvm
 #endif /* LLVM_TRANSFORMS_INSTRUMENTATION_THREADSANITIZER_H */
