@@ -107,17 +107,17 @@ LockOwnershipInfo::getLockCallInfo(const Instruction *I) const {
   if (!I)
     return {LockCallType::NONE, nullptr};
 
-  if (const auto *CS = dyn_cast<CallBase>(I)) {
-    Function *CalledFunc = CS->getCalledFunction();
+  if (const auto *CB = dyn_cast<CallBase>(I)) {
+    Function *CalledFunc = CB->getCalledFunction();
 
     if (!CalledFunc || !CalledFunc->isDeclaration() ||
-        (CS->getNumOperands() == 0))
+        (CalledFunc->arg_size() == 0))
       return {LockCallType::NONE, nullptr};
 
     if (isLockFunc(CalledFunc))
-      return {LockCallType::LOCK, getUnderlyingObject(CS->getArgOperand(0))};
+      return {LockCallType::LOCK, getUnderlyingObject(CB->getArgOperand(0))};
     if (isUnLockFunc(CalledFunc))
-      return {LockCallType::UNLOCK, getUnderlyingObject(CS->getArgOperand(0))};
+      return {LockCallType::UNLOCK, getUnderlyingObject(CB->getArgOperand(0))};
   }
   return {LockCallType::NONE, nullptr};
 }
@@ -401,33 +401,32 @@ bool LockOwnershipInfo::findLockUnlockFunctions() {
                                             "spinlock_lock",
                                             "acquire_lock",
                                             "rwlock_rdlock",
-                                            "rwlock_wrlock"};
+                                            "rwlock_wrlock",
+                                            "lock"};
 
   const SmallVector<StringRef> UnlockNames = {
       "pthread_mutex_unlock",  "pthread_spin_unlock",
       "pthread_rwlock_unlock", "mtx_unlock",
       "_mutex_unlock",         "spinlock_unlock",
-      "release_lock",          "unlock",
-      "rwlock_unlock"};
+      "release_lock",          "rwlock_unlock", "unlock"};
+  auto matchPatterns = [](const Function &F, StringRef CurrFuncName,
+                          const SmallVector<StringRef> &FuncNames,
+                          SmallPtrSet<const Function *, 4> &FuncSet) {
+    for (const auto &FuncName : FuncNames) {
+      if (CurrFuncName.contains(FuncName) && F.arg_size() > 0) {
+        FuncSet.insert(&F);
+        LLVM_DEBUG(dbgs() << "Found function matching pattern '" << FuncName
+                          << "': " << F.getName() << "\n");
+        return;
+      }
+    }
+  };
 
   // Find all functions that match lock/unlock patterns
   for (const Function &F : M.functions()) {
-    StringRef CurrFuncName = F.getName();
-
-    auto matchPatterns = [&CurrFuncName,
-                          &F](const SmallVector<StringRef> &FuncNames,
-                              SmallPtrSet<const Function *, 4> &FuncSet) {
-      for (const auto &FuncName : FuncNames) {
-        if (CurrFuncName.contains(FuncName)) {
-          FuncSet.insert(&F);
-          return;
-        }
-      }
-    };
-
     // Fill lock and unlock functions
-    matchPatterns(LockNames, LockFuncs);
-    matchPatterns(UnlockNames, UnlockFuncs);
+    matchPatterns(F, F.getName(), LockNames, LockFuncs);
+    matchPatterns(F, F.getName(), UnlockNames, UnlockFuncs);
   }
 
   if (LockFuncs.empty() || UnlockFuncs.empty()) {
