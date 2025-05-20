@@ -815,8 +815,8 @@ EscapeAnalysisInfo::getEscInfoCall(const Use &U, const Instruction *I) const {
   if (Call->isCallee(&U) || (!Call->isDataOperand(&U)))
     return {EscKindTy::NO_ESCAPE, std::nullopt};
 
-  if (const Function *CalledFunc = Call->getCalledFunction()) {
-    LLVM_DEBUG(dbgs() << "U: " << *U.get() << "\n");
+  if (const Function *CalledFunc = Call->getCalledFunction();
+      CalledFunc && Call->isArgOperand(&U)) {
     unsigned ArgIndex = Call->getArgOperandNo(&U);
     // Some functions can be taken as safe external calls
     if (isSafeExternalCall(CalledFunc->getName(), ArgIndex, NonEscapingFuncs))
