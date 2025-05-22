@@ -1554,9 +1554,9 @@ int ThreadSanitizer::getMemoryAccessFuncIndex(Type *OrigTy, Value *Addr,
 SyncFreeInfo::SyncFreeInfo(Module &M_, CallGraph &CG_,
                            AnalysisManager<Function> &AM)
     : M(M_), CG(CG_) {
-  dbgs() << "\n-----------------------------------------------\n";
-  dbgs() << "=== Starting sync-free analysis ===\n";
-  dbgs() << "Module: " << M.getName() << "\n";
+  LLVM_DEBUG(dbgs() << "\n-----------------------------------------------\n"
+                    << "=== Starting sync-free analysis ===\n"
+                    << "Module: " << M.getName() << "\n";);
 
   // Initialize all functions as not dangerous
   for (const Function &F : M)
@@ -1636,13 +1636,14 @@ SyncFreeInfo::SyncFreeInfo(Module &M_, CallGraph &CG_,
     }
   }
 
-  dbgs() << "\n=== Completed sync-free analysis ===\n";
-  dbgs() << "\nResults of sync-free analysis:\n";
-  for (const auto &Pair : IsFuncDangerousGlobal) {
-    // if (!Pair.first->isDeclaration())
-    dbgs() << "Function " << Pair.first->getName() << ": "
-           << (Pair.second ? "contains sync operations" : "is sync-free")
-           << "\n";
-  }
-  dbgs() << "-----------------------------------------------\n\n";
+  LLVM_DEBUG(dbgs() << "\n=== Completed sync-free analysis ===\n";
+             dbgs() << "\nResults of sync-free analysis:\n";
+             for (const auto &Pair : IsFuncDangerousGlobal)
+               // if (!Pair.first->isDeclaration())
+               dbgs() << "Function " << Pair.first->getName() << ": "
+                      << (Pair.second ? "contains sync operations"
+                                      : "is sync-free")
+                      << "\n";
+             dbgs()
+             << "-----------------------------------------------\n\n";);
 }
