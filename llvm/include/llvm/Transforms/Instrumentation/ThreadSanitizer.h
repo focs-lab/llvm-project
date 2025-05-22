@@ -17,6 +17,8 @@
 
 #include "llvm/IR/PassManager.h"
 
+#include <llvm/Analysis/TargetLibraryInfo.h>
+
 namespace llvm {
 class Function;
 class Module;
@@ -34,10 +36,12 @@ struct ThreadSanitizerPass : public PassInfoMixin<ThreadSanitizerPass> {
 /// A module pass for tsan instrumentation.
 ///
 /// Create ctor and init functions.
+class SyncFreeInfo;
 struct ModuleThreadSanitizerPass
   : public PassInfoMixin<ModuleThreadSanitizerPass> {
   PreservedAnalyses run(Module &M, ModuleAnalysisManager &AM);
   static bool isRequired() { return true; }
+  static std::unique_ptr<SyncFreeInfo> SFI;
 };
 
 //===----------------------------------------------------------------------===//
@@ -50,28 +54,18 @@ struct ModuleThreadSanitizerPass
 class SyncFreeInfo {
 public:
   explicit SyncFreeInfo(Module &M_, CallGraph &CG_,
-                        const TargetLibraryInfo &TLI_);
+                        AnalysisManager<Function> &AM);
   bool invalidate(Module &, const PreservedAnalyses &,
                   ModuleAnalysisManager::Invalidator &) { return false; }
   bool isSyncFree(const Function *F) const {
-    const auto It = IsFuncDangerousMap.find(F);
-    return It != IsFuncDangerousMap.end() && !It->second;
+    const auto It = IsFuncDangerousGlobal.find(F);
+    return It != IsFuncDangerousGlobal.end() && !It->second;
   }
 
 private:
-  SmallDenseMap<const Function *, bool, 8> IsFuncDangerousMap;
+  SmallDenseMap<const Function *, bool, 8> IsFuncDangerousGlobal;
   const Module &M;
   const CallGraph &CG;
-  const TargetLibraryInfo &TLI;
-};
-
-class SyncFreeAnalysis : public AnalysisInfoMixin<SyncFreeAnalysis> {
-  friend AnalysisInfoMixin<SyncFreeAnalysis>;
-  static AnalysisKey Key;
-
-public:
-  using Result = SyncFreeInfo;
-  Result run(Module &M, ModuleAnalysisManager &AM);
 };
 
 } // namespace llvm

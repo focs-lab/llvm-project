@@ -185,21 +185,17 @@ struct ThreadSanitizer {
       std::optional<EscapeAnalysisGlobalInfo *> EAIGlobal = std::nullopt,
       std::optional<LockOwnershipInfo *> LOI = std::nullopt,
       std::optional<SingleThreadedInfo *> STI = std::nullopt,
-      std::optional<SyncFreeInfo *> SFI = std::nullopt,
-      const DominatorTree *DT = nullptr,
-      AAResults *AA = nullptr);
+      const DominatorTree *DT = nullptr, AAResults *AA = nullptr);
 
   /// Checks if an instruction could potentially change ThreadSanitizer's
   /// synchronization state. This includes atomic operations, memory barriers,
   /// certain intrinsics and external calls.
   /// @param Inst The instruction to check
   /// @param TLI Target library info to identify standard library functions
-  /// @param SFI Optional sync-free analysis results to check called functions
   /// @return true if instruction could affect synchronization state, false if
   /// proven safe
-  static bool isInstrDangerous(
-      const Instruction *Inst, const TargetLibraryInfo &TLI,
-      const SyncFreeInfo *SFI = nullptr);
+  static bool isInstrDangerous(const Instruction *Inst,
+                               const TargetLibraryInfo &TLI);
 
 private:
   // Internal Instruction wrapper that contains more information about the
@@ -233,11 +229,9 @@ private:
       std::optional<SingleThreadedInfo*> STI = std::nullopt);
   void eliminateDominatingInstr(SmallVectorImpl<InstructionInfo> &AllInstr,
                                 const DominatorTree *DT, AAResults *AA,
-                                const TargetLibraryInfo &TLI,
-                                const SyncFreeInfo *SFI);
+                                const TargetLibraryInfo &TLI);
   bool isPathClear(Instruction *DomInst, Instruction *CurrInst,
-                   const DominatorTree *DT, const TargetLibraryInfo &TLI,
-                   const SyncFreeInfo *SFI);
+                   const DominatorTree *DT, const TargetLibraryInfo &TLI);
   bool addrPointsToConstantData(Value *Addr);
   int getMemoryAccessFuncIndex(Type *OrigTy, Value *Addr, const DataLayout &DL);
   void InsertRuntimeIgnores(Function &F);
@@ -289,25 +283,16 @@ PreservedAnalyses ThreadSanitizerPass::run(Function &F,
                                            FunctionAnalysisManager &FAM) {
   ThreadSanitizer TSan;
 
-  DominatorTree *DT = nullptr;
-  AAResults *AA = nullptr;
-
-  if (ClUseDominanceAnalysis) {
-    DT = &FAM.getResult<DominatorTreeAnalysis>(F);
-    AA = &FAM.getResult<AAManager>(F);
-  }
-
   if (ClUseEscapeAnalysis) {
     if (TSan.sanitizeFunction(F, FAM.getResult<TargetLibraryAnalysis>(F),
                               FAM.getResult<EscapeAnalysis>(F), std::nullopt,
-                              std::nullopt, std::nullopt, std::nullopt, DT, AA))
+                              std::nullopt, std::nullopt, nullptr, nullptr))
       return PreservedAnalyses::none();
   }
 
   std::optional<EscapeAnalysisGlobalInfo *> EAGI = std::nullopt;
   std::optional<LockOwnershipInfo *> LOI = std::nullopt;
   std::optional<SingleThreadedInfo *> STI = std::nullopt;
-  std::optional<SyncFreeInfo *> SFI = std::nullopt;
 
   const auto &MAMProxy = FAM.getResult<ModuleAnalysisManagerFunctionProxy>(F);
 
@@ -317,15 +302,22 @@ PreservedAnalyses ThreadSanitizerPass::run(Function &F,
     STI = MAMProxy.getCachedResult<SingleThreaded>(*F.getParent());
   if (ClUseLockOwnershipAnalysis || ClUseLockOwnershipAnalysisUpperbound)
     LOI = MAMProxy.getCachedResult<LockOwnership>(*F.getParent());
-  if (ClUseDominanceAnalysis)
-    SFI = MAMProxy.getCachedResult<SyncFreeAnalysis>(*F.getParent());
+
+  DominatorTree *DT = nullptr;
+  AAResults *AA = nullptr;
+  if (ClUseDominanceAnalysis) {
+    DT = &FAM.getResult<DominatorTreeAnalysis>(F);
+    AA = &FAM.getResult<AAManager>(F);
+  }
 
   if (TSan.sanitizeFunction(F, FAM.getResult<TargetLibraryAnalysis>(F),
-                            std::nullopt, EAGI, LOI, STI, SFI, DT, AA))
+                            std::nullopt, EAGI, LOI, STI, DT, AA))
     return PreservedAnalyses::none();
 
   return PreservedAnalyses::all();
 }
+
+std::unique_ptr<SyncFreeInfo> ModuleThreadSanitizerPass::SFI;
 
 PreservedAnalyses ModuleThreadSanitizerPass::run(Module &M,
                                                  ModuleAnalysisManager &MAM) {
@@ -351,7 +343,9 @@ PreservedAnalyses ModuleThreadSanitizerPass::run(Module &M,
   if (ClUseDominanceAnalysis) {
     dbgs() << "-- Using Dominance Analysis for Module " << M.getName()
            << " --\n";
-    MAM.registerPass([&] { return SyncFreeAnalysis(); });
+    SFI = std::make_unique<SyncFreeInfo>(
+        M, MAM.getResult<CallGraphAnalysis>(M),
+        MAM.getResult<FunctionAnalysisManagerModuleProxy>(M).getManager());
   }
 
   if (ClUseLockOwnershipAnalysis && ClUseLockOwnershipAnalysisUpperbound)
@@ -749,7 +743,7 @@ void ThreadSanitizer::chooseInstructionsToInstrument(
 // TODO: check if we consider the case when I1 dominates I2 within the _same_ BB
 void ThreadSanitizer::eliminateDominatingInstr(
     SmallVectorImpl<InstructionInfo> &AllInstr, const DominatorTree *DT,
-    AAResults *AA, const TargetLibraryInfo &TLI, const SyncFreeInfo *SFI) {
+    AAResults *AA, const TargetLibraryInfo &TLI) {
   LLVM_DEBUG(dbgs() << "\n=== Starting dominance-based analysis ===\n");
   if (AllInstr.empty())
     return;
@@ -813,8 +807,8 @@ void ThreadSanitizer::eliminateDominatingInstr(
         // if (!DT->dominates(DomInst, CurrInst))
           // continue;
 
-        Value *DomAddr = getLoadStorePointerOperand(DomInst);
-        Value *DomUnderlyingObj = getUnderlyingObject(DomAddr);
+        const Value *DomAddr = getLoadStorePointerOperand(DomInst);
+        const Value *DomUnderlyingObj = getUnderlyingObject(DomAddr);
 
         // FIXME: Check for the same object (or MustAlias)
         // For simplicity, using getUnderlyingObject, but AA.isMustAlias would
@@ -832,7 +826,7 @@ void ThreadSanitizer::eliminateDominatingInstr(
           // CurrInst.
           // 2. If DomInst is a read, it only covers a read of CurrInst.
           if (DomIsWrite || !CurrIsWrite) {
-            if (isPathClear(DomInst, CurrInst, DT, TLI, SFI)) {
+            if (isPathClear(DomInst, CurrInst, DT, TLI)) {
               LLVM_DEBUG(dbgs()
                          << "TSAN: Omitting instrumentation for: " << *CurrInst
                          << " (covered by: " << *DomInst << ")\n");
@@ -885,12 +879,10 @@ void ThreadSanitizer::eliminateDominatingInstr(
 /// @param CurrInst The current instruction we may be able to skip
 /// @param DT Dominator tree for path traversal
 /// @param TLI Target library info for checking standard functions
-/// @param SFI Optional sync-free analysis results
 /// @return true if no dangerous instructions exist between DomInst and CurrInst
 bool ThreadSanitizer::isPathClear(Instruction *DomInst, Instruction *CurrInst,
                                   const DominatorTree *DT,
-                                  const TargetLibraryInfo &TLI,
-                                  const SyncFreeInfo *SFI) {
+                                  const TargetLibraryInfo &TLI) {
   const BasicBlock *DomBB = DomInst->getParent();
   BasicBlock *CurrBB = CurrInst->getParent();
 
@@ -900,7 +892,7 @@ bool ThreadSanitizer::isPathClear(Instruction *DomInst, Instruction *CurrInst,
     // dbgs() << "\tisPathClear -- Checking 1: " << *I << "\n";
     if (I == CurrInst && DomBB == CurrBB)
       return true; // Reached target instruction in the same block
-    if (isInstrDangerous(I, TLI, SFI))
+    if (isInstrDangerous(I, TLI))
       return false;
   }
 
@@ -919,7 +911,7 @@ bool ThreadSanitizer::isPathClear(Instruction *DomInst, Instruction *CurrInst,
     BasicBlock *IntermediateBB = IDomNode->getBlock();
     for (const Instruction &InterI : *IntermediateBB) {
       // dbgs() << "\tisPathClear -- Checking 2: " << InterI << "\n";
-      if (isInstrDangerous(&InterI, TLI, SFI))
+      if (isInstrDangerous(&InterI, TLI))
         return false;
     }
     IDomNode = IDomNode->getIDom();
@@ -943,7 +935,7 @@ bool ThreadSanitizer::isPathClear(Instruction *DomInst, Instruction *CurrInst,
     // dbgs() << "\tisPathClear -- Checking 3: " << I << "\n";
     if (&I == CurrInst)
       break;
-    if (isInstrDangerous(&I, TLI, SFI))
+    if (isInstrDangerous(&I, TLI))
       return false;
   }
 
@@ -962,9 +954,8 @@ static bool isTsanAtomic(const Instruction *I) {
 
 // Helper function to check for "dangerous" instructions
 // Returns true if the instruction might change TSan's synchronization state.
-bool ThreadSanitizer::isInstrDangerous(
-    const Instruction *Inst, const TargetLibraryInfo &TLI,
-    const SyncFreeInfo *SFI) {
+bool ThreadSanitizer::isInstrDangerous(const Instruction *Inst,
+                                       const TargetLibraryInfo &TLI) {
   if (!Inst)
     return false;
 
@@ -993,8 +984,8 @@ bool ThreadSanitizer::isInstrDangerous(
         return false;
 
       // Check in sync-free analysis previously done
-      if (SFI)
-        return !SFI->isSyncFree(Callee);
+      if (ModuleThreadSanitizerPass::SFI)
+        return !ModuleThreadSanitizerPass::SFI->isSyncFree(Callee);
 
       // Conservatively: any non-intrinsic and not explicitly safe call is
       // dangerous
@@ -1005,7 +996,6 @@ bool ThreadSanitizer::isInstrDangerous(
   }
 
   // ... Other potentially dangerous instructions (architecture-specific, etc.)
-
   return false;
 }
 
@@ -1024,9 +1014,7 @@ bool ThreadSanitizer::sanitizeFunction(
     const std::optional<EscapeAnalysisInfo> &EAI,
     std::optional<EscapeAnalysisGlobalInfo *> EAIGlobal,
     std::optional<LockOwnershipInfo *> LOI,
-    std::optional<SingleThreadedInfo *> STI,
-    std::optional<SyncFreeInfo *> SFI,
-    const DominatorTree *DT,
+    std::optional<SingleThreadedInfo *> STI, const DominatorTree *DT,
     AAResults *AA) {
   LLVM_DEBUG(dbgs() << "\n%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%"
                        "%%%%%%%%%%%%%%%%%\n"
@@ -1148,7 +1136,7 @@ bool ThreadSanitizer::sanitizeFunction(
   }
 
   if (ClUseDominanceAnalysis)
-    eliminateDominatingInstr(AllLoadsAndStores, DT, AA, TLI, SFI.value());
+    eliminateDominatingInstr(AllLoadsAndStores, DT, AA, TLI);
 
   //////////////////////////////////////////////////////////////////////////////
   // This is for disabling/enabling TSan instrumentation
@@ -1564,15 +1552,15 @@ int ThreadSanitizer::getMemoryAccessFuncIndex(Type *OrigTy, Value *Addr,
 /// @param CG_ The call graph for the module
 /// @param TLI_ Target library info for checking standard library functions
 SyncFreeInfo::SyncFreeInfo(Module &M_, CallGraph &CG_,
-                           const TargetLibraryInfo &TLI_)
-    : M(M_), CG(CG_), TLI(TLI_) {
+                           AnalysisManager<Function> &AM)
+    : M(M_), CG(CG_) {
   dbgs() << "\n-----------------------------------------------\n";
   dbgs() << "=== Starting sync-free analysis ===\n";
   dbgs() << "Module: " << M.getName() << "\n";
 
   // Initialize all functions as not dangerous
   for (const Function &F : M)
-    IsFuncDangerousMap[&F] = false;
+    IsFuncDangerousGlobal[&F] = false;
 
   // Analyze strongly connected components (SCCs) of the call graph in reverse
   // topological order. This ensures we process callees before their callers:
@@ -1583,70 +1571,78 @@ SyncFreeInfo::SyncFreeInfo(Module &M_, CallGraph &CG_,
   for (auto SCCI = scc_begin(&CG); !SCCI.isAtEnd(); ++SCCI) {
     const auto &CurrentSCC = *SCCI;
 
-    SmallDenseMap<const Function *, bool, 8> FuncsInSCCMap, FuncsInSCCMapOld;
-
     // Init by non-dangerous
     for (const CallGraphNode *CGNode : CurrentSCC) {
       const Function *F = CGNode->getFunction();
-      if (!F || F->isDeclaration()) continue;
-      FuncsInSCCMap[F] = FuncsInSCCMapOld[F] = false;
+      if (!F || F->isDeclaration())
+        continue;
+      IsFuncDangerousGlobal[F] = false;
     }
 
     // Check if any function in the SCC calls contains an intrinsically
     // dangerous instruction.
-    do {
-      FuncsInSCCMapOld = FuncsInSCCMap;
-      for (const CallGraphNode *CGNode : CurrentSCC) {
-        const Function *F = CGNode->getFunction();
-        if (!F || F->isDeclaration()) continue;
+    // do {
+    // IsFuncDangerousSCCOld = IsFuncDangerousGlobal;
+    bool AnySCCFuncDangerous = false;
+    for (const CallGraphNode *CGNode : CurrentSCC) {
+      Function *F = CGNode->getFunction();
+      if (!F || F->isDeclaration())
+        continue;
+      LLVM_DEBUG(dbgs() << "\nChecking function: " << F->getName() << "\n");
 
-        // If it's not sync-free already, it will never become sync-free
-        if (const auto It = FuncsInSCCMap.find(F);
-            It != FuncsInSCCMap.end() && It->second)
-          continue;
+      // If it's not sync-free already, it will never become sync-free
+      if (const auto It = IsFuncDangerousGlobal.find(F);
+          It != IsFuncDangerousGlobal.end() && It->second)
+        continue;
 
-        for (const Instruction &I: instructions(F)) {
-          // Check if it's a call, and we already know the status of the callee
-          if (const CallInst *CI = dyn_cast<CallInst>(&I)) {
-            if (const Function *Callee = CI->getCalledFunction()) {
-              // First check in FuncsInSSCMap (current SCC)
-              if (const auto It = FuncsInSCCMap.find(Callee);
-                  It != FuncsInSCCMap.end()) {
-                FuncsInSCCMap[F] = It->second;
-                break;
-              }
+      for (const Instruction &I : instructions(F)) {
+        LLVM_DEBUG(dbgs() << "Checking instruction: " << I << "\n");
+        // Check if it's a call, and we already know the status of the callee
+        if (const CallInst *CI = dyn_cast<CallInst>(&I)) {
+          if (const Function *Callee = CI->getCalledFunction()) {
+            // First check in FuncsInSSCMap (current SCC)
+            if (std::any_of(CurrentSCC.begin(), CurrentSCC.end(),
+                            [&Callee](const CallGraphNode *CGN) {
+                              return CGN->getFunction() == Callee;
+                            }))
+              continue;
 
-              // If not in the current SCC, check global IsFuncDangerousMap
-              if (const auto It2 = IsFuncDangerousMap.find(Callee);
-                  It2 != IsFuncDangerousMap.end()) {
-                FuncsInSCCMap[F] = It2->second;
-                break;
-              }
+            // If not in the current SCC, check global IsFuncDangerousMap
+            if (const auto It = IsFuncDangerousGlobal.find(Callee);
+                It != IsFuncDangerousGlobal.end() && It->second) {
+              AnySCCFuncDangerous = true;
+              break;
             }
           }
+        }
 
-          if (ThreadSanitizer::isInstrDangerous(&I, TLI)) {
-            FuncsInSCCMap[F] = true;
-            break;
-          }
+        if (ThreadSanitizer::isInstrDangerous(
+                &I, AM.getResult<TargetLibraryAnalysis>(*F))) {
+          AnySCCFuncDangerous = true;
+          break;
         }
       }
-    } while (FuncsInSCCMap != FuncsInSCCMapOld);
+    }
 
-    // Update the global map with results from this SCC
-    // for (const auto &[F, IsDangerous] : FuncsInSSCMap)
-    //   IsFuncDangerousMap[F] = IsDangerous;
-    IsFuncDangerousMap.insert(FuncsInSCCMap.begin(), FuncsInSCCMap.end());
+    // If any function in SCC is dangerous, mark all functions in SCC as
+    // dangerous
+    if (AnySCCFuncDangerous) {
+      for (const CallGraphNode *CGNode : CurrentSCC) {
+        const Function *F = CGNode->getFunction();
+        if (!F || F->isDeclaration())
+          continue;
+        IsFuncDangerousGlobal[F] = true;
+      }
+    }
   }
 
   dbgs() << "\n=== Completed sync-free analysis ===\n";
+  dbgs() << "\nResults of sync-free analysis:\n";
+  for (const auto &Pair : IsFuncDangerousGlobal) {
+    // if (!Pair.first->isDeclaration())
+    dbgs() << "Function " << Pair.first->getName() << ": "
+           << (Pair.second ? "contains sync operations" : "is sync-free")
+           << "\n";
+  }
   dbgs() << "-----------------------------------------------\n\n";
 }
-
-SyncFreeAnalysis::Result SyncFreeAnalysis::run(Module &M, ModuleAnalysisManager &AM) {
-  CallGraph &CG = AM.getResult<CallGraphAnalysis>(M);
-  TargetLibraryInfo &TLI = AM.getResult<TargetLibraryAnalysis>(M);
-  return Result(M, CG, TLI);
-}
-
-AnalysisKey SyncFreeAnalysis::Key;
