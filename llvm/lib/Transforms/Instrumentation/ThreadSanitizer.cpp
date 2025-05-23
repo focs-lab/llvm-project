@@ -352,11 +352,12 @@ PreservedAnalyses ModuleThreadSanitizerPass::run(Module &M,
     dbgs() << "Only one from tsan-use-lock-ownership or "
               "tsan-use-lock-ownership-upperbound in one time";
 
-  // FIXME: Do we need it?
+  if (ClUseEscapeAnalysisGlobal)
+    MAM.getResult<EscapeAnalysisGlobal>(M);
+
   if (ClUseLockOwnershipAnalysis || ClUseLockOwnershipAnalysisUpperbound)
     MAM.getResult<LockOwnership>(M);
 
-  // FIXME: Do we need it?
   if (ClUseSingleThreadedAnalysis || ClUseSWMRAnalysis)
     MAM.getResult<SingleThreaded>(M);
 
