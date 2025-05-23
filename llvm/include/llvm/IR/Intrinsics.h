@@ -249,6 +249,12 @@ namespace Intrinsic {
   // or of the wrong kind will be renamed by adding ".renamed" to the name.
   std::optional<Function *> remangleIntrinsicFunction(Function *F);
 
+  /// Returns true if the given intrinsic is sync-free, meaning it does not
+  /// involve synchronization primitives or operations that require thread
+  /// coordination. Sync-free intrinsics are generally safe to execute
+  /// concurrently without additional synchronization.
+  bool isIntrinsicSyncFree(Intrinsic::ID);
+
 } // End Intrinsic namespace
 
 } // End llvm namespace

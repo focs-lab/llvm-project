@@ -381,6 +381,7 @@ LockOwnershipInfo::LockOwnershipInfo(CallGraph &CG_, Module &MM_,
   doIPALockOwnershipAnalysis(true);
 
   findProtectedGlobalVariables(STI);
+  writeSummary();
 }
 
 bool LockOwnershipInfo::findLockUnlockFunctions() {

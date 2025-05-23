@@ -17,6 +17,8 @@
 
 #include "llvm/IR/PassManager.h"
 
+#include <llvm/Analysis/TargetLibraryInfo.h>
+
 namespace llvm {
 class Function;
 class Module;
@@ -34,10 +36,36 @@ struct ThreadSanitizerPass : public PassInfoMixin<ThreadSanitizerPass> {
 /// A module pass for tsan instrumentation.
 ///
 /// Create ctor and init functions.
+class SyncFreeInfo;
 struct ModuleThreadSanitizerPass
   : public PassInfoMixin<ModuleThreadSanitizerPass> {
   PreservedAnalyses run(Module &M, ModuleAnalysisManager &AM);
   static bool isRequired() { return true; }
+  static std::unique_ptr<SyncFreeInfo> SFI;
+};
+
+//===----------------------------------------------------------------------===//
+// Sync-free analysis (needed by eliminateDominatingInstr)
+//===----------------------------------------------------------------------===//
+
+// Analysis pass to determine if functions are "dangerous" for TSan.
+// A function is dangerous if it contains TSan-dangerous instructions
+// or calls other dangerous functions.
+class SyncFreeInfo {
+public:
+  explicit SyncFreeInfo(Module &M_, CallGraph &CG_,
+                        AnalysisManager<Function> &AM);
+  bool invalidate(Module &, const PreservedAnalyses &,
+                  ModuleAnalysisManager::Invalidator &) { return false; }
+  bool isSyncFree(const Function *F) const {
+    const auto It = IsFuncDangerousGlobal.find(F);
+    return It != IsFuncDangerousGlobal.end() && !It->second;
+  }
+
+private:
+  SmallDenseMap<const Function *, bool, 8> IsFuncDangerousGlobal;
+  const Module &M;
+  const CallGraph &CG;
 };
 
 } // namespace llvm

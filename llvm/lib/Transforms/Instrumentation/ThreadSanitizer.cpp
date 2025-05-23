@@ -33,6 +33,7 @@
 #include "llvm/IR/DataLayout.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/IRBuilder.h"
+#include "llvm/IR/InstIterator.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/IntrinsicInst.h"
 #include "llvm/IR/Intrinsics.h"
@@ -50,6 +51,7 @@
 #include "llvm/Transforms/Utils/Local.h"
 #include "llvm/Transforms/Utils/ModuleUtils.h"
 
+#include <llvm/ADT/SCCIterator.h>
 #include <llvm/Analysis/AliasAnalysis.h>
 
 using namespace llvm;
@@ -116,6 +118,11 @@ static cl::opt<bool> ClUseSWMRAnalysis(
     cl::desc("Use single-writer/multiple-reader analysis to eliminate "
              "extra instrumentation"),
     cl::Hidden);
+static cl::opt<bool> ClUseDominanceAnalysis(
+    "tsan-use-dominance-analysis", cl::init(false),
+    cl::desc(
+        "Eliminate duplicating instructions which dominate given instruction"),
+    cl::Hidden);
 
 STATISTIC(NumInstrumentedReads, "Number of instrumented reads");
 STATISTIC(NumInstrumentedWrites, "Number of instrumented writes");
@@ -141,6 +148,7 @@ STATISTIC(NumEscVolatile, "Number of escapes due to volatile");
 STATISTIC(NumEscOther, "Number of escapes due to other reasons");
 STATISTIC(NumEscInvalid, "Number of escapes due to invalid reasons");
 STATISTIC(NumEscCall, "Number of escapes due to escaped calls");
+STATISTIC(NumOmittedByDominance, "Number of accesses ignored due to dominance");
 
 const char kTsanModuleCtorName[] = "tsan.module_ctor";
 const char kTsanInitName[] = "__tsan_init";
@@ -174,9 +182,20 @@ struct ThreadSanitizer {
   bool sanitizeFunction(
       Function &F, const TargetLibraryInfo &TLI,
       const std::optional<EscapeAnalysisInfo> &EAI,
-      std::optional<EscapeAnalysisGlobalInfo*> EAIGlobal = std::nullopt,
-      std::optional<LockOwnershipInfo*> LOI = std::nullopt,
-      std::optional<SingleThreadedInfo*> STI = std::nullopt);
+      std::optional<EscapeAnalysisGlobalInfo *> EAIGlobal = std::nullopt,
+      std::optional<LockOwnershipInfo *> LOI = std::nullopt,
+      std::optional<SingleThreadedInfo *> STI = std::nullopt,
+      const DominatorTree *DT = nullptr, AAResults *AA = nullptr);
+
+  /// Checks if an instruction could potentially change ThreadSanitizer's
+  /// synchronization state. This includes atomic operations, memory barriers,
+  /// certain intrinsics and external calls.
+  /// @param Inst The instruction to check
+  /// @param TLI Target library info to identify standard library functions
+  /// @return true if instruction could affect synchronization state, false if
+  /// proven safe
+  static bool isInstrDangerous(const Instruction *Inst,
+                               const TargetLibraryInfo &TLI);
 
 private:
   // Internal Instruction wrapper that contains more information about the
@@ -208,6 +227,11 @@ private:
       std::optional<EscapeAnalysisGlobalInfo*> EAIGlobal = std::nullopt,
       std::optional<LockOwnershipInfo*> LOI = std::nullopt,
       std::optional<SingleThreadedInfo*> STI = std::nullopt);
+  void eliminateDominatingInstr(SmallVectorImpl<InstructionInfo> &AllInstr,
+                                const DominatorTree *DT, AAResults *AA,
+                                const TargetLibraryInfo &TLI);
+  bool isPathClear(Instruction *DomInst, Instruction *CurrInst,
+                   const DominatorTree *DT, const TargetLibraryInfo &TLI);
   bool addrPointsToConstantData(Value *Addr);
   int getMemoryAccessFuncIndex(Type *OrigTy, Value *Addr, const DataLayout &DL);
   void InsertRuntimeIgnores(Function &F);
@@ -261,7 +285,8 @@ PreservedAnalyses ThreadSanitizerPass::run(Function &F,
 
   if (ClUseEscapeAnalysis) {
     if (TSan.sanitizeFunction(F, FAM.getResult<TargetLibraryAnalysis>(F),
-                              FAM.getResult<EscapeAnalysis>(F)))
+                              FAM.getResult<EscapeAnalysis>(F), std::nullopt,
+                              std::nullopt, std::nullopt, nullptr, nullptr))
       return PreservedAnalyses::none();
   }
 
@@ -278,12 +303,21 @@ PreservedAnalyses ThreadSanitizerPass::run(Function &F,
   if (ClUseLockOwnershipAnalysis || ClUseLockOwnershipAnalysisUpperbound)
     LOI = MAMProxy.getCachedResult<LockOwnership>(*F.getParent());
 
+  DominatorTree *DT = nullptr;
+  AAResults *AA = nullptr;
+  if (ClUseDominanceAnalysis) {
+    DT = &FAM.getResult<DominatorTreeAnalysis>(F);
+    AA = &FAM.getResult<AAManager>(F);
+  }
+
   if (TSan.sanitizeFunction(F, FAM.getResult<TargetLibraryAnalysis>(F),
-                            std::nullopt, EAGI, LOI, STI))
+                            std::nullopt, EAGI, LOI, STI, DT, AA))
     return PreservedAnalyses::none();
 
   return PreservedAnalyses::all();
 }
+
+std::unique_ptr<SyncFreeInfo> ModuleThreadSanitizerPass::SFI;
 
 PreservedAnalyses ModuleThreadSanitizerPass::run(Module &M,
                                                  ModuleAnalysisManager &MAM) {
@@ -299,21 +333,27 @@ PreservedAnalyses ModuleThreadSanitizerPass::run(Module &M,
     dbgs() << "-- Using Lock Ownership Analysis for Module " << M.getName()
            << " --\n";
 
-  if (ClUseSingleThreadedAnalysis) {
+  if (ClUseSingleThreadedAnalysis)
     dbgs() << "-- Using Single / Multiple Threaded Analysis for Module "
            << M.getName() << " --\n";
-    LLVM_DEBUG(dbgs() << "Enabling SingleThreaded analysis\n");
-  }
 
   if (ClUseSWMRAnalysis)
     dbgs() << "-- Using SWMR Analysis for Module " << M.getName() << " --\n";
 
-  if (ClUseEscapeAnalysisGlobal)
-    MAM.getResult<EscapeAnalysisGlobal>(M);
+  if (ClUseDominanceAnalysis) {
+    dbgs() << "-- Using Dominance Analysis for Module " << M.getName()
+           << " --\n";
+    SFI = std::make_unique<SyncFreeInfo>(
+        M, MAM.getResult<CallGraphAnalysis>(M),
+        MAM.getResult<FunctionAnalysisManagerModuleProxy>(M).getManager());
+  }
 
   if (ClUseLockOwnershipAnalysis && ClUseLockOwnershipAnalysisUpperbound)
     dbgs() << "Only one from tsan-use-lock-ownership or "
               "tsan-use-lock-ownership-upperbound in one time";
+
+  if (ClUseEscapeAnalysisGlobal)
+    MAM.getResult<EscapeAnalysisGlobal>(M);
 
   if (ClUseLockOwnershipAnalysis || ClUseLockOwnershipAnalysisUpperbound)
     MAM.getResult<LockOwnership>(M);
@@ -701,6 +741,208 @@ void ThreadSanitizer::chooseInstructionsToInstrument(
   Local.clear();
 }
 
+// TODO: check if we consider the case when I1 dominates I2 within the _same_ BB
+void ThreadSanitizer::eliminateDominatingInstr(
+    SmallVectorImpl<InstructionInfo> &AllInstr, const DominatorTree *DT,
+    AAResults *AA, const TargetLibraryInfo &TLI) {
+  LLVM_DEBUG(dbgs() << "\n=== Starting dominance-based analysis ===\n");
+  if (AllInstr.empty())
+    return;
+
+  // For efficiency, create a map from Instruction* to its index in AllInstr.
+  // This helps to quickly find dominating instructions in AllInstr.
+  DenseMap<Instruction *, size_t> InstToIndexInAll;
+  for (size_t i = 0; i < AllInstr.size(); ++i)
+    if (AllInstr[i].Inst) // Ensure the instruction hasn't been removed
+      InstToIndexInAll[AllInstr[i].Inst] = i;
+
+  SmallVector<bool, 16> ToRemove(AllInstr.size(), false);
+  unsigned RemovedCount = 0;
+
+  for (size_t i = 0; i < AllInstr.size(); ++i) {
+    if (ToRemove[i])
+      continue; // Already marked for removal
+
+    const InstructionInfo &CurrII = AllInstr[i];
+    Instruction *CurrInst = CurrII.Inst;
+    const BasicBlock *CurrBB = CurrInst->getParent();
+    Value *CurrAddr = getLoadStorePointerOperand(CurrInst);
+    const Value *CurrUnderlyingObj = getUnderlyingObject(CurrAddr);
+
+    LLVM_DEBUG(dbgs() << "\nAnalyzing instruction: " << *CurrInst
+                      << "\n  Underlying object: " << *CurrUnderlyingObj
+                      << "\n");
+
+    DomTreeNode *CurrNode = DT->getNode(CurrBB);
+    if (!CurrNode)
+      continue;
+
+    // Traverse up the dominator tree
+    // DomTreeNode *IDomNode = CurrNode->getIDom();
+    DomTreeNode *IDomNode = CurrNode;
+    while (IDomNode && IDomNode->getBlock()) {
+      BasicBlock *DomBB = IDomNode->getBlock();
+
+      // Look for a suitable dominating instrumented instruction in DomBB
+      for (Instruction &PotentialDomInst : *DomBB) {
+        // This is needed when we consider dominating withing the same BB
+        // dbgs() << "Pot " << PotentialDomInst << "\n";
+        if (CurrBB == DomBB && &PotentialDomInst == CurrInst)
+          break;
+
+        // Check if PotentialDomInst is dominating and instrumented
+        auto It = InstToIndexInAll.find(&PotentialDomInst);
+        if (It == InstToIndexInAll.end() || ToRemove[It->second])
+          // Not found in AllInstr or already marked for removal
+          continue;
+
+        const size_t DomIndex = It->second;
+        InstructionInfo &DomII = AllInstr[DomIndex];
+        Instruction *DomInst = DomII.Inst;
+
+        // Dominance condition: DomInst must be in a block that dominates
+        // CurrInst, and DomInst itself must execute before CurrInst.
+        // DT.dominates(DomInst, CurrInst) checks this.
+        //
+        // FIXME: Does it consider the case when DomBB == CurrBB? Do we need it?
+        // if (!DT->dominates(DomInst, CurrInst))
+          // continue;
+
+        const Value *DomAddr = getLoadStorePointerOperand(DomInst);
+        const Value *DomUnderlyingObj = getUnderlyingObject(DomAddr);
+
+        // FIXME: Check for the same object (or MustAlias)
+        // For simplicity, using getUnderlyingObject, but AA.isMustAlias would
+        // be better.
+        if (CurrUnderlyingObj == DomUnderlyingObj ||
+            (CurrUnderlyingObj && DomUnderlyingObj &&
+             AA->isMustAlias(CurrAddr, DomAddr))) {
+          const bool CurrIsWrite = isa<StoreInst>(*CurrInst) ||
+                                  (CurrII.Flags & InstructionInfo::kCompoundRW);
+          const bool DomIsWrite = isa<StoreInst>(*DomInst) ||
+                                  (DomII.Flags & InstructionInfo::kCompoundRW);
+
+          // Check compatibility logic (DomInst covers CurrInst):
+          // 1. If DomInst is a write, it covers both read and write of
+          // CurrInst.
+          // 2. If DomInst is a read, it only covers a read of CurrInst.
+          if (DomIsWrite || !CurrIsWrite) {
+            if (isPathClear(DomInst, CurrInst, DT, TLI)) {
+              LLVM_DEBUG(dbgs()
+                         << "TSAN: Omitting instrumentation for: " << *CurrInst
+                         << " (covered by: " << *DomInst << ")\n");
+              ToRemove[i] = true;
+              RemovedCount++;
+              goto next_instruction_to_prune;
+            }
+          }
+        }
+      }
+      IDomNode = IDomNode->getIDom();
+    }
+  next_instruction_to_prune:;
+  }
+
+  LLVM_DEBUG(
+      dbgs() << "\n=== Final list of instructions and their status ===\n";
+      for (size_t i = 0; i < AllInstr.size(); ++i)
+        dbgs() << "[" << (ToRemove[i] ? "REMOVED" : "KEPT") << "]\t" <<
+          *AllInstr[i].Inst << "\n"
+      );
+
+  if (RemovedCount > 0) {
+    LLVM_DEBUG(dbgs() << "\n=== Updating final instruction list ===\n"
+                      << "Original size: " << AllInstr.size() << "\n"
+                      << "Instructions to remove: " << RemovedCount << "\n"
+                      << "Remaining instructions: "
+                      << (AllInstr.size() - RemovedCount) << "\n");
+    SmallVector<InstructionInfo, 8> NewAllInstr;
+    NewAllInstr.reserve(AllInstr.size() - RemovedCount);
+    for (size_t k = 0; k < AllInstr.size(); ++k)
+      if (!ToRemove[k])
+        NewAllInstr.push_back(AllInstr[k]);
+    AllInstr.swap(NewAllInstr);
+    NumOmittedByDominance += RemovedCount; // Statistics
+    LLVM_DEBUG(dbgs() << "=== Dominance analysis complete ===\n");
+  }
+}
+
+/// Checks if there are any synchronization-affecting instructions on execution paths
+/// between two instructions. Used to determine if we can skip instrumenting CurrInst
+/// when it is dominated by DomInst.
+///
+/// Walks all paths between DomInst and CurrInst in the dominator tree checking for:
+/// 1. Instructions after DomInst in its basic block
+/// 2. All instructions in intermediate basic blocks
+/// 3. Instructions before CurrInst in its basic block
+///
+/// @param DomInst The dominating instruction that handles synchronization
+/// @param CurrInst The current instruction we may be able to skip
+/// @param DT Dominator tree for path traversal
+/// @param TLI Target library info for checking standard functions
+/// @return true if no dangerous instructions exist between DomInst and CurrInst
+bool ThreadSanitizer::isPathClear(Instruction *DomInst, Instruction *CurrInst,
+                                  const DominatorTree *DT,
+                                  const TargetLibraryInfo &TLI) {
+  const BasicBlock *DomBB = DomInst->getParent();
+  BasicBlock *CurrBB = CurrInst->getParent();
+
+  // 1. Check instructions in DomBB after DomInst
+  for (const Instruction *I = DomInst->getNextNode();
+       I && I->getParent() == DomBB; I = I->getNextNode()) {
+    // dbgs() << "\tisPathClear -- Checking 1: " << *I << "\n";
+    if (I == CurrInst && DomBB == CurrBB)
+      return true; // Reached target instruction in the same block
+    if (isInstrDangerous(I, TLI))
+      return false;
+  }
+
+  // The path is clear within the same block
+  if (DomBB == CurrBB)
+    return true;
+
+  // 2. Check blocks on the dominance path between DomBB and CurrBB (excluding
+  // DomBB, excluding CurrBB) Traverse up from CurrBB along the immediate
+  // dominator tree until DomBB is reached
+  const DomTreeNode *CurrNode = DT->getNode(CurrBB);
+  assert(CurrNode && "DomNode not found");
+
+  DomTreeNode *IDomNode = CurrNode->getIDom();
+  while (IDomNode && IDomNode->getBlock() && IDomNode->getBlock() != DomBB) {
+    BasicBlock *IntermediateBB = IDomNode->getBlock();
+    for (const Instruction &InterI : *IntermediateBB) {
+      // dbgs() << "\tisPathClear -- Checking 2: " << InterI << "\n";
+      if (isInstrDangerous(&InterI, TLI))
+        return false;
+    }
+    IDomNode = IDomNode->getIDom();
+  }
+
+  // If IDomNode->getBlock() became DomBB, then DomBB indeed dominates CurrBB
+  // and we've checked all intermediate blocks on the dominator path.
+  if (!IDomNode || !IDomNode->getBlock() || IDomNode->getBlock() != DomBB) {
+    // This shouldn't happen if DomInst dominates CurrInst.
+    // Perhaps DomInst doesn't strictly dominate CurrInst, or there's a logic
+    // error. Conservatively return false.
+    LLVM_DEBUG(dbgs() << "TSAN: Path integrity issue or DomInst not strictly "
+                         "dominating CurrInst.\n"
+                      << "DomInst: " << *DomInst << "\nCurrInst: " << *CurrInst
+                      << "\n");
+    return false;
+  }
+
+  // 3. Check instructions in CurrBB before CurrInst
+  for (const Instruction &I : *CurrBB) {
+    // dbgs() << "\tisPathClear -- Checking 3: " << I << "\n";
+    if (&I == CurrInst)
+      break;
+    if (isInstrDangerous(&I, TLI))
+      return false;
+  }
+
+  return true;
+}
+
 static bool isTsanAtomic(const Instruction *I) {
   // TODO: Ask TTI whether synchronization scope is between threads.
   auto SSID = getAtomicSyncScopeID(I);
@@ -709,6 +951,53 @@ static bool isTsanAtomic(const Instruction *I) {
   if (isa<LoadInst>(I) || isa<StoreInst>(I))
     return *SSID != SyncScope::SingleThread;
   return true;
+}
+
+// Helper function to check for "dangerous" instructions
+// Returns true if the instruction might change TSan's synchronization state.
+bool ThreadSanitizer::isInstrDangerous(const Instruction *Inst,
+                                       const TargetLibraryInfo &TLI) {
+  if (!Inst)
+    return false;
+
+  // Check for atomic instructions, memory barriers or memory intrinsics
+  if (isTsanAtomic(Inst))
+    return true;
+
+  if (const CallInst *CI = dyn_cast<CallInst>(Inst)) {
+    if (const Function *Callee = CI->getCalledFunction()) {
+      // Check for known "safe" functions (without synchronization).
+      // This is a complex part, requiring analysis of function attributes or
+      // interprocedural analysis. To start, one can consider all unknown calls
+      // dangerous. TLI can help for standard library functions.
+      LibFunc Func;
+      if (TLI.getLibFunc(*Callee, Func))
+        return !TLI.isSyncFree(Func);
+
+      // If a function is known to be sync-free (e.g., @llvm.sqrt), then false.
+      // Otherwise - true.
+      if (Callee->isIntrinsic())
+        return !Intrinsic::isIntrinsicSyncFree(Callee->getIntrinsicID());
+
+      if (Callee->hasFnAttribute(Attribute::NoSync) ||
+          Callee->hasFnAttribute(Attribute::ReadNone))
+          // || Callee->hasFnAttribute(Attribute::ReadOnly))
+        return false;
+
+      // Check in sync-free analysis previously done
+      if (ModuleThreadSanitizerPass::SFI)
+        return !ModuleThreadSanitizerPass::SFI->isSyncFree(Callee);
+
+      // Conservatively: any non-intrinsic and not explicitly safe call is
+      // dangerous
+      return true;
+    }
+    // Indirect call - always dangerous for simplicity
+    return true;
+  }
+
+  // ... Other potentially dangerous instructions (architecture-specific, etc.)
+  return false;
 }
 
 void ThreadSanitizer::InsertRuntimeIgnores(Function &F) {
@@ -724,11 +1013,12 @@ void ThreadSanitizer::InsertRuntimeIgnores(Function &F) {
 bool ThreadSanitizer::sanitizeFunction(
     Function &F, const TargetLibraryInfo &TLI,
     const std::optional<EscapeAnalysisInfo> &EAI,
-    std::optional<EscapeAnalysisGlobalInfo*> EAIGlobal,
-    std::optional<LockOwnershipInfo*> LOI,
-    std::optional<SingleThreadedInfo*> STI) {
-  LLVM_DEBUG(dbgs() <<
-    "\n%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%\n"
+    std::optional<EscapeAnalysisGlobalInfo *> EAIGlobal,
+    std::optional<LockOwnershipInfo *> LOI,
+    std::optional<SingleThreadedInfo *> STI, const DominatorTree *DT,
+    AAResults *AA) {
+  LLVM_DEBUG(dbgs() << "\n%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%"
+                       "%%%%%%%%%%%%%%%%%\n"
     "%%%%%%%%%%%%%%%%%%%% Func " << F.getName() << "\t%%%%%%%%%%%%%%%%%%%%%%\n"
     "%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%\n");
 
@@ -846,16 +1136,17 @@ bool ThreadSanitizer::sanitizeFunction(
                                    EAI, EAIGlobal, LOI, STI);
   }
 
+  if (ClUseDominanceAnalysis)
+    eliminateDominatingInstr(AllLoadsAndStores, DT, AA, TLI);
+
   //////////////////////////////////////////////////////////////////////////////
   // This is for disabling/enabling TSan instrumentation
   // Disable for now check of matching
-  /*
-  if (disableEnableNesting != 0) {
+  /* if (disableEnableNesting != 0) {
     // Error: __tsan_enable without __tsan_disable
     report_fatal_error("Unmatched __tsan_enable__ call in function " +
                        F.getName());
-  }
-  */
+  } */
 
   // Erase all __tsan_disable/enable functions
   for (auto *CI: EnableDisableFuncCleanupList)
@@ -1242,4 +1533,118 @@ int ThreadSanitizer::getMemoryAccessFuncIndex(Type *OrigTy, Value *Addr,
   size_t Idx = llvm::countr_zero(TypeSize / 8);
   assert(Idx < kNumberOfAccessSizes);
   return Idx;
+}
+
+//===----------------------------------------------------------------------===//
+// Sync-free analysis (needed by eliminateDominatingInstr)
+//===----------------------------------------------------------------------===//
+
+/// SyncFreeInfo analyzes whether functions are "sync-free" - meaning they have
+/// no operations that could cause synchronization between threads. This
+/// includes:
+/// - No explicit synchronization operations (locks, memory fences etc)
+/// - No atomic operations
+/// - No calls to functions that are not sync-free
+/// This analysis works on the whole module by traversing the call graph
+/// bottom-up. Results are used to optimize instrumentation by skipping thread
+/// checks in sync-free code.
+///
+/// @param M_ The LLVM module to analyze
+/// @param CG_ The call graph for the module
+/// @param TLI_ Target library info for checking standard library functions
+SyncFreeInfo::SyncFreeInfo(Module &M_, CallGraph &CG_,
+                           AnalysisManager<Function> &AM)
+    : M(M_), CG(CG_) {
+  LLVM_DEBUG(dbgs() << "\n-----------------------------------------------\n"
+                    << "=== Starting sync-free analysis ===\n"
+                    << "Module: " << M.getName() << "\n";);
+
+  // Initialize all functions as not dangerous
+  for (const Function &F : M)
+    IsFuncDangerousGlobal[&F] = false;
+
+  // Analyze strongly connected components (SCCs) of the call graph in reverse
+  // topological order. This ensures we process callees before their callers:
+  // 1. Start from leaf functions (SCCs with no outgoing edges)
+  // 2. Mark functions as dangerous if they contain sync operations
+  // 3. Propagate results up through caller-callee relationships
+  // 4. Handle recursive calls by processing SCCs as a unit until fixpoint
+  for (auto SCCI = scc_begin(&CG); !SCCI.isAtEnd(); ++SCCI) {
+    const auto &CurrentSCC = *SCCI;
+
+    // Init by non-dangerous
+    for (const CallGraphNode *CGNode : CurrentSCC) {
+      const Function *F = CGNode->getFunction();
+      if (!F || F->isDeclaration())
+        continue;
+      IsFuncDangerousGlobal[F] = false;
+    }
+
+    // Check if any function in the SCC calls contains an intrinsically
+    // dangerous instruction.
+    // do {
+    // IsFuncDangerousSCCOld = IsFuncDangerousGlobal;
+    bool AnySCCFuncDangerous = false;
+    for (const CallGraphNode *CGNode : CurrentSCC) {
+      Function *F = CGNode->getFunction();
+      if (!F || F->isDeclaration())
+        continue;
+      LLVM_DEBUG(dbgs() << "\nChecking function: " << F->getName() << "\n");
+
+      // If it's not sync-free already, it will never become sync-free
+      if (const auto It = IsFuncDangerousGlobal.find(F);
+          It != IsFuncDangerousGlobal.end() && It->second)
+        continue;
+
+      for (const Instruction &I : instructions(F)) {
+        LLVM_DEBUG(dbgs() << "Checking instruction: " << I << "\n");
+        // Check if it's a call, and we already know the status of the callee
+        if (const CallInst *CI = dyn_cast<CallInst>(&I)) {
+          if (const Function *Callee = CI->getCalledFunction()) {
+            // First check in FuncsInSSCMap (current SCC)
+            if (std::any_of(CurrentSCC.begin(), CurrentSCC.end(),
+                            [&Callee](const CallGraphNode *CGN) {
+                              return CGN->getFunction() == Callee;
+                            }))
+              continue;
+
+            // If not in the current SCC, check global IsFuncDangerousMap
+            if (const auto It = IsFuncDangerousGlobal.find(Callee);
+                It != IsFuncDangerousGlobal.end() && It->second) {
+              AnySCCFuncDangerous = true;
+              break;
+            }
+          }
+        }
+
+        if (ThreadSanitizer::isInstrDangerous(
+                &I, AM.getResult<TargetLibraryAnalysis>(*F))) {
+          AnySCCFuncDangerous = true;
+          break;
+        }
+      }
+    }
+
+    // If any function in SCC is dangerous, mark all functions in SCC as
+    // dangerous
+    if (AnySCCFuncDangerous) {
+      for (const CallGraphNode *CGNode : CurrentSCC) {
+        const Function *F = CGNode->getFunction();
+        if (!F || F->isDeclaration())
+          continue;
+        IsFuncDangerousGlobal[F] = true;
+      }
+    }
+  }
+
+  LLVM_DEBUG(dbgs() << "\n=== Completed sync-free analysis ===\n";
+             dbgs() << "\nResults of sync-free analysis:\n";
+             for (const auto &Pair : IsFuncDangerousGlobal)
+               // if (!Pair.first->isDeclaration())
+               dbgs() << "Function " << Pair.first->getName() << ": "
+                      << (Pair.second ? "contains sync operations"
+                                      : "is sync-free")
+                      << "\n";
+             dbgs()
+             << "-----------------------------------------------\n\n";);
 }

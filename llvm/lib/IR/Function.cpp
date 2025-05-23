@@ -2054,3 +2054,205 @@ bool llvm::NullPointerIsDefined(const Function *F, unsigned AS) {
 
   return false;
 }
+
+bool Intrinsic::isIntrinsicSyncFree(Intrinsic::ID ID) {
+  switch (ID) {
+    // --- Intrinsics that are NOT sync-free ---
+
+    // Atomics & Element-wise Atomics
+    // These are by definition synchronization primitives or involve atomic operations.
+    case Intrinsic::memcpy_element_unordered_atomic:
+    case Intrinsic::memmove_element_unordered_atomic:
+    case Intrinsic::memset_element_unordered_atomic:
+    // Generic atomicrmw, cmpxchg are often instructions. If specific load/store/rmw/cmpxchg
+    // intrinsics existed as llvm.atomic.*, they would be here.
+    // Many target-specific atomics (e.g., for ARM, X86) would also be non-sync-free.
+
+    // Memory Barriers / Fences
+    case Intrinsic::arithmetic_fence: // Orders arithmetic operations.
+    // A generic llvm.fence intrinsic doesn't exist; fences are usually instructions or target-specific.
+
+    // Coroutine related intrinsics
+    // Many involve suspension, resumption, or management of shared coroutine state.
+    case Intrinsic::coro_alloc: case Intrinsic::coro_alloca_alloc:
+    case Intrinsic::coro_alloca_free: case Intrinsic::coro_alloca_get:
+    case Intrinsic::coro_async_context_alloc:
+    case Intrinsic::coro_async_context_dealloc:
+    case Intrinsic::coro_async_resume: case Intrinsic::coro_async_size_replace:
+    case Intrinsic::coro_await_suspend_bool:
+    case Intrinsic::coro_await_suspend_handle:
+    case Intrinsic::coro_await_suspend_void:
+    case Intrinsic::coro_begin: case Intrinsic::coro_destroy:
+    case Intrinsic::coro_end: // Marks end, might involve cleanup/signaling
+    case Intrinsic::coro_end_async: case Intrinsic::coro_free:
+    case Intrinsic::coro_id_async: // May interact with runtime for ID generation/lookup
+    case Intrinsic::coro_id_retcon: case Intrinsic::coro_id_retcon_once:
+    case Intrinsic::coro_prepare_async: case Intrinsic::coro_prepare_retcon:
+    case Intrinsic::coro_resume: case Intrinsic::coro_save:
+    case Intrinsic::coro_suspend: case Intrinsic::coro_suspend_async:
+    case Intrinsic::coro_suspend_retcon:
+    // coro_frame, coro_promise, coro_id, coro_size, coro_done, coro_noop are generally okay,
+    // but the ones involving allocation, suspension, or async management are suspect.
+
+    // Exception Handling (EH) related intrinsics
+    // These interact with runtime systems for unwinding and dispatch.
+    case Intrinsic::callbr_landingpad:
+    case Intrinsic::eh_dwarf_cfa: // Interacts with unwind information
+    case Intrinsic::eh_exceptioncode: case Intrinsic::eh_exceptionpointer:
+    case Intrinsic::eh_recoverfp: case Intrinsic::eh_return_i32:
+    case Intrinsic::eh_return_i64: case Intrinsic::eh_sjlj_callsite:
+    case Intrinsic::eh_sjlj_functioncontext: case Intrinsic::eh_sjlj_longjmp:
+    case Intrinsic::eh_sjlj_lsda: case Intrinsic::eh_sjlj_setjmp:
+    case Intrinsic::eh_sjlj_setup_dispatch: case Intrinsic::eh_typeid_for:
+    case Intrinsic::eh_unwind_init:
+    case Intrinsic::seh_scope_begin: // Structured Exception Handling (Windows)
+    case Intrinsic::seh_scope_end: case Intrinsic::seh_try_begin:
+    case Intrinsic::seh_try_end:
+
+
+    // Garbage Collection (GC) related intrinsics
+    case Intrinsic::experimental_gc_get_pointer_base:
+    case Intrinsic::experimental_gc_get_pointer_offset:
+    case Intrinsic::experimental_gc_relocate:
+    case Intrinsic::experimental_gc_result:
+    case Intrinsic::experimental_gc_statepoint:
+    case Intrinsic::gcread:  // Might involve read barriers
+    case Intrinsic::gcroot:  // Modifies GC root set
+    case Intrinsic::gcwrite: // Might involve write barriers
+
+    // Objective-C ARC and Synchronization Intrinsics
+    case Intrinsic::objc_arc_annotation_bottomup_bbend: // Annotations, likely passive
+    case Intrinsic::objc_arc_annotation_bottomup_bbstart:
+    case Intrinsic::objc_arc_annotation_topdown_bbend:
+    case Intrinsic::objc_arc_annotation_topdown_bbstart:
+    case Intrinsic::objc_autorelease: case Intrinsic::objc_autoreleasePoolPop:
+    case Intrinsic::objc_autoreleasePoolPush:
+    case Intrinsic::objc_autoreleaseReturnValue:
+    case Intrinsic::objc_copyWeak: case Intrinsic::objc_destroyWeak:
+    case Intrinsic::objc_initWeak: case Intrinsic::objc_loadWeak:
+    case Intrinsic::objc_loadWeakRetained: case Intrinsic::objc_moveWeak:
+    case Intrinsic::objc_release: case Intrinsic::objc_retain:
+    case Intrinsic::objc_retain_autorelease:
+    case Intrinsic::objc_retainAutorelease:
+    case Intrinsic::objc_retainAutoreleaseReturnValue:
+    case Intrinsic::objc_retainAutoreleasedReturnValue:
+    case Intrinsic::objc_retainBlock: case Intrinsic::objc_storeStrong:
+    case Intrinsic::objc_storeWeak:
+    case Intrinsic::objc_sync_enter: // Explicit lock
+    case Intrinsic::objc_sync_exit:  // Explicit unlock
+    case Intrinsic::objc_unsafeClaimAutoreleasedReturnValue:
+    // objc_clang_arc_noop_use, objc_clang_arc_use, objc_retainedObject,
+    // objc_unretainedObject, objc_unretainedPointer are generally okay.
+
+    // Thread Local Storage
+    case Intrinsic::threadlocal_address: // Getting address may involve runtime calls.
+
+    // Other system/runtime interaction, stack manipulation, or control flow
+    case Intrinsic::addressofreturnaddress: case Intrinsic::adjust_trampoline:
+    case Intrinsic::clear_cache: // System-level operation affecting global state.
+    case Intrinsic::frameaddress: case Intrinsic::init_trampoline:
+    case Intrinsic::localescape:  // For non-local gotos.
+    case Intrinsic::localrecover: // For non-local gotos.
+    case Intrinsic::read_register: // Accessing global machine state.
+    case Intrinsic::read_volatile_register: // Accessing global, volatile machine state.
+    case Intrinsic::returnaddress:
+    case Intrinsic::stackguard:     // May involve checks against global canary.
+    case Intrinsic::stackprotector: // Setup/check stack canary.
+    case Intrinsic::stackrestore: case Intrinsic::stacksave:
+    case Intrinsic::thread_pointer: // Accessing thread-specific global pointer.
+    case Intrinsic::write_register: // Modifying global machine state.
+
+    // Sanitizer checks and related operations
+    // These call into runtime libraries which can be synchronized.
+    case Intrinsic::asan_check_memaccess:
+    case Intrinsic::hwasan_check_memaccess:
+    case Intrinsic::hwasan_check_memaccess_fixedshadow:
+    case Intrinsic::hwasan_check_memaccess_shortgranules:
+    case Intrinsic::hwasan_check_memaccess_shortgranules_fixedshadow:
+    case Intrinsic::allow_runtime_check: case Intrinsic::allow_ubsan_check:
+    case Intrinsic::ubsantrap: // Often calls a runtime handler.
+    case Intrinsic::trap:      // Usually results in termination or debugger, a strong sync point.
+    case Intrinsic::debugtrap: // Similar to trap.
+
+    // Experimental features for managed runtimes or complex control flow
+    case Intrinsic::experimental_deoptimize:
+    case Intrinsic::experimental_patchpoint:
+    case Intrinsic::experimental_patchpoint_void:
+    case Intrinsic::experimental_stackmap:
+    case Intrinsic::experimental_guard: // May involve runtime checks or side effects.
+
+    // Floating point environment access - can be global or thread-global state.
+    case Intrinsic::get_fpenv: case Intrinsic::set_fpenv:
+    case Intrinsic::reset_fpenv:
+    case Intrinsic::get_fpmode: // Less likely global sync, but conservative.
+    case Intrinsic::set_fpmode: case Intrinsic::reset_fpmode:
+    case Intrinsic::get_rounding: // Could be global.
+    case Intrinsic::set_rounding:
+
+    // Pointer Authentication - may involve system keys or special registers
+    case Intrinsic::ptrauth_auth: case Intrinsic::ptrauth_blend:
+    case Intrinsic::ptrauth_resign: case Intrinsic::ptrauth_sign:
+    case Intrinsic::ptrauth_sign_generic: case Intrinsic::ptrauth_strip:
+
+    // Profiling and Coverage
+    // These often write to global data structures.
+    case Intrinsic::instrprof_callsite: case Intrinsic::instrprof_cover:
+    case Intrinsic::instrprof_increment:
+    case Intrinsic::instrprof_increment_step:
+    case Intrinsic::instrprof_mcdc_condbitmap_update:
+    case Intrinsic::instrprof_mcdc_parameters: // Might just be setup
+    case Intrinsic::instrprof_mcdc_tvbitmap_update:
+    case Intrinsic::instrprof_timestamp:
+    case Intrinsic::instrprof_value_profile:
+    case Intrinsic::pseudoprobe: // For AutoFDO, interacts with profiling data.
+    case Intrinsic::xray_customevent: // XRay tracing system calls.
+    case Intrinsic::xray_typedevent:
+
+    // Other special control flow / side effects
+    case Intrinsic::icall_branch_funnel: // Complex control flow, potentially for speculation.
+    case Intrinsic::sponentry: // Shadow stack related.
+
+      return false; // These intrinsics are NOT sync-free.
+
+    // --- Intrinsics that ARE generally sync-free ---
+    // This includes most:
+    // - Pure mathematical operations (sin, cos, sqrt, pow, log, etc.)
+    // - Bitwise operations (bswap, ctlz, ctpop, cttz)
+    // - Simple type conversions (fptosi, sitofp, fpext, fptrunc, bitcast)
+    // - Vector operations (shuffles, inserts, extracts, reductions if not on shared memory)
+    // - Memory operations like llvm.memcpy, llvm.memmove, llvm.memset (non-atomic versions)
+    // - Optimizer hints (assume, expect, lifetime.start/end, invariant.start/end)
+    // - Debug information (dbg.declare, dbg.value, dbg.label)
+    // - Simple comparisons
+    // - Many target-specific SIMD computational intrinsics.
+
+    // Explicitly listing all ~13000 sync-free intrinsics is impractical.
+    // The default case handles them.
+
+    // Examples of definitely sync-free (for clarity, not exhaustive):
+    /*
+    case Intrinsic::abs: case Intrinsic::assume: case Intrinsic::bitreverse:
+    case Intrinsic::bswap:
+    case Intrinsic::call_preallocated_arg: // Argument passing mechanism
+    case Intrinsic::call_preallocated_setup:
+    case Intrinsic::call_preallocated_teardown:
+    case Intrinsic::canonicalize: case Intrinsic::ceil:
+    case Intrinsic::copysign: case Intrinsic::cos: case Intrinsic::ctlz:
+    case Intrinsic::ctpop: case Intrinsic::cttz: case Intrinsic::dbg_assign:
+    case Intrinsic::dbg_declare: case Intrinsic::dbg_label:
+    case Intrinsic::dbg_value: case Intrinsic::donothing:
+    case Intrinsic::exp: case Intrinsic::exp10: case Intrinsic::exp2:
+    case Intrinsic::expect: case Intrinsic::expect_with_probability:
+    case Intrinsic::fabs: case Intrinsic::floor: case Intrinsic::fma:
+    case Intrinsic::fmuladd:
+    // ... and thousands more ...
+    */
+
+    default:
+      // If an intrinsic is not in the list above, we assume it is sync-free.
+      // This is a common strategy: define the exceptions.
+      // For perfect accuracy, especially with new or target-specific intrinsics,
+      // this list would need continuous maintenance or intrinsic metadata.
+      return true;
+  }
+}
