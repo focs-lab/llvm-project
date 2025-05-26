@@ -700,8 +700,11 @@ void ThreadSanitizer::chooseInstructionsToInstrument(
       if (ClUseLockOwnershipAnalysisUpperbound) {
         LLVM_DEBUG(dbgs() << "Lock ownership analysis -- upper bound\n");
         if (LOI.value()->isInsideCriticalSection(I)) {
-          LLVM_DEBUG(dbgs() << "Instruction omitted due to lock ownership\n");
-          continue;
+          if (const Value *V = getUnderlyingObject(Addr);
+              isa<GlobalVariable>(V)) {
+            LLVM_DEBUG(dbgs() << "Instruction omitted due to lock ownership\n");
+            continue;
+          }
         }
       } else if (ClUseLockOwnershipAnalysis) {
         LLVM_DEBUG(dbgs() << "Lock ownership analysis\n");

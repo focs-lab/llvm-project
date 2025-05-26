@@ -628,7 +628,8 @@ AnalysisKey LockOwnership::Key;
 LockOwnership::Result LockOwnership::run(Module &M, ModuleAnalysisManager &AM) {
   if (std::ifstream SummaryFile(LockOwnershipSummaryFileName);
       SummaryFile.good()) {
-    LLVM_DEBUG(dbgs() << "Found existing summary file. Loading results.\n");
+    dbgs() << "Found existing summary file for LockOwnership Analysis. Loading "
+              "results.\n";
     SummaryFile.close();
     return LockOwnershipInfo(M);
   }

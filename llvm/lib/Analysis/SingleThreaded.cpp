@@ -331,7 +331,8 @@ SingleThreaded::Result SingleThreaded::run(Module &M,
                                            ModuleAnalysisManager &AM) {
   if (std::ifstream SummaryFile(SingleThreadedSummaryFileName);
       SummaryFile.good()) {
-    LLVM_DEBUG(dbgs() << "Found existing summary file. Loading results.\n");
+    dbgs() << "Found existing summary file for SingleThreaded Analysis. "
+              "Loading results.\n";
     SummaryFile.close();
     return SingleThreadedInfo(M);
   }
