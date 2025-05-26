@@ -317,7 +317,7 @@ class EscapeAnalysisGlobalInfo {
   DenseMap<const Function *, EscapeAnalysisInfo> FuncEscapeInfo;
 
   /// List of functions whose arguments don't escape
-  static constexpr auto FuncWhiteListFileName = "ea-func-whitelist.txt";
+  static constexpr auto FuncWhiteListFileName = "ea_summary.txt";
   std::shared_ptr<EscapeAnalysisInfo::NonEscapingFuncsMap> NonEscapingFuncs =
       std::make_shared<EscapeAnalysisInfo::NonEscapingFuncsMap>();
 

@@ -1638,9 +1638,10 @@ void EscapeAnalysisGlobalInfo::writeIPASummary() {
   //   SummaryFile.close();
   // }
 
-  const auto SummaryFileName =
-      LogDir + "/func_nonescape_IPA_" +
-      getFileNameFromPath(getFileNameFromPath(M.getName().str())) + ".txt";
+  // const auto SummaryFileName =
+  //     LogDir + "/func_nonescape_IPA_" +
+  //     getFileNameFromPath(getFileNameFromPath(M.getName().str())) + ".txt";
+  const auto SummaryFileName = LogDir + "/ea_summary.txt";
   std::ofstream SummaryFile(SummaryFileName, std::ios::out);
   if (!SummaryFile.is_open()) {
     errs() << "Error opening summary file: " << SummaryFileName << "\n";
