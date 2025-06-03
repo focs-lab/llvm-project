@@ -723,12 +723,13 @@ void ThreadSanitizer::chooseInstructionsToInstrument(
     if (ClUseSWMRAnalysis) {
       assert(STI.has_value());
       if (const Value *V = getUnderlyingObject(Addr))
-        if (const auto *GV = dyn_cast<GlobalVariable>(V))
-          if (STI.value()->isReadOnly(GV)) {
+        if (const auto *GV = dyn_cast<GlobalVariable>(V)) {
+          if (STI.value()->isSWMRGlobal(GV)) {
             LLVM_DEBUG(dbgs() << "Global variable " << GV->getName()
                               << " is read-only\n");
             continue;
           }
+        }
     }
 
     LLVM_DEBUG(dbgs() << "Instruction instrumented\n");

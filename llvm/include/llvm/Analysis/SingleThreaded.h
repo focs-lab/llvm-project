@@ -63,8 +63,8 @@ public:
 
   /// Returns true if the given global variable is only read (not written to) in
   /// multithreaded functions
-  bool isReadOnly(const GlobalVariable *GV) const {
-    return ReadOnlyGlobals.contains(GV);
+  bool isSWMRGlobal(const GlobalVariable *GV) const {
+    return SWMRGlobals.contains(GV);
   }
 
 private:
@@ -86,7 +86,7 @@ private:
   using FuncTypeMap = SmallDenseMap<const Function *, FuncContext>;
   FuncTypeMap FuncType;
 
-  SmallPtrSet<const GlobalVariable *, 4> ReadOnlyGlobals;
+  SmallPtrSet<const GlobalVariable *, 4> SWMRGlobals;
 
   /// Consider only defined functions
   bool needToSkipFunc(const Function *F) {
@@ -123,7 +123,7 @@ private:
   /// multithreaded functions This analysis helps identify global variables that
   /// can be safely accessed concurrently without synchronization in
   /// multithreaded contexts, since they are never modified.
-  void findReadOnlyGlobals();
+  void findSWMRGlobals();
 
   /// Writes analysis results to a summary file. The summary includes lists of
   /// single-threaded functions and read-only global variables that are safe

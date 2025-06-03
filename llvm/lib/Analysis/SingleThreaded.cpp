@@ -169,7 +169,7 @@ SingleThreadedInfo::SingleThreadedInfo(CallGraph &CG_, Module &MM_)
   runSTMTAnalysis();
 
   // Run SWMR analysis
-  findReadOnlyGlobals();
+  findSWMRGlobals();
 
   writeSummary();
 }
@@ -178,7 +178,7 @@ SingleThreadedInfo::SingleThreadedInfo(CallGraph &CG_, Module &MM_)
 // SWMR analysis
 //===----------------------------------------------------------------------===//
 
-void SingleThreadedInfo::findReadOnlyGlobals() {
+void SingleThreadedInfo::findSWMRGlobals() {
   LLVM_DEBUG(dbgs() << "\n=== SWMR Analysis ===\n");
 
   // For each global, check if it's only read in multithreaded functions
@@ -188,8 +188,7 @@ void SingleThreadedInfo::findReadOnlyGlobals() {
       continue;
 
     LLVM_DEBUG(dbgs() << "Checking global: " << GV.getName() << "\n");
-    bool IsWritten = false;
-    bool IsRead = false;
+    bool IsWrittenInMT = false;
 
     // Check all uses of this global
     for (const User *U : GV.users()) {
@@ -201,17 +200,15 @@ void SingleThreadedInfo::findReadOnlyGlobals() {
         // For multithreaded functions, check if this is a write operation
         if (const StoreInst *SI = dyn_cast<StoreInst>(I)) {
           if (SI->getPointerOperand() == &GV) {
-            IsWritten = true;
+            IsWrittenInMT = true;
             break;
           }
-        } else {
-          IsRead = true;
         }
       }
     }
 
-    if (IsRead && !IsWritten)
-      ReadOnlyGlobals.insert(&GV);
+    if (!IsWrittenInMT)
+      SWMRGlobals.insert(&GV);
   }
 }
 
@@ -254,7 +251,7 @@ void SingleThreadedInfo::print(raw_ostream &OS) const {
   OS << "\n============================================\n"
      << "              Read-Only Globals              \n"
      << "============================================\n\n";
-  for (const GlobalVariable *GV : ReadOnlyGlobals)
+  for (const GlobalVariable *GV : SWMRGlobals)
     OS << "  " << GV->getName() << "\n";
 }
 
@@ -276,7 +273,7 @@ void SingleThreadedInfo::writeSummary() const {
   Summary << "\n";
 
   Summary << SummaryHeaderSWMR << "\n";
-  for (const GlobalVariable *GV : ReadOnlyGlobals)
+  for (const GlobalVariable *GV : SWMRGlobals)
     Summary << GV->getName().str() << "\n";
 
   Summary.close();
@@ -285,7 +282,7 @@ void SingleThreadedInfo::writeSummary() const {
 void SingleThreadedInfo::readSummary() {
   // Clear existing analysis results
   FuncType.clear();
-  ReadOnlyGlobals.clear();
+  SWMRGlobals.clear();
 
   std::ifstream Summary(SingleThreadedSummaryFileName);
   if (!Summary.is_open()) {
@@ -304,10 +301,14 @@ void SingleThreadedInfo::readSummary() {
     if (Line == SummaryHeaderST) {
       ReadingST = true;
       ReadingSWMR = false;
-    } else if (Line == SummaryHeaderSWMR) {
+      continue;
+    }
+    if (Line == SummaryHeaderSWMR) {
       ReadingST = false;
       ReadingSWMR = true;
-    } else if (Line.empty()) {
+      continue;
+    }
+    if (Line.empty()) {
       ReadingST = false;
       ReadingSWMR = false;
       continue;
@@ -317,8 +318,8 @@ void SingleThreadedInfo::readSummary() {
       if (const Function *F = M.getFunction(Line))
         FuncType[F] = FuncContext::SingleThreaded;
     } else if (ReadingSWMR) {
-      if (const GlobalVariable *GV = M.getGlobalVariable(Line))
-        ReadOnlyGlobals.insert(GV);
+      if (const GlobalVariable *GV = M.getGlobalVariable(Line, true))
+        SWMRGlobals.insert(GV);
     }
   }
 
