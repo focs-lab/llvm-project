@@ -30,6 +30,7 @@
 #include "llvm/Analysis/SingleThreaded.h"
 #include "llvm/Analysis/TargetLibraryInfo.h"
 #include "llvm/Analysis/ValueTracking.h"
+#include "llvm/Analysis/PostDominators.h"
 #include "llvm/IR/DataLayout.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/IRBuilder.h"
@@ -149,6 +150,8 @@ STATISTIC(NumEscOther, "Number of escapes due to other reasons");
 STATISTIC(NumEscInvalid, "Number of escapes due to invalid reasons");
 STATISTIC(NumEscCall, "Number of escapes due to escaped calls");
 STATISTIC(NumOmittedByDominance, "Number of accesses ignored due to dominance");
+STATISTIC(NumOmittedByPostDominance,
+          "Number of accesses ignored due to post-dominance");
 
 const char kTsanModuleCtorName[] = "tsan.module_ctor";
 const char kTsanInitName[] = "__tsan_init";
@@ -185,7 +188,8 @@ struct ThreadSanitizer {
       std::optional<EscapeAnalysisGlobalInfo *> EAIGlobal = std::nullopt,
       std::optional<LockOwnershipInfo *> LOI = std::nullopt,
       std::optional<SingleThreadedInfo *> STI = std::nullopt,
-      const DominatorTree *DT = nullptr, AAResults *AA = nullptr);
+      const DominatorTree *DT = nullptr, const PostDominatorTree *PDT = nullptr,
+      AAResults *AA = nullptr);
 
   /// Checks if an instruction could potentially change ThreadSanitizer's
   /// synchronization state. This includes atomic operations, memory barriers,
@@ -227,11 +231,23 @@ private:
       std::optional<EscapeAnalysisGlobalInfo*> EAIGlobal = std::nullopt,
       std::optional<LockOwnershipInfo*> LOI = std::nullopt,
       std::optional<SingleThreadedInfo*> STI = std::nullopt);
-  void eliminateDominatingInstr(SmallVectorImpl<InstructionInfo> &AllInstr,
-                                const DominatorTree *DT, AAResults *AA,
-                                const TargetLibraryInfo &TLI);
-  bool isPathClear(Instruction *DomInst, Instruction *CurrInst,
-                   const DominatorTree *DT, const TargetLibraryInfo &TLI);
+
+  DenseMap<Instruction *, size_t> createInstrIndexMap(
+      SmallVectorImpl<InstructionInfo> &AllInstr);
+  // void eliminateDominatingInstr(SmallVectorImpl<InstructionInfo> &AllInstr,
+  //                               const DominatorTree *DT, AAResults *AA,
+  //                               const TargetLibraryInfo &TLI);
+  template <bool IsPostDom>
+  void eliminateInstrByPrePostDominance(
+      SmallVectorImpl<InstructionInfo> &AllInstr,
+      const DominatorTreeBase<BasicBlock, IsPostDom> *DTBase, AAResults *AA,
+      const TargetLibraryInfo &TLI);
+
+  template <bool IsPostDom>
+  bool isPathClear(Instruction *StartInst, Instruction *EndInst,
+                   const DominatorTreeBase<BasicBlock, IsPostDom> *DTBase,
+                   const TargetLibraryInfo &TLI);
+
   bool addrPointsToConstantData(Value *Addr);
   int getMemoryAccessFuncIndex(Type *OrigTy, Value *Addr, const DataLayout &DL);
   void InsertRuntimeIgnores(Function &F);
@@ -286,7 +302,8 @@ PreservedAnalyses ThreadSanitizerPass::run(Function &F,
   if (ClUseEscapeAnalysis) {
     if (TSan.sanitizeFunction(F, FAM.getResult<TargetLibraryAnalysis>(F),
                               FAM.getResult<EscapeAnalysis>(F), std::nullopt,
-                              std::nullopt, std::nullopt, nullptr, nullptr))
+                              std::nullopt, std::nullopt, nullptr, nullptr,
+                              nullptr))
       return PreservedAnalyses::none();
   }
 
@@ -304,14 +321,16 @@ PreservedAnalyses ThreadSanitizerPass::run(Function &F,
     LOI = MAMProxy.getCachedResult<LockOwnership>(*F.getParent());
 
   DominatorTree *DT = nullptr;
+  PostDominatorTree *PDT = nullptr;
   AAResults *AA = nullptr;
   if (ClUseDominanceAnalysis) {
     DT = &FAM.getResult<DominatorTreeAnalysis>(F);
+    PDT = &FAM.getResult<PostDominatorTreeAnalysis>(F);
     AA = &FAM.getResult<AAManager>(F);
   }
 
   if (TSan.sanitizeFunction(F, FAM.getResult<TargetLibraryAnalysis>(F),
-                            std::nullopt, EAGI, LOI, STI, DT, AA))
+                            std::nullopt, EAGI, LOI, STI, DT, PDT, AA))
     return PreservedAnalyses::none();
 
   return PreservedAnalyses::all();
@@ -745,20 +764,28 @@ void ThreadSanitizer::chooseInstructionsToInstrument(
   Local.clear();
 }
 
-// TODO: check if we consider the case when I1 dominates I2 within the _same_ BB
+DenseMap<Instruction *, size_t> ThreadSanitizer::createInstrIndexMap(
+      SmallVectorImpl<InstructionInfo> &AllInstr) {
+  DenseMap<Instruction *, size_t> InstToIndexInAll;
+  for (size_t i = 0; i < AllInstr.size(); ++i)
+    if (AllInstr[i].Inst) // Ensure the instruction hasn't been removed
+      InstToIndexInAll[AllInstr[i].Inst] = i;
+  return InstToIndexInAll;
+}
+
+/*
 void ThreadSanitizer::eliminateDominatingInstr(
     SmallVectorImpl<InstructionInfo> &AllInstr, const DominatorTree *DT,
     AAResults *AA, const TargetLibraryInfo &TLI) {
   LLVM_DEBUG(dbgs() << "\n=== Starting dominance-based analysis ===\n");
+  assert(DT && "DominationTree must be provided");
   if (AllInstr.empty())
     return;
 
   // For efficiency, create a map from Instruction* to its index in AllInstr.
   // This helps to quickly find dominating instructions in AllInstr.
-  DenseMap<Instruction *, size_t> InstToIndexInAll;
-  for (size_t i = 0; i < AllInstr.size(); ++i)
-    if (AllInstr[i].Inst) // Ensure the instruction hasn't been removed
-      InstToIndexInAll[AllInstr[i].Inst] = i;
+  DenseMap<Instruction *, size_t> InstToIndexInAll =
+      createInstrIndexMap(AllInstr);
 
   SmallVector<bool, 16> ToRemove(AllInstr.size(), false);
   unsigned RemovedCount = 0;
@@ -771,6 +798,7 @@ void ThreadSanitizer::eliminateDominatingInstr(
     Instruction *CurrInst = CurrII.Inst;
     const BasicBlock *CurrBB = CurrInst->getParent();
     Value *CurrAddr = getLoadStorePointerOperand(CurrInst);
+    assert(CurrAddr && "Should not happen for load/store");
     const Value *CurrUnderlyingObj = getUnderlyingObject(CurrAddr);
 
     LLVM_DEBUG(dbgs() << "\nAnalyzing instruction: " << *CurrInst
@@ -782,7 +810,6 @@ void ThreadSanitizer::eliminateDominatingInstr(
       continue;
 
     // Traverse up the dominator tree
-    // DomTreeNode *IDomNode = CurrNode->getIDom();
     DomTreeNode *IDomNode = CurrNode;
     while (IDomNode && IDomNode->getBlock()) {
       BasicBlock *DomBB = IDomNode->getBlock();
@@ -795,7 +822,7 @@ void ThreadSanitizer::eliminateDominatingInstr(
           break;
 
         // Check if PotentialDomInst is dominating and instrumented
-        auto It = InstToIndexInAll.find(&PotentialDomInst);
+        const auto It = InstToIndexInAll.find(&PotentialDomInst);
         if (It == InstToIndexInAll.end() || ToRemove[It->second])
           // Not found in AllInstr or already marked for removal
           continue;
@@ -870,6 +897,134 @@ void ThreadSanitizer::eliminateDominatingInstr(
     LLVM_DEBUG(dbgs() << "=== Dominance analysis complete ===\n");
   }
 }
+*/
+
+template<bool IsPostDom>
+void ThreadSanitizer::eliminateInstrByPrePostDominance(
+    SmallVectorImpl<InstructionInfo> &AllInstr,
+    const DominatorTreeBase<BasicBlock, IsPostDom> *DTBase, AAResults *AA,
+    const TargetLibraryInfo &TLI) {
+  LLVM_DEBUG(dbgs() << "\n=== Starting (post-)dominance-based analysis ===\n");
+  assert(DTBase && "(Post)DominationTree must be provided");
+  if (AllInstr.empty())
+    return;
+
+  DenseMap<Instruction *, size_t> InstToIndexInAll =
+      createInstrIndexMap(AllInstr);
+
+  SmallVector<bool, 16> ToRemove(AllInstr.size(), false);
+  unsigned RemovedCount = 0;
+
+  for (size_t i = 0; i < AllInstr.size(); ++i) {
+    if (ToRemove[i])
+      continue;
+
+    const InstructionInfo &CurrII = AllInstr[i];
+    Instruction *CurrInst = CurrII.Inst;
+    const BasicBlock *CurrBB = CurrInst->getParent();
+    Value *CurrAddr = getLoadStorePointerOperand(CurrInst);
+    assert(CurrAddr && "Should not happen for load/store");
+    const Value *CurrUnderlyingObj = getUnderlyingObject(CurrAddr);
+
+    LLVM_DEBUG(dbgs() << "\nAnalyzing instruction: " << *CurrInst
+                  << "\n  Underlying object: " << *CurrUnderlyingObj
+                  << "\n");
+
+    DomTreeNode *CurrDTNode = DTBase->getNode(CurrBB);
+    if (!CurrDTNode)
+      continue;
+
+    // Traverse up the dominator tree
+    DomTreeNode *IDomNode = CurrDTNode;
+    while (IDomNode && IDomNode->getBlock()) {
+      BasicBlock *DomBB = IDomNode->getBlock();
+
+      // Look for a suitable dominating instrumented instruction in DomBB
+      for (Instruction &PotentialDomInst : *DomBB) {
+        // This is needed when we consider dominating withing the same BB
+        // dbgs() << "Pot " << PotentialDomInst << "\n";
+        if (CurrBB == DomBB && &PotentialDomInst == CurrInst) {
+          if (!IsPostDom)
+            break;
+          continue;
+        }
+
+        // Check if PotentialDomInst is dominating and instrumented
+        const auto It = InstToIndexInAll.find(&PotentialDomInst);
+        if (It == InstToIndexInAll.end() || ToRemove[It->second])
+          // Not found in AllInstr or already marked for removal
+            continue;
+
+        const size_t DomIndex = It->second;
+        InstructionInfo &DomII = AllInstr[DomIndex];
+        Instruction *DomInst = DomII.Inst;
+
+        const Value *DomAddr = getLoadStorePointerOperand(DomInst);
+        const Value *DomUnderlyingObj = getUnderlyingObject(DomAddr);
+        if (CurrUnderlyingObj == DomUnderlyingObj ||
+            (CurrUnderlyingObj && DomUnderlyingObj &&
+             AA->isMustAlias(CurrAddr, DomAddr))) {
+          const bool CurrIsWrite =
+              isa<StoreInst>(*CurrInst) ||
+              (CurrII.Flags & InstructionInfo::kCompoundRW);
+          const bool DomIsWrite = isa<StoreInst>(*DomInst) ||
+                                  (DomII.Flags & InstructionInfo::kCompoundRW);
+
+          // Check compatibility logic (DomInst covers CurrInst):
+          // 1. If DomInst is a write, it covers both read and write of
+          // CurrInst.
+          // 2. If DomInst is a read, it only covers a read of CurrInst.
+          if (DomIsWrite || !CurrIsWrite) {
+            // Check the path to/from CurrInst from/to DomInst
+            bool IsPathClear = false;
+            if (IsPostDom)
+              IsPathClear = isPathClear(CurrInst, DomInst, DTBase, TLI);
+            else
+              IsPathClear = isPathClear(DomInst, CurrInst, DTBase, TLI);
+
+            if (IsPathClear) {
+              LLVM_DEBUG(dbgs() << "TSAN: Omitting instrumentation for: "
+                                << *CurrInst << " ((post-)dominated and covered by: "
+                                << *DomInst << ")\n");
+              ToRemove[i] = true;
+              RemovedCount++;
+              goto next_instruction_to_prune; // Found a post-dominator, move to next CurrInst
+            }
+          }
+        }
+      }
+      IDomNode = IDomNode->getIDom();
+    }
+    next_instruction_to_prune:;
+  }
+
+  LLVM_DEBUG(
+      dbgs() << "\n=== Final list of instructions and their status ===\n";
+      for (size_t i = 0; i < AllInstr.size(); ++i)
+      dbgs() << "[" << (ToRemove[i] ? "REMOVED" : "KEPT") << "]\t" <<
+        *AllInstr[i].Inst << "\n"
+    );
+
+  if (RemovedCount > 0) {
+    LLVM_DEBUG(dbgs() << "\n=== Updating final instruction list ===\n"
+                      << "Original size: " << AllInstr.size() << "\n"
+                      << "Instructions to remove: " << RemovedCount << "\n"
+                      << "Remaining instructions: "
+                      << (AllInstr.size() - RemovedCount) << "\n");
+    SmallVector<InstructionInfo, 8> NewAllInstr;
+    NewAllInstr.reserve(AllInstr.size() - RemovedCount);
+    for (size_t k = 0; k < AllInstr.size(); ++k)
+      if (!ToRemove[k])
+        NewAllInstr.push_back(AllInstr[k]);
+    AllInstr.swap(NewAllInstr);
+    if (IsPostDom)
+      NumOmittedByPostDominance += RemovedCount; // Statistics
+    else
+      NumOmittedByDominance += RemovedCount; // Statistics
+
+    LLVM_DEBUG(dbgs() << "=== Dominance analysis complete ===\n");
+  }
+}
 
 /// Checks if there are any synchronization-affecting instructions on execution paths
 /// between two instructions. Used to determine if we can skip instrumenting CurrInst
@@ -880,22 +1035,24 @@ void ThreadSanitizer::eliminateDominatingInstr(
 /// 2. All instructions in intermediate basic blocks
 /// 3. Instructions before CurrInst in its basic block
 ///
-/// @param DomInst The dominating instruction that handles synchronization
-/// @param CurrInst The current instruction we may be able to skip
-/// @param DT Dominator tree for path traversal
+/// @param StartInst The dominating instruction that handles synchronization
+/// @param EndInst The current instruction we may be able to skip
+/// @param DTBase Dominator tree for path traversal
 /// @param TLI Target library info for checking standard functions
 /// @return true if no dangerous instructions exist between DomInst and CurrInst
-bool ThreadSanitizer::isPathClear(Instruction *DomInst, Instruction *CurrInst,
-                                  const DominatorTree *DT,
-                                  const TargetLibraryInfo &TLI) {
-  const BasicBlock *DomBB = DomInst->getParent();
-  BasicBlock *CurrBB = CurrInst->getParent();
+template <bool IsPostDom>
+bool ThreadSanitizer::isPathClear(
+    Instruction *StartInst, Instruction *EndInst,
+    const DominatorTreeBase<BasicBlock, IsPostDom> *DTBase,
+    const TargetLibraryInfo &TLI) {
+  const BasicBlock *DomBB = StartInst->getParent();
+  BasicBlock *CurrBB = EndInst->getParent();
 
   // 1. Check instructions in DomBB after DomInst
-  for (const Instruction *I = DomInst->getNextNode();
+  for (const Instruction *I = StartInst->getNextNode();
        I && I->getParent() == DomBB; I = I->getNextNode()) {
     // dbgs() << "\tisPathClear -- Checking 1: " << *I << "\n";
-    if (I == CurrInst && DomBB == CurrBB)
+    if (I == EndInst && DomBB == CurrBB)
       return true; // Reached target instruction in the same block
     if (isInstrDangerous(I, TLI))
       return false;
@@ -908,7 +1065,7 @@ bool ThreadSanitizer::isPathClear(Instruction *DomInst, Instruction *CurrInst,
   // 2. Check blocks on the dominance path between DomBB and CurrBB (excluding
   // DomBB, excluding CurrBB) Traverse up from CurrBB along the immediate
   // dominator tree until DomBB is reached
-  const DomTreeNode *CurrNode = DT->getNode(CurrBB);
+  const DomTreeNode *CurrNode = DTBase->getNode(CurrBB);
   assert(CurrNode && "DomNode not found");
 
   DomTreeNode *IDomNode = CurrNode->getIDom();
@@ -930,7 +1087,7 @@ bool ThreadSanitizer::isPathClear(Instruction *DomInst, Instruction *CurrInst,
     // error. Conservatively return false.
     LLVM_DEBUG(dbgs() << "TSAN: Path integrity issue or DomInst not strictly "
                          "dominating CurrInst.\n"
-                      << "DomInst: " << *DomInst << "\nCurrInst: " << *CurrInst
+                      << "DomInst: " << *StartInst << "\nCurrInst: " << *EndInst
                       << "\n");
     return false;
   }
@@ -938,7 +1095,7 @@ bool ThreadSanitizer::isPathClear(Instruction *DomInst, Instruction *CurrInst,
   // 3. Check instructions in CurrBB before CurrInst
   for (const Instruction &I : *CurrBB) {
     // dbgs() << "\tisPathClear -- Checking 3: " << I << "\n";
-    if (&I == CurrInst)
+    if (&I == EndInst)
       break;
     if (isInstrDangerous(&I, TLI))
       return false;
@@ -1020,7 +1177,7 @@ bool ThreadSanitizer::sanitizeFunction(
     std::optional<EscapeAnalysisGlobalInfo *> EAIGlobal,
     std::optional<LockOwnershipInfo *> LOI,
     std::optional<SingleThreadedInfo *> STI, const DominatorTree *DT,
-    AAResults *AA) {
+    const PostDominatorTree *PDT, AAResults *AA) {
   LLVM_DEBUG(dbgs() << "\n%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%"
                        "%%%%%%%%%%%%%%%%%\n"
     "%%%%%%%%%%%%%%%%%%%% Func " << F.getName() << "\t%%%%%%%%%%%%%%%%%%%%%%\n"
@@ -1140,8 +1297,11 @@ bool ThreadSanitizer::sanitizeFunction(
                                    EAI, EAIGlobal, LOI, STI);
   }
 
-  if (ClUseDominanceAnalysis)
-    eliminateDominatingInstr(AllLoadsAndStores, DT, AA, TLI);
+  if (ClUseDominanceAnalysis) {
+    // eliminateDominatingInstr(AllLoadsAndStores, DT, AA, TLI);
+    eliminateInstrByPrePostDominance(AllLoadsAndStores, DT, AA, TLI);
+    eliminateInstrByPrePostDominance(AllLoadsAndStores, PDT, AA, TLI);
+  }
 
   //////////////////////////////////////////////////////////////////////////////
   // This is for disabling/enabling TSan instrumentation
