@@ -1413,3 +1413,128 @@ void TargetLibraryInfoImpl::getWidestVF(StringRef ScalarF,
     ++I;
   }
 }
+
+const SmallVector<StringRef> LockNames = {
+    "pthread_mutex_lock",
+    "pthread_mutex_trylock",
+    "pthread_mutex_timedlock",
+    "pthread_spin_lock",
+    "pthread_spin_trylock",
+    "pthread_rwlock_rdlock",
+    "pthread_rwlock_tryrdlock",
+    "pthread_rwlock_timedrdlock",
+    "pthread_rwlock_wrlock",
+    "pthread_rwlock_trywrlock",
+    "pthread_rwlock_timedwrlock",
+    "mtx_lock",
+    "_mutex_lock",
+    "spinlock_lock",
+    "acquire_lock",
+    "rwlock_rdlock",
+    "rwlock_wrlock",
+    "lock",
+
+    // C++ std::mutex
+    "_ZNSt5mutex4lockEv",
+    "_ZNSt5mutex8try_lockEv",
+
+    // C++ std::recursive_mutex
+    "_ZNSt16recursive_mutex4lockEv",
+    "_ZNSt16recursive_mutex8try_lockEv",
+
+    // C++ std::timed_mutex
+    "_ZNSt11timed_mutex4lockEv",
+    "_ZNSt11timed_mutex8try_lockEv",
+    "_ZNSt11timed_mutex12try_lock_for", // Prefix
+    "_ZNSt11timed_mutex14try_lock_until", // Prefix
+
+    // C++ std::recursive_timed_mutex
+    "_ZNSt24recursive_timed_mutex4lockEv",
+    "_ZNSt24recursive_timed_mutex8try_lockEv",
+    "_ZNSt24recursive_timed_mutex12try_lock_for", // Prefix
+    "_ZNSt24recursive_timed_mutex14try_lock_until", // Prefix
+
+    // C++ std::shared_mutex
+    "_ZNSt13shared_mutex4lockEv",
+    "_ZNSt13shared_mutex8try_lockEv",
+    "_ZNSt13shared_mutex11lock_sharedEv",
+    "_ZNSt13shared_mutex15try_lock_sharedEv",
+
+    // C++ std::shared_timed_mutex
+    "_ZNSt19shared_timed_mutex4lockEv",
+    "_ZNSt19shared_timed_mutex8try_lockEv",
+    "_ZNSt19shared_timed_mutex11lock_sharedEv",
+    "_ZNSt19shared_timed_mutex15try_lock_sharedEv",
+    "_ZNSt19shared_timed_mutex12try_lock_for", // Prefix
+    "_ZNSt19shared_timed_mutex14try_lock_until", // Prefix
+    "_ZNSt19shared_timed_mutex19try_lock_shared_for", // Prefix
+    "_ZNSt19shared_timed_mutex21try_lock_shared_until" // Prefix
+};
+
+static const SmallVector<StringRef> UnlockNames = {
+    "pthread_mutex_unlock",
+    "pthread_spin_unlock",
+    "pthread_rwlock_unlock",
+    "mtx_unlock",
+    "_mutex_unlock",
+    "spinlock_unlock",
+    "release_lock",
+    "rwlock_unlock",
+    "unlock",
+
+    // C++ std::mutex
+    "_ZNSt5mutex6unlockEv",
+
+    // C++ std::recursive_mutex
+    "_ZNSt16recursive_mutex6unlockEv",
+
+    // C++ std::timed_mutex
+    "_ZNSt11timed_mutex6unlockEv",
+
+    // C++ std::recursive_timed_mutex
+    "_ZNSt24recursive_timed_mutex6unlockEv",
+
+    // C++ std::shared_mutex
+    "_ZNSt13shared_mutex6unlockEv",
+    "_ZNSt13shared_mutex13unlock_sharedEv",
+
+    // C++ std::shared_timed_mutex
+    "_ZNSt19shared_timed_mutex6unlockEv",
+    "_ZNSt19shared_timed_mutex13unlock_sharedEv"
+};
+
+bool TargetLibraryInfo::isLockAcquireFunction(const Function &F) {
+  StringRef FuncName = F.getName();
+  for (const auto &LockName : LockNames) {
+    // For C++ template functions, we check for a prefix match of the mangled name.
+    if (LockName == "_ZNSt11timed_mutex12try_lock_for" ||
+        LockName == "_ZNSt11timed_mutex14try_lock_until" ||
+        LockName == "_ZNSt24recursive_timed_mutex12try_lock_for" ||
+        LockName == "_ZNSt24recursive_timed_mutex14try_lock_until" ||
+        LockName == "_ZNSt19shared_timed_mutex12try_lock_for" ||
+        LockName == "_ZNSt19shared_timed_mutex14try_lock_until" ||
+        LockName == "_ZNSt19shared_timed_mutex19try_lock_shared_for" ||
+        LockName == "_ZNSt19shared_timed_mutex21try_lock_shared_until") {
+      if (FuncName.starts_with(LockName)) {
+        return true;
+      }
+    } else {
+      // For all other functions, we require an exact name match.
+      if (FuncName == LockName) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+bool TargetLibraryInfo::isLockReleaseFunction(const Function &F) {
+  StringRef FuncName = F.getName();
+  // All release functions have fixed mangled names, so a direct lookup is enough.
+  for (const auto &UnlockName : UnlockNames) {
+    if (FuncName == UnlockName) {
+      return true;
+    }
+  }
+  return false;
+}

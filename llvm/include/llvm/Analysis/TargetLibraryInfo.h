@@ -442,6 +442,10 @@ public:
     return false;
   }
 
+
+  static bool isLockAcquireFunction(const Function &F);
+  static bool isLockReleaseFunction(const Function &F);
+
   bool isSyncFree(LibFunc F) const {
     if (getState(F) == TargetLibraryInfoImpl::Unavailable)
       return false; // If the function is unavailable, it cannot be sync-free
