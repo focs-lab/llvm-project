@@ -873,11 +873,12 @@ void ThreadSanitizer::eliminateInstrByPrePostDominance(
         if (CurrUnderlyingObj == DomUnderlyingObj ||
             (CurrUnderlyingObj && DomUnderlyingObj &&
              AA->isMustAlias(CurrAddr, DomAddr))) {
-          const bool CurrIsWrite =
-              isa<StoreInst>(*CurrInst) ||
-              (CurrII.Flags & InstructionInfo::kCompoundRW);
-          const bool DomIsWrite = isa<StoreInst>(*DomInst) ||
-                                  (DomII.Flags & InstructionInfo::kCompoundRW);
+          auto isWriteOperation = [](const InstructionInfo &II) {
+            return isa<StoreInst>(II.Inst) ||
+                   (II.Flags & InstructionInfo::kCompoundRW);
+          };
+          const bool CurrIsWrite = isWriteOperation(CurrII);
+          const bool DomIsWrite = isWriteOperation(DomII);
 
           // Check compatibility logic (DomInst covers CurrInst):
           // 1. If DomInst is a write, it covers both read and write of
