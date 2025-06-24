@@ -896,13 +896,11 @@ void ThreadSanitizer::eliminateInstrByPrePostDominance(
 
             bool IsRedundant = false;
             if (IsPathClear ||
-                (IsPostDom && (
-                   (LockOp == LockOperation::RELEASE) &&
-                   DomIsWrite && CurrIsWrite)) ||
-                (!IsPostDom && (
-                   (LockOp == LockOperation::ACQUIRE) && !DomIsWrite && !
-                   CurrIsWrite)))
-            IsRedundant = true;
+                (IsPostDom && ((LockOp == LockOperation::RELEASE) &&
+                               DomIsWrite && CurrIsWrite)) ||
+                (!IsPostDom && ((LockOp == LockOperation::ACQUIRE) &&
+                                !DomIsWrite && !CurrIsWrite)))
+              IsRedundant = true;
 
             if (IsRedundant) {
               LLVM_DEBUG(dbgs()
