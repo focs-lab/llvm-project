@@ -42,7 +42,42 @@ merge:
 }
 
 ; ---
-; TEST 2.2: Post-dominance, Success (W in branches -> unlock -> W)
+; TEST 2.2: Pre-dominance, Veto (W -> lock -> R in branches)
+; Expected: The dominator and the dominated accesses in branches must be instrumented.
+
+define void @predom_diamond_acquire_wr_veto(i1 %cond) nounwind uwtable sanitize_thread {
+entry:
+  ; CHECK-LABEL: @predom_diamond_acquire_wr_veto
+  ; access_A, the dominator, is instrumented.
+  ; CHECK:      call void @__tsan_read4(ptr @GV1)
+  ; CHECK-NEXT: %val_b1 = load i32, ptr @GV1, align 4
+  ; CHECK-NEXT: call i32 @pthread_mutex_lock(ptr @mutex)
+  %val_b1 = load i32, ptr @GV1, align 4
+  call i32 @pthread_mutex_lock(ptr @mutex)
+  br i1 %cond, label %branch1, label %branch2
+
+branch1:
+  ; CHECK:      branch1:
+  ; access_B1, dominated, but the optimization is vetoed.
+  ; CHECK-NEXT: call void @__tsan_write4(ptr @GV1)
+  ; CHECK-NEXT: store i32 1, ptr @GV1, align 4
+  store i32 1, ptr @GV1, align 4
+  br label %merge
+
+branch2:
+  ; CHECK:      branch2:
+  ; access_B2, dominated, but the optimization is vetoed.
+  ; CHECK-NEXT: call void @__tsan_write4(ptr @GV1)
+  ; CHECK-NEXT: store i32 1, ptr @GV1, align 4
+  store i32 1, ptr @GV1, align 4
+  br label %merge
+
+merge:
+  ret void
+}
+
+; ---
+; TEST 2.3: Post-dominance, Success (W in branches -> unlock -> W)
 ; An access in the merge block post-dominates accesses in both branches. The path contains an unlock.
 ; Expected: Instrumentation in both branches should be removed.
 
@@ -81,37 +116,40 @@ merge:
 }
 
 ; ---
-; TEST 2.3: Pre-dominance, Veto (W -> lock -> R in branches)
+; TEST 2.4: Post-dominance, Veto (R in branches -> unlock -> W)
 ; Expected: The dominator and the dominated accesses in branches must be instrumented.
 
-define void @predom_diamond_acquire_wr_veto(i1 %cond) nounwind uwtable sanitize_thread {
+define void @postdom_diamond_release_rw_veto(i1 %cond) nounwind uwtable sanitize_thread {
 entry:
-  ; CHECK-LABEL: @predom_diamond_acquire_wr_veto
-  ; access_A, the dominator, is instrumented.
-  ; CHECK:      call void @__tsan_write4(ptr @GV1)
-  ; CHECK-NEXT: store i32 1, ptr @GV1, align 4
-  store i32 1, ptr @GV1, align 4
-  ; CHECK:      call i32 @pthread_mutex_lock(ptr @mutex)
-  call i32 @pthread_mutex_lock(ptr @mutex)
+  ; CHECK-LABEL: @postdom_diamond_release_rw_veto
   br i1 %cond, label %branch1, label %branch2
 
 branch1:
   ; CHECK:      branch1:
-  ; access_B1, dominated, but the optimization is vetoed.
-  ; CHECK:      call void @__tsan_read4(ptr @GV1)
-  ; CHECK:      %val_b1 = load i32, ptr @GV1, align 4
+  ; access_A1, post-dominated, is NOT instrumented.
+  ; CHECK-NOT:  call void @__tsan_read4
+  ; CHECK-NEXT:      %val_b1 = load i32, ptr @GV1, align 4
   %val_b1 = load i32, ptr @GV1, align 4
+  ; CHECK:      call i32 @pthread_mutex_unlock(ptr @mutex)
+  call i32 @pthread_mutex_unlock(ptr @mutex)
   br label %merge
 
 branch2:
   ; CHECK:      branch2:
-  ; access_B2, dominated, but the optimization is vetoed.
-  ; CHECK:      call void @__tsan_read4(ptr @GV1)
-  ; CHECK:      %val_b2 = load i32, ptr @GV1, align 4
+  ; access_A2, post-dominated, is NOT instrumented.
+  ; CHECK-NOT:  call void @__tsan_write4
+  ; CHECK-NEXT:      %val_b2 = load i32, ptr @GV1, align 4
   %val_b2 = load i32, ptr @GV1, align 4
+  ; CHECK:      call i32 @pthread_mutex_unlock(ptr @mutex)
+  call i32 @pthread_mutex_unlock(ptr @mutex)
   br label %merge
 
 merge:
+  ; CHECK:      merge:
+  ; access_B, the post-dominator, is instrumented.
+  ; CHECK-NEXT: call void @__tsan_write4(ptr @GV1)
+  ; CHECK-NEXT: store i32 3, ptr @GV1, align 4
+  store i32 3, ptr @GV1, align 4
   ret void
 }
 

@@ -29,24 +29,24 @@ entry:
 }
 
 ; ---
-; TEST 1.2: Pre-dominance, Veto (W -> lock -> R)
+; TEST 1.2: Pre-dominance, Veto (R -> lock -> W)
 ; Expected: Both accesses must be instrumented.
 
 define void @predom_simple_acquire_wr_veto() nounwind uwtable sanitize_thread {
 entry:
   ; CHECK-LABEL: @predom_simple_acquire_wr_veto
   ; access_A, the dominator, is instrumented.
-  ; CHECK:      call void @__tsan_write4(ptr @GV1)
-  ; CHECK-NEXT: store i32 1, ptr @GV1, align 4
-  store i32 1, ptr @GV1, align 4
+  ; CHECK:      call void @__tsan_read4(ptr @GV1)
+  ; CHECK-NEXT: %val = load i32, ptr @GV1, align 4
+  %val = load i32, ptr @GV1, align 4
 
   ; CHECK:      call i32 @pthread_mutex_lock(ptr @mutex)
   call i32 @pthread_mutex_lock(ptr @mutex)
 
   ; access_B, the dominated access, but the optimization is vetoed.
-  ; CHECK:      call void @__tsan_read4(ptr @GV1)
-  ; CHECK-NEXT: %val = load i32, ptr @GV1, align 4
-  %val = load i32, ptr @GV1, align 4
+  ; CHECK:      call void @__tsan_write4(ptr @GV1)
+  ; CHECK-NEXT: store i32 1, ptr @GV1, align 4
+  store i32 1, ptr @GV1, align 4
   ret void
 }
 
@@ -73,24 +73,24 @@ entry:
 }
 
 ; ---
-; TEST 1.4: Post-dominance, Veto (R -> unlock -> W)
+; TEST 1.4: Post-dominance, Veto (W -> unlock -> R)
 ; Expected: Both accesses must be instrumented.
 
 define void @postdom_simple_release_rw_veto() nounwind uwtable sanitize_thread {
 entry:
   ; CHECK-LABEL: @postdom_simple_release_rw_veto
   ; access_A, the post-dominated access, but the optimization is vetoed.
-  ; CHECK:      call void @__tsan_read4(ptr @GV1)
-  ; CHECK-NEXT: %val = load i32, ptr @GV1, align 4
-  %val = load i32, ptr @GV1, align 4
+  ; CHECK:      call void @__tsan_write4(ptr @GV1)
+  ; CHECK-NEXT: store i32 1, ptr @GV1, align 4
+  store i32 1, ptr @GV1, align 4
 
   ; CHECK:      call i32 @pthread_mutex_unlock(ptr @mutex)
   call i32 @pthread_mutex_unlock(ptr @mutex)
 
   ; access_B, the post-dominator, is instrumented.
-  ; CHECK:      call void @__tsan_write4(ptr @GV1)
-  ; CHECK-NEXT: store i32 1, ptr @GV1, align 4
-  store i32 1, ptr @GV1, align 4
+  ; CHECK:      call void @__tsan_read4(ptr @GV1)
+  ; CHECK-NEXT: %val = load i32, ptr @GV1, align 4
+  %val = load i32, ptr @GV1, align 4
   ret void
 }
 

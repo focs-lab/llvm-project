@@ -894,12 +894,19 @@ void ThreadSanitizer::eliminateInstrByPrePostDominance(
               IsPathClear =
                   isPathClear(DomInst, CurrInst, DTBase, TLI, &LockOp);
 
+            LLVM_DEBUG(dbgs()
+                       << "Path is " << (IsPathClear ? "clear" : "not clear")
+                       << ", LockOp: "
+                       << (LockOp == LockOperation::NONE      ? "NONE"
+                           : LockOp == LockOperation::ACQUIRE ? "ACQUIRE"
+                           : LockOp == LockOperation::RELEASE ? "RELEASE"
+                                                              : "BOTH")
+                       << "\n");
+
             bool IsRedundant = false;
             if (IsPathClear ||
-                (IsPostDom && ((LockOp == LockOperation::RELEASE) &&
-                               DomIsWrite && CurrIsWrite)) ||
-                (!IsPostDom && ((LockOp == LockOperation::ACQUIRE) &&
-                                !DomIsWrite && !CurrIsWrite)))
+                (IsPostDom && (LockOp == LockOperation::RELEASE)) ||
+                (!IsPostDom && (LockOp == LockOperation::ACQUIRE)))
               IsRedundant = true;
 
             if (IsRedundant) {
