@@ -105,6 +105,7 @@ public:
   /// escaping by calls)
   explicit EscapeAnalysisInfo(
       const Function &Fn,
+      const TargetLibraryInfo &TLI_,
       std::shared_ptr<NonEscapingFuncsMap> NonEscapingFuncs_ = nullptr,
       std::shared_ptr<IPABottomTopMap> IPAFuncEscInfo = nullptr,
       std::shared_ptr<IPAArgEscFromCallsMap> IPAArgEscFromCallers_ = nullptr);
@@ -114,7 +115,8 @@ public:
   /// Recursively search in the instruction for the underlying objects which
   /// may escape
   static SmallVector<UnderlObjTy> getUnderlyingMayEscObjs(
-      const Value *V, unsigned MaxLookup = MaxUnderlObjLookup,
+      const Value *V, const TargetLibraryInfo &TLI,
+      unsigned MaxLookup = MaxUnderlObjLookup,
       std::shared_ptr<IPABottomTopMap> IPAFuncEscInfo = nullptr);
 
   /// Is Value V is escaping somewhere in the function
@@ -167,6 +169,8 @@ private:
 
   /// List of functions whose arguments don't escape
   std::shared_ptr<NonEscapingFuncsMap> NonEscapingFuncs;
+
+  const TargetLibraryInfo &TLI;
 
   class PointsToRelTy {
     using PointeeListTy = SmallSet<ObjAndPath, 4>;
@@ -287,13 +291,13 @@ private:
 
   /// Functions to process operand/instruction pair to get escape status
   EscInfoTy getEscInfoCall(const Use &U, const Instruction *I) const;
-  static EscInfoTy getEscInfoLoad(const Instruction *I);
-  static EscInfoTy getEscInfoStore(const Use &U, const Instruction *I);
-  static EscInfoTy getEscInfoAtomicRMW(const Use &U, const Instruction *I);
-  static EscInfoTy getEscInfoAtomicCmpXchg(const Use &U, const Instruction *I);
-  static EscInfoTy getEscInfoGetElementPtr(const Instruction *I);
-  static EscInfoTy getEscInfoICmp(const Use &U, const Instruction *I);
-  static EscInfoTy getEscInfoRet(const Use &U);
+  EscInfoTy getEscInfoLoad(const Instruction *I) const;
+  EscInfoTy getEscInfoStore(const Use &U, const Instruction *I) const;
+  EscInfoTy getEscInfoAtomicRMW(const Use &U, const Instruction *I) const;
+  EscInfoTy getEscInfoAtomicCmpXchg(const Use &U, const Instruction *I) const;
+  EscInfoTy getEscInfoGetElementPtr(const Instruction *I) const;
+  EscInfoTy getEscInfoICmp(const Use &U, const Instruction *I) const;
+  EscInfoTy getEscInfoRet(const Use &U) const;
 
   /// Print escaped objects in some path from Entry to BB
   void printEscapingForBB(const BasicBlock *BB, raw_ostream &OS) const;
@@ -315,6 +319,7 @@ private:
 class EscapeAnalysisGlobalInfo {
   Module &M;
   DenseMap<const Function *, EscapeAnalysisInfo> FuncEscapeInfo;
+  ModuleAnalysisManager &MAM;
 
   /// List of functions whose arguments don't escape
   static constexpr auto FuncWhiteListFileName = "ea_summary.txt";
@@ -386,11 +391,14 @@ class EscapeAnalysisGlobalInfo {
   void writeIPASummary();
 
 public:
-  explicit EscapeAnalysisGlobalInfo(CallGraph &CG, Module &M);
+  explicit EscapeAnalysisGlobalInfo(CallGraph &CG, Module &M,
+                                    ModuleAnalysisManager &MAM_);
   void print(Module &M, raw_ostream &O) const;
 
   /// For given pointer, get underlying objects, and get escape status for them
-  bool isEscapedUndrlObjOrPointee(const Value *Addr, const BasicBlock *BB,
+  bool isEscapedUndrlObjOrPointee(const Value *Addr,
+                                  const TargetLibraryInfo &TLI,
+                                  const BasicBlock *BB,
                                   EscapeAnalysisInfo::EscReasonTy &EscReason);
 
   /// Is Value V is escaping in some path from Entry to BB in the function F
@@ -412,7 +420,7 @@ class EscapeAnalysis : public AnalysisInfoMixin<EscapeAnalysis> {
 
 public:
   using Result = EscapeAnalysisInfo;
-  static Result run(const Function &F, FunctionAnalysisManager &AM);
+  static Result run(Function &F, FunctionAnalysisManager &AM);
 };
 
 /// Printer pass for the \c EscapeAnalysis results.

@@ -238,17 +238,18 @@ private:
   bool instrumentAtomic(Instruction *I, const DataLayout &DL);
   void disableInterceptorForInstr(Instruction *I, InstrumentationIRBuilder &IRB);
   bool instrumentInterceptedCalls(
-      CallInst *CI, std::optional<EscapeAnalysisGlobalInfo *> EAIGlobal);
+      CallInst *CI, const TargetLibraryInfo &TLI,
+      std::optional<EscapeAnalysisGlobalInfo *> EAIGlobal);
   bool
-  instrumentMemIntrinsic(Instruction *I,
+  instrumentMemIntrinsic(Instruction *I, const TargetLibraryInfo &TLI,
                          std::optional<EscapeAnalysisGlobalInfo *> EAIGlobal);
   void chooseInstructionsToInstrument(
       SmallVectorImpl<Instruction *> &Local,
-      SmallVectorImpl<InstructionInfo> &All, const DataLayout &DL,
-      const std::optional<EscapeAnalysisInfo> &EAI,
-      std::optional<EscapeAnalysisGlobalInfo*> EAIGlobal = std::nullopt,
-      std::optional<LockOwnershipInfo*> LOI = std::nullopt,
-      std::optional<SingleThreadedInfo*> STI = std::nullopt);
+      SmallVectorImpl<InstructionInfo> &All, const TargetLibraryInfo &TLI,
+      const DataLayout &DL, const std::optional<EscapeAnalysisInfo> &EAI,
+      std::optional<EscapeAnalysisGlobalInfo *> EAIGlobal = std::nullopt,
+      std::optional<LockOwnershipInfo *> LOI = std::nullopt,
+      std::optional<SingleThreadedInfo *> STI = std::nullopt);
 
   DenseMap<Instruction *, size_t> createInstrIndexMap(
       SmallVectorImpl<InstructionInfo> &AllInstr);
@@ -660,11 +661,11 @@ static void updateEscapeStatistics(EscReasonTy Reason) {
 // 'All' is a vector of insns that will be instrumented.
 void ThreadSanitizer::chooseInstructionsToInstrument(
     SmallVectorImpl<Instruction *> &Local,
-    SmallVectorImpl<InstructionInfo> &All, const DataLayout &DL,
-    const std::optional<EscapeAnalysisInfo> &EAI,
-    std::optional<EscapeAnalysisGlobalInfo*> EAIGlobal,
-    std::optional<LockOwnershipInfo*> LOI,
-    std::optional<SingleThreadedInfo*> STI) {
+    SmallVectorImpl<InstructionInfo> &All, const TargetLibraryInfo &TLI,
+    const DataLayout &DL, const std::optional<EscapeAnalysisInfo> &EAI,
+    std::optional<EscapeAnalysisGlobalInfo *> EAIGlobal,
+    std::optional<LockOwnershipInfo *> LOI,
+    std::optional<SingleThreadedInfo *> STI) {
   DenseMap<Value *, size_t> WriteTargets; // Map of addresses to index in All
   // Iterate from the end.
   for (Instruction *I : reverse(Local)) {
@@ -714,7 +715,7 @@ void ThreadSanitizer::chooseInstructionsToInstrument(
     if (EAI.has_value()) {
       bool InstrOmitted = false;
       for (const UnderlObjTy &UnderlObj :
-           EscapeAnalysisInfo::getUnderlyingMayEscObjs(Addr)) {
+           EscapeAnalysisInfo::getUnderlyingMayEscObjs(Addr, TLI)) {
         EscReasonTy EscReason;
         const bool IsEscaped = EAI.value().isEscapedForBB(
             I->getParent(), UnderlObj, &EscReason);
@@ -731,8 +732,8 @@ void ThreadSanitizer::chooseInstructionsToInstrument(
       }
     } else if (EAIGlobal.has_value()) {
       EscReasonTy EscReason;
-      if (!EAIGlobal.value()->isEscapedUndrlObjOrPointee(Addr, I->getParent(),
-                                                         EscReason)) {
+      if (!EAIGlobal.value()->isEscapedUndrlObjOrPointee(
+              Addr, TLI, I->getParent(), EscReason)) {
         LLVM_DEBUG(dbgs() << "Instruction omitted due to escape analysis\n");
         NumOmittedNonEscaped++;
         continue;
@@ -1246,11 +1247,11 @@ bool ThreadSanitizer::sanitizeFunction(
         if (!IsIntr && !IsInterc)
           HasCalls = true;
         chooseInstructionsToInstrument(LocalLoadsAndStores, AllLoadsAndStores,
-                                       DL, EAI, EAIGlobal, LOI, STI);
+                                       TLI, DL, EAI, EAIGlobal, LOI, STI);
       }
     }
-    chooseInstructionsToInstrument(LocalLoadsAndStores, AllLoadsAndStores, DL,
-                                   EAI, EAIGlobal, LOI, STI);
+    chooseInstructionsToInstrument(LocalLoadsAndStores, AllLoadsAndStores, TLI,
+                                   DL, EAI, EAIGlobal, LOI, STI);
   }
 
   if (ClUseDominanceAnalysis) {
@@ -1297,11 +1298,11 @@ bool ThreadSanitizer::sanitizeFunction(
 
   if (ClInstrumentMemIntrinsics && SanitizeFunction)
     for (auto *Inst : MemIntrinCalls) {
-      Res |= instrumentMemIntrinsic(Inst, EAIGlobal);
+      Res |= instrumentMemIntrinsic(Inst, TLI, EAIGlobal);
     }
 
   for (CallInst *CI: InterceptedCalls)
-    Res |= instrumentInterceptedCalls(CI, EAIGlobal);
+    Res |= instrumentInterceptedCalls(CI, TLI, EAIGlobal);
 
   if (F.hasFnAttribute("sanitize_thread_no_checking_at_run_time")) {
     assert(!F.hasFnAttribute(Attribute::SanitizeThread));
@@ -1428,18 +1429,19 @@ void ThreadSanitizer::disableInterceptorForInstr(
 }
 
 static bool
-isPointerEscaped(Value *Ptr, Instruction *I,
+isPointerEscaped(Value *Ptr, Instruction *I, const TargetLibraryInfo &TLI,
                  std::optional<EscapeAnalysisGlobalInfo *> EAIGlobal) {
   if (EAIGlobal.has_value()) {
     EscReasonTy EscReason;
-    return EAIGlobal.value()->isEscapedUndrlObjOrPointee(Ptr, I->getParent(),
-                                                         EscReason);
+    return EAIGlobal.value()->isEscapedUndrlObjOrPointee(
+        Ptr, TLI, I->getParent(), EscReason);
   }
   return true;
 }
 
 bool ThreadSanitizer::instrumentInterceptedCalls(
-    CallInst *CI, std::optional<EscapeAnalysisGlobalInfo *> EAIGlobal) {
+    CallInst *CI, const TargetLibraryInfo &TLI,
+    std::optional<EscapeAnalysisGlobalInfo *> EAIGlobal) {
   // Check which intercepted function is being called
   // LLVM_DEBUG(dbgs() << "Check " << *CI << "\n");
 
@@ -1448,12 +1450,12 @@ bool ThreadSanitizer::instrumentInterceptedCalls(
 
   // Check if pointers passed to the function escape
   if (Callee->getName() == "strcmp" || Callee->getName() == "memchr") {
-    if (!isPointerEscaped(CI->getArgOperand(0), CI, EAIGlobal) &&
-        !isPointerEscaped(CI->getArgOperand(1), CI, EAIGlobal)) {
+    if (!isPointerEscaped(CI->getArgOperand(0), CI, TLI, EAIGlobal) &&
+        !isPointerEscaped(CI->getArgOperand(1), CI, TLI, EAIGlobal)) {
       ArePointersEscaped = false;
     }
   } else if (Callee->getName() == "strlen") {
-    if (!isPointerEscaped(CI->getArgOperand(0), CI, EAIGlobal))
+    if (!isPointerEscaped(CI->getArgOperand(0), CI, TLI, EAIGlobal))
       ArePointersEscaped = false;
   }
 
@@ -1474,8 +1476,9 @@ bool ThreadSanitizer::instrumentInterceptedCalls(
 // Since tsan is running after everyone else, the calls should not be
 // replaced back with intrinsics. If that becomes wrong at some point,
 // we will need to call e.g. __tsan_memset to avoid the intrinsics.
-bool ThreadSanitizer::instrumentMemIntrinsic(Instruction *I,
-   std::optional<EscapeAnalysisGlobalInfo*> EAIGlobal) {
+bool ThreadSanitizer::instrumentMemIntrinsic(
+    Instruction *I, const TargetLibraryInfo &TLI,
+    std::optional<EscapeAnalysisGlobalInfo *> EAIGlobal) {
   InstrumentationIRBuilder IRB(I);
   LLVM_DEBUG(dbgs() << "Instrumenting MemIntrinsic: " << *I << "\n");
 
@@ -1485,7 +1488,7 @@ bool ThreadSanitizer::instrumentMemIntrinsic(Instruction *I,
     Value *Cast2 = IRB.CreateIntCast(M->getArgOperand(2), IntptrTy, false);
 
     // Check if pointer is not escape
-    if (!isPointerEscaped(M->getArgOperand(0), I, EAIGlobal)) {
+    if (!isPointerEscaped(M->getArgOperand(0), I, TLI, EAIGlobal)) {
       LLVM_DEBUG(dbgs() << "MemIntrinsic does not escape any pointers\n");
       disableInterceptorForInstr(I, IRB);
       return false;
@@ -1529,8 +1532,8 @@ bool ThreadSanitizer::instrumentMemIntrinsic(Instruction *I,
     //
     // Check if pointers are not escape
     if (!TimevalCaseFlag &&
-        !isPointerEscaped(M->getArgOperand(0), I, EAIGlobal) &&
-        !isPointerEscaped(M->getArgOperand(1), I, EAIGlobal)) {
+        !isPointerEscaped(M->getArgOperand(0), I, TLI, EAIGlobal) &&
+        !isPointerEscaped(M->getArgOperand(1), I, TLI, EAIGlobal)) {
       disableInterceptorForInstr(I, IRB);
       return false;
     }

@@ -14,6 +14,8 @@
 
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/PassManager.h"
+
+#include <filesystem>
 #include <fstream>
 
 using namespace llvm;
@@ -255,11 +257,22 @@ void SingleThreadedInfo::print(raw_ostream &OS) const {
     OS << "  " << GV->getName() << "\n";
 }
 
+const std::string LogDir = "tsan-logs";
+static void createLogDir() {
+  std::error_code EC;
+  if (!std::filesystem::exists(LogDir))
+    if (!std::filesystem::create_directory(LogDir, EC) && EC)
+      errs() << "Error creating directory " << LogDir << ": " << EC.message()
+             << "\n";
+}
+
 void SingleThreadedInfo::writeSummary() const {
-  std::ofstream Summary(SingleThreadedSummaryFileName);
+  createLogDir();
+
+  const auto STSummaryPath = LogDir + "/" + SingleThreadedSummaryFileName;
+  std::ofstream Summary(STSummaryPath);
   if (!Summary.is_open()) {
-    errs() << "Error: Could not open file " << SingleThreadedSummaryFileName
-           << " for writing\n";
+    errs() << "Error: Could not open " << STSummaryPath << " for writing\n";
     return;
   }
   LLVM_DEBUG(dbgs() << "Writing analysis results to "

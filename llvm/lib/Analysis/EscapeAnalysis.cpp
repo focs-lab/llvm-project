@@ -18,6 +18,7 @@
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/Analysis/AliasAnalysis.h"
 #include "llvm/Analysis/CaptureTracking.h"
+#include "llvm/Analysis/TargetLibraryInfo.h"
 #include "llvm/Analysis/ValueTracking.h"
 #include "llvm/Demangle/Demangle.h"
 #include "llvm/IR/CFG.h"
@@ -477,21 +478,25 @@ static bool getIPAFuncRetEscStatus(
 }
 
 static bool isCallNotReturnEscaped(
-    StringRef FuncName,
+    StringRef FuncName, const TargetLibraryInfo &TLI,
     std::shared_ptr<EscapeAnalysisInfo::NonEscapingFuncsMap> NonEscapingFuncs =
         nullptr) {
+  LibFunc Func;
+  if (TLI.getLibFunc(FuncName, Func))
+    return !TLI.isReturnValueEscaping(Func);
+
   return (FuncName == "malloc" || FuncName == "calloc" ||
           FuncName == "realloc" || FuncName == "strlen" ||
           FuncName == "strcmp" || FuncName == "memchr");
 }
 
 static bool isSafeExternalCall(
-    StringRef FuncName, unsigned ArgIndex,
+    StringRef FuncName, const TargetLibraryInfo &TLI, unsigned ArgIndex,
     std::shared_ptr<EscapeAnalysisInfo::NonEscapingFuncsMap> NonEscapingFuncs =
         nullptr) {
   // TODO Demangle the function name before comparison
   if (!NonEscapingFuncs)
-    return isCallNotReturnEscaped(FuncName, NonEscapingFuncs);
+    return isCallNotReturnEscaped(FuncName, TLI, NonEscapingFuncs);
 
   const auto FuncIt = NonEscapingFuncs->find(std::string(FuncName));
   if (FuncIt == NonEscapingFuncs->end())
@@ -509,7 +514,7 @@ static bool isSafeExternalCall(
 
 /// Check if it's a function call which can escape
 static bool isCallMayEscape(
-    const Value *V,
+    const Value *V, const TargetLibraryInfo &TLI,
     std::shared_ptr<EscapeAnalysisInfo::IPABottomTopMap> IPABottomTopInfo =
         nullptr,
     std::shared_ptr<EscapeAnalysisInfo::NonEscapingFuncsMap> NonEscapingFuncs =
@@ -524,7 +529,7 @@ static bool isCallMayEscape(
   // Check if the call is to a known memory allocation function.
   if (const Function *F = CB->getCalledFunction()) {
     if (F->isDeclaration()) {
-      if (isCallNotReturnEscaped(F->getName(), NonEscapingFuncs))
+      if (isCallNotReturnEscaped(F->getName(), TLI, NonEscapingFuncs))
         return false; // Memory allocation functions do not escape.
       return true;    // Unknown external function.
     }
@@ -548,7 +553,7 @@ EscapeAnalysisInfo::getExtObjStatusIPA(const Value *V) const {
   }
 
   if (IPABottomTopInfo && (EscReason == EscReasonBits::ESCAPED_CALL)) {
-    if (isCallMayEscape(V, IPABottomTopInfo))
+    if (isCallMayEscape(V, TLI, IPABottomTopInfo))
       return EscReasonBits::ESCAPED_CALL;
     return EscReasonBits::NO_ESCAPE;
   }
@@ -561,12 +566,13 @@ EscapeAnalysisInfo::getExtObjStatusIPA(const Value *V) const {
 //===----------------------------------------------------------------------===//
 
 EscapeAnalysisInfo::EscapeAnalysisInfo(
-    const Function &Fn, std::shared_ptr<NonEscapingFuncsMap> NonEscapingFuncs_,
+    const Function &Fn, const TargetLibraryInfo &TLI_,
+    std::shared_ptr<NonEscapingFuncsMap> NonEscapingFuncs_,
     std::shared_ptr<IPABottomTopMap> IPABottomTopInfo_,
     std::shared_ptr<IPAArgEscFromCallsMap> IPAArgEscFromCallers_)
     : AnalyzedFunc(Fn), IPABottomTopInfo(IPABottomTopInfo_),
       IPATopDownInfo(IPAArgEscFromCallers_),
-      NonEscapingFuncs(NonEscapingFuncs_) {
+      NonEscapingFuncs(NonEscapingFuncs_), TLI(TLI_) {
   LLVM_DEBUG(dbgs() << "\n|||||||||||||||||||||||||||||||||||||||||||||||||||||"
                        "|||||||||||||||||\n|||||||||||||||||||| Func "
                     << Fn.getName() << "\t||||||||||||||||||||||\n"
@@ -672,8 +678,8 @@ void EscapeAnalysisInfo::compBBEscapeState(const BasicBlock *BB,
       LLVM_DEBUG(dbgs() << "\nOPND: " << dbgObjToStr(Opnd););
       assert(EscDetails.has_value() && "EscDetails must be set");
 
-      auto UnderlObjs = getUnderlyingMayEscObjs(Opnd.get(), MaxUnderlObjLookup,
-                                                IPABottomTopInfo);
+      auto UnderlObjs = getUnderlyingMayEscObjs(
+          Opnd.get(), TLI, MaxUnderlObjLookup, IPABottomTopInfo);
 
       if (UnderlObjs.empty())
         continue;
@@ -769,7 +775,7 @@ EscapeAnalysisInfo::getEscInfoCall(const Use &U, const Instruction *I) const {
       Call->getType()->isVoidTy())
     return {EscKindTy::NO_ESCAPE, std::nullopt};
 
-  if (isCallMayEscape(Call, IPABottomTopInfo)) {
+  if (isCallMayEscape(Call, TLI, IPABottomTopInfo)) {
     const auto *F = dyn_cast<Function>(U.get());
     if (F && (F != Call->getCalledFunction())) {
       if (IPABottomTopInfo)
@@ -786,7 +792,7 @@ EscapeAnalysisInfo::getEscInfoCall(const Use &U, const Instruction *I) const {
   // getUnderlyingObject in ValueTracking or DecomposeGEPExpression
   // in BasicAA also need to know about this property.
   if (isIntrinsicReturningPointerAliasingArgumentWithoutCapturing(Call, true))
-    return {EscKindTy::MAY_ALIASING, getUnderlyingMayEscObjs(I)};
+    return {EscKindTy::MAY_ALIASING, getUnderlyingMayEscObjs(I, TLI)};
 
   if (const auto *MI = dyn_cast<MemIntrinsic>(Call)) {
     // Volatile operations effectively capture the memory location that they
@@ -803,7 +809,7 @@ EscapeAnalysisInfo::getEscInfoCall(const Use &U, const Instruction *I) const {
       if (const auto *Alloca = dyn_cast<AllocaInst>(U.get()))
         if (const Type *StructTy = Alloca->getAllocatedType();
             StructTy && structContainsPointerType(StructTy))
-          return {EscKindTy::MAY_ALIASING, getUnderlyingMayEscObjs(Dst)};
+          return {EscKindTy::MAY_ALIASING, getUnderlyingMayEscObjs(Dst, TLI)};
   }
 
   // Calling a function pointer does not in itself cause the pointer to
@@ -817,9 +823,14 @@ EscapeAnalysisInfo::getEscInfoCall(const Use &U, const Instruction *I) const {
 
   if (const Function *CalledFunc = Call->getCalledFunction();
       CalledFunc && Call->isArgOperand(&U)) {
-    unsigned ArgIndex = Call->getArgOperandNo(&U);
+    const unsigned ArgIndex = Call->getArgOperandNo(&U);
     // Some functions can be taken as safe external calls
-    if (isSafeExternalCall(CalledFunc->getName(), ArgIndex, NonEscapingFuncs))
+    LibFunc Func;
+    if (TLI.getLibFunc(*CalledFunc, Func) && !TLI.doesArgEscape(Func, ArgIndex))
+      return {EscKindTy::NO_ESCAPE, std::nullopt};
+
+    if (isSafeExternalCall(CalledFunc->getName(), TLI, ArgIndex,
+                           NonEscapingFuncs))
       return {EscKindTy::NO_ESCAPE, std::nullopt};
   }
 
@@ -851,7 +862,7 @@ EscapeAnalysisInfo::getEscInfoCall(const Use &U, const Instruction *I) const {
 }
 
 EscapeAnalysisInfo::EscInfoTy
-EscapeAnalysisInfo::getEscInfoLoad(const Instruction *I) {
+EscapeAnalysisInfo::getEscInfoLoad(const Instruction *I) const {
   // LLVM_DEBUG(dbgs() << " -- Load\n");
   // Volatile loads make the address observable.
   if (cast<LoadInst>(I)->isVolatile())
@@ -860,7 +871,7 @@ EscapeAnalysisInfo::getEscInfoLoad(const Instruction *I) {
 }
 
 EscapeAnalysisInfo::EscInfoTy
-EscapeAnalysisInfo::getEscInfoStore(const Use &U, const Instruction *I) {
+EscapeAnalysisInfo::getEscInfoStore(const Use &U, const Instruction *I) const {
   // LLVM_DEBUG(dbgs() << " -- Store\n");
   // Volatile stores make the address observable.
   if (cast<StoreInst>(I)->isVolatile())
@@ -875,7 +886,7 @@ EscapeAnalysisInfo::getEscInfoStore(const Use &U, const Instruction *I) {
 
   // dbgs() << *cast<StoreInst>(I)->getPointerOperandType() << "\n";
 
-  const auto DstObjs = getUnderlyingMayEscObjs(I->getOperand(1));
+  const auto DstObjs = getUnderlyingMayEscObjs(I->getOperand(1), TLI);
   if (DstObjs.empty())
     return {EscKindTy::NO_ESCAPE, std::nullopt};
 
@@ -883,7 +894,8 @@ EscapeAnalysisInfo::getEscInfoStore(const Use &U, const Instruction *I) {
 }
 
 EscapeAnalysisInfo::EscInfoTy
-EscapeAnalysisInfo::getEscInfoAtomicRMW(const Use &U, const Instruction *I) {
+EscapeAnalysisInfo::getEscInfoAtomicRMW(const Use &U,
+                                        const Instruction *I) const {
   LLVM_DEBUG(dbgs() << " -- AtomicRMW\n");
   // atomicrmw conceptually includes both a load and store from
   // the same location.
@@ -898,7 +910,7 @@ EscapeAnalysisInfo::getEscInfoAtomicRMW(const Use &U, const Instruction *I) {
 
 EscapeAnalysisInfo::EscInfoTy
 EscapeAnalysisInfo::getEscInfoAtomicCmpXchg(const Use &U,
-                                            const Instruction *I) {
+                                            const Instruction *I) const {
   LLVM_DEBUG(dbgs() << " -- AtomicCmpXchg\n");
   // cmpxchg conceptually includes both a load and store from
   // the same location.
@@ -912,7 +924,7 @@ EscapeAnalysisInfo::getEscInfoAtomicCmpXchg(const Use &U,
 }
 
 EscapeAnalysisInfo::EscInfoTy
-EscapeAnalysisInfo::getEscInfoGetElementPtr(const Instruction *I) {
+EscapeAnalysisInfo::getEscInfoGetElementPtr(const Instruction *I) const {
   // LLVM_DEBUG(dbgs() << " -- GetElementPtr\n");
   // AA does not support pointers of vectors, so GEP vector splats need to
   // be considered as captures.
@@ -924,7 +936,7 @@ EscapeAnalysisInfo::getEscInfoGetElementPtr(const Instruction *I) {
 }
 
 EscapeAnalysisInfo::EscInfoTy
-EscapeAnalysisInfo::getEscInfoICmp(const Use &U, const Instruction *I) {
+EscapeAnalysisInfo::getEscInfoICmp(const Use &U, const Instruction *I) const {
   // LLVM_DEBUG(dbgs() << " -- ICmp\n");
   const unsigned Idx = U.getOperandNo();
   const unsigned OtherIdx = 1 - Idx;
@@ -953,7 +965,8 @@ EscapeAnalysisInfo::getEscInfoICmp(const Use &U, const Instruction *I) {
   return {EscKindTy::NO_ESCAPE, std::nullopt};
 }
 
-EscapeAnalysisInfo::EscInfoTy EscapeAnalysisInfo::getEscInfoRet(const Use &U) {
+EscapeAnalysisInfo::EscInfoTy
+EscapeAnalysisInfo::getEscInfoRet(const Use &U) const {
   // LLVM_DEBUG(dbgs() << " -- Ret\n");
   // If not return pointer, means that's not escape
   // Returning null pointer is not escape
@@ -1124,9 +1137,9 @@ void EscapeAnalysisInfo::print(raw_ostream &OS) const {
 
 AnalysisKey EscapeAnalysis::Key;
 
-EscapeAnalysis::Result EscapeAnalysis::run(const Function &F,
+EscapeAnalysis::Result EscapeAnalysis::run(Function &F,
                                            FunctionAnalysisManager &AM) {
-  EscapeAnalysisInfo EAI(F);
+  EscapeAnalysisInfo EAI(F, AM.getResult<TargetLibraryAnalysis>(F));
   return EAI;
 }
 
@@ -1297,7 +1310,13 @@ void EscapeAnalysisGlobalInfo::evalTopDownArgEscStatus(
           continue;
         }
 
-      const auto UnderlObjs = EscapeAnalysisInfo::getUnderlyingMayEscObjs(Arg);
+      auto *Func = const_cast<Function *>(CB->getFunction());
+      const auto &TLI =
+          MAM.getResult<FunctionAnalysisManagerModuleProxy>(M)
+              .getManager()
+              .getResult<TargetLibraryAnalysis>(*Func);
+      const auto UnderlObjs =
+          EscapeAnalysisInfo::getUnderlyingMayEscObjs(Arg, TLI);
       const auto EAIIt = FuncEscapeInfo.find(CB->getFunction());
       assert(EAIIt != FuncEscapeInfo.end());
       const EscapeAnalysisInfo &CallEAI = EAIIt->second;
@@ -1337,15 +1356,20 @@ bool EscapeAnalysisGlobalInfo::traverseCGBottomTop(
     while (!Converged) {
       Converged = true;
       for (const CallGraphNode *CGN : SCC) {
-        const auto *F = CGN->getFunction();
+        Function *F = CGN->getFunction();
         if (!F || F->isDeclaration())
           continue;
 
         // Build escape summary for a function
         FuncEscapeInfo.erase(F);
 
+        const auto &TLI = MAM.getResult<FunctionAnalysisManagerModuleProxy>(M)
+                              .getManager()
+                              .getResult<TargetLibraryAnalysis>(*F);
+
         const auto [It, Inserted] = FuncEscapeInfo.try_emplace(
-            F, EscapeAnalysisInfo(*F, NonEscapingFuncs, IPABottomTopEscInfo));
+            F,
+            EscapeAnalysisInfo(*F, TLI, NonEscapingFuncs, IPABottomTopEscInfo));
 
         const auto &EAI = It->second;
         // For non-recursive functions, no need to iterate until convergence
@@ -1409,13 +1433,17 @@ void EscapeAnalysisGlobalInfo::traverseCGTopDown(
     while (!Converged) {
       Converged = true;
       for (const CallGraphNode *CGN : SCC) {
-        const Function *F = CGN->getFunction();
+        Function *F = CGN->getFunction();
 
         // We consider only localy defined, static functions
         if (!isLocalAndExactFunc(F) || !F->hasLocalLinkage() ||
             // For now, conservatively skip all ObjC methods
             isFuncPassedToObjCSelector(F))
           continue;
+
+        const auto &TLI = MAM.getResult<FunctionAnalysisManagerModuleProxy>(M)
+                              .getManager()
+                              .getResult<TargetLibraryAnalysis>(*F);
 
         LLVM_DEBUG(dbgs() << "\nIPATopDown Func: " << F->getName() << "\n");
 
@@ -1424,7 +1452,7 @@ void EscapeAnalysisGlobalInfo::traverseCGTopDown(
           evalTopDownArgEscStatus(FuncCallSites, F);
           FuncEscapeInfo.erase(F);
           FuncEscapeInfo.try_emplace(
-              F, EscapeAnalysisInfo(*F, NonEscapingFuncs, IPABottomTopEscInfo,
+              F, EscapeAnalysisInfo(*F, TLI, NonEscapingFuncs, IPABottomTopEscInfo,
                                     IPATopDownArgEscInfo));
           break;
         }
@@ -1440,9 +1468,9 @@ void EscapeAnalysisGlobalInfo::traverseCGTopDown(
         // Build escape summary for a function
         evalTopDownArgEscStatus(FuncCallSites, F);
         FuncEscapeInfo.erase(F);
-        FuncEscapeInfo.try_emplace(F, EscapeAnalysisInfo(*F, NonEscapingFuncs,
-                                                         IPABottomTopEscInfo,
-                                                         IPATopDownArgEscInfo));
+        FuncEscapeInfo.try_emplace(
+            F, EscapeAnalysisInfo(*F, TLI, NonEscapingFuncs,
+                                  IPABottomTopEscInfo, IPATopDownArgEscInfo));
 
         if (Converged && (PrevIPAFuncInfo != (*IPATopDownArgEscInfo)[F]))
           Converged = false;
@@ -1500,7 +1528,7 @@ static std::string getFileNameFromPath(std::string Path) {
   return Path;
 }
 
-const std::string LogDir = "ea-logs";
+const std::string LogDir = "tsan-logs";
 static void createLogDir() {
   std::error_code EC;
   if (!std::filesystem::exists(LogDir))
@@ -1509,10 +1537,9 @@ static void createLogDir() {
              << "\n";
 }
 
-EscapeAnalysisGlobalInfo::EscapeAnalysisGlobalInfo(CallGraph &CG, Module &M_)
-    : M(M_) {
-  createLogDir();
-
+EscapeAnalysisGlobalInfo::EscapeAnalysisGlobalInfo(CallGraph &CG, Module &M_,
+                                                   ModuleAnalysisManager &MAM_)
+    : M(M_), MAM(MAM_) {
   DEBUG_WITH_TYPE(PRINT_ESCAPING_CALLEES,
     const auto FileName = LogDir + "/escaping_callees_" +
                           getFileNameFromPath(M.getName().str()) + ".txt";
@@ -1575,10 +1602,10 @@ EscapeAnalysisGlobalInfo::EscapeAnalysisGlobalInfo(CallGraph &CG, Module &M_)
 
 /// For given pointer, get underlying objects, and get escape status for them
 bool EscapeAnalysisGlobalInfo::isEscapedUndrlObjOrPointee(
-    const Value *Addr, const BasicBlock *BB,
+    const Value *Addr, const TargetLibraryInfo &TLI, const BasicBlock *BB,
     EscapeAnalysisInfo::EscReasonTy &EscReason) {
   for (const UnderlObjTy &UnderlObj :
-       EscapeAnalysisInfo::getUnderlyingMayEscObjs(Addr)) {
+       EscapeAnalysisInfo::getUnderlyingMayEscObjs(Addr, TLI)) {
     LLVM_DEBUG(dbgs() << "isEscapedUndrlObjOrPointee UnderlObj: "
                       << *UnderlObj.Obj << "\n");
     if (isEscapedForBBTSan(BB->getParent(), BB, UnderlObj, EscReason))
@@ -1641,7 +1668,8 @@ void EscapeAnalysisGlobalInfo::writeIPASummary() {
   // const auto SummaryFileName =
   //     LogDir + "/func_nonescape_IPA_" +
   //     getFileNameFromPath(getFileNameFromPath(M.getName().str())) + ".txt";
-  const auto SummaryFileName = LogDir + "/ea_summary.txt";
+  createLogDir();
+  const auto SummaryFileName = LogDir + "/" + FuncWhiteListFileName;
   std::ofstream SummaryFile(SummaryFileName, std::ios::out);
   if (!SummaryFile.is_open()) {
     errs() << "Error opening summary file: " << SummaryFileName << "\n";
@@ -1687,7 +1715,7 @@ AnalysisKey EscapeAnalysisGlobal::Key;
 
 EscapeAnalysisGlobal::Result
 EscapeAnalysisGlobal::run(Module &M, ModuleAnalysisManager &AM) {
-  return EscapeAnalysisGlobalInfo(AM.getResult<CallGraphAnalysis>(M), M);
+  return EscapeAnalysisGlobalInfo(AM.getResult<CallGraphAnalysis>(M), M, AM);
 }
 
 PreservedAnalyses
@@ -1894,8 +1922,8 @@ static const Value *getUnderlyingObjectFromInt(const Value *V) {
 /// ptrtoint+arithmetic+inttoptr sequences.
 /// It returns false if unidentified object is found in getUnderlyingObjects.
 static bool getUnderlObjsForCodeGenWithoutPHIInvCheck(
-    const Value *V, SmallVectorImpl<UnderlObjTy> &Objects,
-    const unsigned MaxLookup,
+    const Value *V, const TargetLibraryInfo &TLI,
+    SmallVectorImpl<UnderlObjTy> &Objects, const unsigned MaxLookup,
     std::shared_ptr<EscapeAnalysisInfo::IPABottomTopMap> IPAFuncEscInfo) {
   SmallPtrSet<const Value *, 16> Visited;
   SmallVector<const Value *, 4> Working(1, V);
@@ -1929,7 +1957,7 @@ static bool getUnderlObjsForCodeGenWithoutPHIInvCheck(
           // Function arguments may escape or be aliases */
           !isa<Argument>(UO.Obj) &&
           // Results of function calls (e.g. returning pointer) may escape
-          !isCallMayEscape(UO.Obj, IPAFuncEscInfo)) { // do we need it?
+          !isCallMayEscape(UO.Obj, TLI, IPAFuncEscInfo)) { // do we need it?
         Objects.clear();
         return false;
       }
@@ -1942,10 +1970,10 @@ static bool getUnderlObjsForCodeGenWithoutPHIInvCheck(
 /// Recuresively search in the instruction for the underlying objects which
 /// may escape
 SmallVector<UnderlObjTy> EscapeAnalysisInfo::getUnderlyingMayEscObjs(
-    const Value *V, const unsigned MaxLookup,
+    const Value *V, const TargetLibraryInfo &TLI, const unsigned MaxLookup,
     std::shared_ptr<IPABottomTopMap> IPAFuncEscInfo) {
   SmallVector<UnderlObjTy> UnderlObjs;
-  getUnderlObjsForCodeGenWithoutPHIInvCheck(V, UnderlObjs, MaxLookup,
+  getUnderlObjsForCodeGenWithoutPHIInvCheck(V, TLI, UnderlObjs, MaxLookup,
                                             IPAFuncEscInfo);
   LLVM_DEBUG(dbgs() << "\tgetUnderlyingMayEscObjects for " << *V << "\n");
   LLVM_DEBUG(if (!UnderlObjs.empty()) {

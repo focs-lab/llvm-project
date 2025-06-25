@@ -16,7 +16,7 @@
 ; void level1_func2(int *x) {
 ; 	*x = 333;
 ; 	int *p = x;
-; 	printf("%p\n", &p);			// Escape through external func call
+; 	external(&p);			// Escape through external func call
 ; }
 ;
 ; void level1_func3(int *x, int *p) {
@@ -78,11 +78,11 @@ entry:
   %p = alloca ptr, align 8
   store i32 333, ptr %x, align 4
   store ptr %x, ptr %p, align 8
-  %call = call i32 (ptr, ...) @printf(ptr noundef @.str, ptr noundef %p)
+  call void @external(ptr noundef %p)
   ret void
 }
 
-declare i32 @printf(ptr noundef, ...)
+declare void @external(ptr noundef %x)
 
 define dso_local void @level1_func3(ptr noundef %x, ptr noundef %p) {
 ; CHECK: Printing analysis 'Escape Analysis' for function 'level1_func3':

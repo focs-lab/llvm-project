@@ -53,7 +53,7 @@ if.then:
 ; CHECK-DAG: ptr %z
 if.end:
   %1 = load ptr, ptr %y.addr, align 8
-  %call1 = call i32 (ptr, ...) @printf(ptr noundef @.str, ptr noundef %1)
+  call void @external(ptr noundef %1)
   %2 = load ptr, ptr %x.addr, align 8
   %3 = load ptr, ptr %y.addr, align 8
   %4 = load ptr, ptr %z.addr, align 8
@@ -62,7 +62,7 @@ if.end:
 }
 
 declare i32 @rand()
-declare i32 @printf(ptr noundef, ...)
+declare void @external(ptr noundef %x)
 
 define internal void @func2(ptr noundef %x, ptr noundef %y, ptr noundef %z) {
 ; CHECK: Printing analysis 'Escape Analysis' for function 'func2':
@@ -100,6 +100,6 @@ if.then:                                          ; preds = %entry
 ; CHECK-DAG: ptr %z
 if.end:                                           ; preds = %if.then, %entry
   %4 = load ptr, ptr %z.addr, align 8
-  %call1 = call i32 (ptr, ...) @printf(ptr noundef @.str.1, ptr noundef %4)
+  call void @external(ptr noundef %4)
   ret void
 }
