@@ -1019,7 +1019,7 @@ bool ThreadSanitizer::isPathClear(
 
   while (IDomNode && IDomNode->getBlock() && IDomNode->getBlock() != DomBB) {
     BasicBlock *IntermediateBB = IDomNode->getBlock();
-    dbgs() << "Inter IDom BB " << IntermediateBB->getName() << "\n";
+    LLVM_DEBUG(dbgs() << "Inter IDom BB " << IntermediateBB->getName() << "\n");
     for (const Instruction &InterI : *IntermediateBB) {
       LLVM_DEBUG(dbgs() << "\tisPathClear -- Checking 2: " << InterI << "\n");
       if (isInstrDangerous(&InterI, TLI, LockOp))
