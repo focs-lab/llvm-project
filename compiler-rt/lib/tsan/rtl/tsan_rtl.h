@@ -48,6 +48,9 @@
 #include "tsan_trace.h"
 #include "tsan_vector_clock.h"
 
+// Needed for DenseMap
+#include "sanitizer_common/sanitizer_placement_new.h"
+
 #if SANITIZER_WORDSIZE != 64
 # error "ThreadSanitizer is supported only on 64-bit platforms"
 #endif
@@ -155,6 +158,30 @@ struct TidSlot {
   TidSlot();
 } ALIGNED(SANITIZER_CACHE_LINE_SIZE);
 
+// ReX redundancy filter implementation - lockset optimization
+struct LocksetContext {
+  void process_lock(uptr addr) {
+    ++context_internal[addr];
+    // auto *bucket = context_internal.find(addr);
+    // if (bucket != nullptr)
+    //   bucket->second++;
+    // else
+    //   context_internal[addr] = 1;
+    //   // context_internal.insert({addr, 1});
+  }
+
+  void process_unlock(uptr addr) {
+    auto *bucket = context_internal.find(addr);
+    if (bucket) {
+      bucket->second--;
+      if (bucket->second == 0)
+        context_internal.erase(bucket);
+    }
+  }
+
+  DenseMap<uptr, int> context_internal;
+};
+
 // This struct is stored in TLS.
 struct ThreadState {
   FastState fast_state;
@@ -236,7 +263,8 @@ struct ThreadState {
   explicit ThreadState(Tid tid);
 
   // ReX filter implementation
-  Vector<uptr> filter_context;
+  // Vector<uptr> filter_context;
+  LocksetContext lockset_context;
 } ALIGNED(SANITIZER_CACHE_LINE_SIZE);
 
 #if !SANITIZER_GO

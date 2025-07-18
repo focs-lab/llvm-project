@@ -163,7 +163,7 @@ FilterHistory::~FilterHistory() {
 }
 
 bool FilterHistory::CheckRedundancy(uptr pc, uptr addr, bool is_write,
-                                    const Vector<uptr>& context, u32 tid) {
+                                    const LocksetContext& context, u32 tid) {
   atomic_fetch_add(&stats_total_accesses, 1, memory_order_relaxed);
 
   // Because tid = 0 means "empty slot" in the trie
@@ -208,13 +208,14 @@ bool FilterHistory::CheckRedundancy(uptr pc, uptr addr, bool is_write,
   }
 
   // Level 3: Traverse the Trie using the concurrency context.
-  VPrintf(1, "Level 3: Traversing trie with context size=%zu\n",
-          context.Size());
+  VPrintf(1, "Level 3: Traversing trie with context size=%ud\n",
+          context.context_internal.size());
   TrieNode* current_node = root;
-  for (uptr i = 0; i < context.Size(); ++i) {
-    VPrintf(1, "  Step %zu: context[i]=%p\n", i, (void*)context[i]);
-    current_node = current_node->GetOrCreateChild(context[i]);
-  }
+  context.context_internal.forEach([&](const auto& bucket) -> bool {
+    VPrintf(1, "  Context[i]=%p\n", (void*)bucket.first);
+    current_node = current_node->GetOrCreateChild(bucket.first);
+    return true;
+  });
 
   // Finally, check for redundancy at the leaf node.
   return current_node->CheckAndAdd(tid, is_write);

@@ -212,6 +212,9 @@ void MutexPostLock(ThreadState *thr, uptr pc, uptr addr, u32 flagz, int rec) {
     Callback cb(thr, pc);
     ReportDeadlock(thr, pc, ctx->dd->GetReport(&cb));
   }
+
+  // Redundancy 'ReX' filter
+  thr->lockset_context.process_lock(addr);
 }
 
 int MutexUnlock(ThreadState *thr, uptr pc, uptr addr, u32 flagz) {
@@ -254,8 +257,10 @@ int MutexUnlock(ThreadState *thr, uptr pc, uptr addr, u32 flagz) {
     if (released) {
       IncrementEpoch(thr);
       // 'ReX' filter: add mutex to the thread context
+      // if (g_filter)
+        // thr->filter_context.PushBack(addr);
       if (g_filter)
-        thr->filter_context.PushBack(addr);
+        thr->lockset_context.process_unlock(addr);
     }
   }
   if (report_bad_unlock)
@@ -324,6 +329,9 @@ void MutexPostReadLock(ThreadState *thr, uptr pc, uptr addr, u32 flagz) {
     Callback cb(thr, pc);
     ReportDeadlock(thr, pc, ctx->dd->GetReport(&cb));
   }
+
+  // Redundancy 'ReX' filter
+  thr->lockset_context.process_lock(addr);
 }
 
 void MutexReadUnlock(ThreadState *thr, uptr pc, uptr addr) {
@@ -358,8 +366,10 @@ void MutexReadUnlock(ThreadState *thr, uptr pc, uptr addr) {
     if (released) {
       IncrementEpoch(thr);
       // 'ReX' filter: add mutex to the thread context
+      // if (g_filter)
+      //   thr->filter_context.PushBack(addr);
       if (g_filter)
-        thr->filter_context.PushBack(addr);
+        thr->lockset_context.process_unlock(addr);
     }
   }
   if (report_bad_unlock)
@@ -416,8 +426,10 @@ void MutexReadOrWriteUnlock(ThreadState *thr, uptr pc, uptr addr) {
     if (released) {
       IncrementEpoch(thr);
       // 'ReX' filter: add mutex to the thread context
+      // if (g_filter)
+      //   thr->filter_context.PushBack(addr);
       if (g_filter)
-        thr->filter_context.PushBack(addr);
+        thr->lockset_context.process_unlock(addr);
     }
   }
   if (report_bad_unlock)
