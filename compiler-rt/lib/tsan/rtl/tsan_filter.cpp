@@ -163,7 +163,7 @@ FilterHistory::~FilterHistory() {
 }
 
 bool FilterHistory::CheckRedundancy(uptr pc, uptr addr, bool is_write,
-                                    const Vector<uptr>& context, u32 tid) {
+                                    const LocksetContext& context, u32 tid) {
   atomic_fetch_add(&stats_total_accesses, 1, memory_order_relaxed);
 
   // Because tid = 0 means "empty slot" in the trie

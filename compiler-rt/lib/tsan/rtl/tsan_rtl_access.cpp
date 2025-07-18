@@ -422,7 +422,7 @@ ALWAYS_INLINE USED void MemoryAccess(ThreadState* thr, uptr pc, uptr addr,
                                      uptr size, AccessType typ) {
   // First, try to filter-out the memory access
   if (g_filter && g_filter->CheckRedundancy(pc, addr, typ == kAccessWrite,
-                                            thr->filter_context, thr->tid))
+                                            thr->lockset_context, thr->tid))
     return;
 
   RawShadow* shadow_mem = MemToShadow(addr);

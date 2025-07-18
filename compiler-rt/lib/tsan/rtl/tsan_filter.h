@@ -17,11 +17,13 @@
 #ifndef TSAN_FILTER_H
 #define TSAN_FILTER_H
 
-#include "tsan_defs.h"
+#include <tsan_rtl.h>
+
 #include "sanitizer_common/sanitizer_atomic.h"
 #include "sanitizer_common/sanitizer_dense_map.h"
 #include "sanitizer_common/sanitizer_mutex.h"
 #include "sanitizer_common/sanitizer_vector.h"
+#include "tsan_defs.h"
 
 namespace __tsan {
 
@@ -77,7 +79,7 @@ class FilterHistory {
   // tid: The current thread's ID.
   // Returns true if redundant, false otherwise.
   bool CheckRedundancy(uptr pc, uptr addr, bool is_write,
-                       const Vector<uptr>& context, u32 tid);
+                       const LocksetContext &context, u32 tid);
 
  private:
   // Maps PC to a Trie root
