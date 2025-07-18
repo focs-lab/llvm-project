@@ -13,6 +13,8 @@
 
 #include "tsan_rtl.h"
 
+#include <tsan_filter.h>
+
 #include "sanitizer_common/sanitizer_atomic.h"
 #include "sanitizer_common/sanitizer_common.h"
 #include "sanitizer_common/sanitizer_file.h"
@@ -694,6 +696,7 @@ void Initialize(ThreadState *thr) {
   CacheBinaryName();
   CheckASLR();
   InitializeFlags(&ctx->flags, options, env_name);
+
   AvoidCVE_2016_2143();
   __sanitizer::InitializePlatformEarly();
   __tsan::InitializePlatformEarly();
@@ -748,6 +751,9 @@ void Initialize(ThreadState *thr) {
   }
 
   OnInitialize();
+
+  // Initialize 'ReX' dynamic filter
+  InitializeFilter();
 }
 
 void MaybeSpawnBackgroundThread() {
@@ -799,6 +805,8 @@ int Finalize(ThreadState *thr) {
     PrintMatchedSuppressions();
 
   failed = OnFinalize(failed);
+
+  PrintFilterStats();
 
   return failed ? common_flags()->exitcode : 0;
 }

@@ -12,13 +12,14 @@
 
 #include <sanitizer_common/sanitizer_deadlock_detector_interface.h>
 #include <sanitizer_common/sanitizer_stackdepot.h>
+#include <tsan_filter.h>
 
-#include "tsan_rtl.h"
 #include "tsan_flags.h"
-#include "tsan_sync.h"
-#include "tsan_report.h"
-#include "tsan_symbolize.h"
 #include "tsan_platform.h"
+#include "tsan_report.h"
+#include "tsan_rtl.h"
+#include "tsan_symbolize.h"
+#include "tsan_sync.h"
 
 namespace __tsan {
 
@@ -250,8 +251,12 @@ int MutexUnlock(ThreadState *thr, uptr pc, uptr addr, u32 flagz) {
         ctx->dd->MutexBeforeUnlock(&cb, &s->dd, true);
       }
     }
-    if (released)
+    if (released) {
       IncrementEpoch(thr);
+      // 'ReX' filter: add mutex to the thread context
+      if (g_filter)
+        thr->filter_context.PushBack(addr);
+    }
   }
   if (report_bad_unlock)
     ReportMutexMisuse(thr, pc, ReportTypeMutexBadUnlock, addr,
@@ -350,8 +355,12 @@ void MutexReadUnlock(ThreadState *thr, uptr pc, uptr addr) {
         ctx->dd->MutexBeforeUnlock(&cb, &s->dd, false);
       }
     }
-    if (released)
+    if (released) {
       IncrementEpoch(thr);
+      // 'ReX' filter: add mutex to the thread context
+      if (g_filter)
+        thr->filter_context.PushBack(addr);
+    }
   }
   if (report_bad_unlock)
     ReportMutexMisuse(thr, pc, ReportTypeMutexBadReadUnlock, addr,
@@ -404,8 +413,12 @@ void MutexReadOrWriteUnlock(ThreadState *thr, uptr pc, uptr addr) {
         ctx->dd->MutexBeforeUnlock(&cb, &s->dd, write);
       }
     }
-    if (released)
+    if (released) {
       IncrementEpoch(thr);
+      // 'ReX' filter: add mutex to the thread context
+      if (g_filter)
+        thr->filter_context.PushBack(addr);
+    }
   }
   if (report_bad_unlock)
     ReportMutexMisuse(thr, pc, ReportTypeMutexBadUnlock, addr,

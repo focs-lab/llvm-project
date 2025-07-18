@@ -12,6 +12,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "tsan_rtl.h"
+#include "tsan_filter.h"
 
 namespace __tsan {
 
@@ -419,6 +420,11 @@ NOINLINE void TraceRestartMemoryAccess(ThreadState* thr, uptr pc, uptr addr,
 
 ALWAYS_INLINE USED void MemoryAccess(ThreadState* thr, uptr pc, uptr addr,
                                      uptr size, AccessType typ) {
+  // First, try to filter-out the memory access
+  if (g_filter && g_filter->CheckRedundancy(pc, addr, typ == kAccessWrite,
+                                            thr->filter_context, thr->tid))
+    return;
+
   RawShadow* shadow_mem = MemToShadow(addr);
   UNUSED char memBuf[4][64];
   DPrintf2("#%d: Access: %d@%d %p/%zd typ=0x%x {%s, %s, %s, %s}\n", thr->tid,

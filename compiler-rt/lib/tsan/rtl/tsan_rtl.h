@@ -234,6 +234,9 @@ struct ThreadState {
   const ReportDesc *current_report;
 
   explicit ThreadState(Tid tid);
+
+  // ReX filter implementation
+  Vector<uptr> filter_context;
 } ALIGNED(SANITIZER_CACHE_LINE_SIZE);
 
 #if !SANITIZER_GO

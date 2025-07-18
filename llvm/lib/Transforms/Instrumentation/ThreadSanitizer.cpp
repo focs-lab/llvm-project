@@ -70,10 +70,7 @@ static cl::opt<bool> ClHandleCxxExceptions(
     "tsan-handle-cxx-exceptions", cl::init(true),
     cl::desc("Handle C++ exceptions (insert cleanup blocks for unwinding)"),
     cl::Hidden);
-static cl::opt<bool> ClInstrumentAtomics("tsan-instrument-atomics",
-                                         cl::init(true),
-                                         cl::desc("Instrument atomics"),
-                                         cl::Hidden);
+static cl::opt<bool> ClInstrumentAtomics("tsan-instrument-atomics", cl::init(true), cl::desc("Instrument atomics"), cl::Hidden);
 static cl::opt<bool> ClInstrumentMemIntrinsics(
     "tsan-instrument-memintrinsics", cl::init(true),
     cl::desc("Instrument memintrinsics (memset/memcpy/memmove)"), cl::Hidden);
