@@ -162,12 +162,6 @@ struct TidSlot {
 struct LocksetContext {
   void process_lock(uptr addr) {
     ++context_internal[addr];
-    // auto *bucket = context_internal.find(addr);
-    // if (bucket != nullptr)
-    //   bucket->second++;
-    // else
-    //   context_internal[addr] = 1;
-    //   // context_internal.insert({addr, 1});
   }
 
   void process_unlock(uptr addr) {
@@ -263,7 +257,6 @@ struct ThreadState {
   explicit ThreadState(Tid tid);
 
   // ReX filter implementation
-  // Vector<uptr> filter_context;
   LocksetContext lockset_context;
 } ALIGNED(SANITIZER_CACHE_LINE_SIZE);
 
