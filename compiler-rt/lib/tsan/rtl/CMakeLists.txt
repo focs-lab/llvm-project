@@ -25,6 +25,7 @@ set(TSAN_SOURCES
   tsan_debugging.cpp
   tsan_external.cpp
   tsan_fd.cpp
+  tsan_filter.cpp
   tsan_flags.cpp
   tsan_ignoreset.cpp
   tsan_interceptors_memintrinsics.cpp
@@ -49,7 +50,6 @@ set(TSAN_SOURCES
   tsan_symbolize.cpp
   tsan_sync.cpp
   tsan_vector_clock.cpp
-  tsan_filter.cpp
   )
 
 set(TSAN_CXX_SOURCES
@@ -85,6 +85,7 @@ set(TSAN_HEADERS
   tsan_defs.h
   tsan_dense_alloc.h
   tsan_fd.h
+  tsan_filter.h
   tsan_flags.h
   tsan_flags.inc
   tsan_ignoreset.h
@@ -107,7 +108,6 @@ set(TSAN_HEADERS
   tsan_sync.h
   tsan_trace.h
   tsan_vector_clock.h
-  tsan_filter.h
   )
 
 set(TSAN_RUNTIME_LIBRARIES)

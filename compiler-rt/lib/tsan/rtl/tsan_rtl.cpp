@@ -13,8 +13,6 @@
 
 #include "tsan_rtl.h"
 
-#include <tsan_filter.h>
-
 #include "sanitizer_common/sanitizer_atomic.h"
 #include "sanitizer_common/sanitizer_common.h"
 #include "sanitizer_common/sanitizer_file.h"
@@ -24,6 +22,7 @@
 #include "sanitizer_common/sanitizer_stackdepot.h"
 #include "sanitizer_common/sanitizer_symbolizer.h"
 #include "tsan_defs.h"
+#include "tsan_filter.h"
 #include "tsan_interface.h"
 #include "tsan_mman.h"
 #include "tsan_platform.h"
