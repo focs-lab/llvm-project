@@ -366,8 +366,6 @@ void MutexReadUnlock(ThreadState *thr, uptr pc, uptr addr) {
     if (released) {
       IncrementEpoch(thr);
       // 'ReX' filter: add mutex to the thread context
-      // if (g_filter)
-      //   thr->filter_context.PushBack(addr);
       if (g_filter)
         thr->lockset_context.process_unlock(addr);
     }
@@ -426,8 +424,6 @@ void MutexReadOrWriteUnlock(ThreadState *thr, uptr pc, uptr addr) {
     if (released) {
       IncrementEpoch(thr);
       // 'ReX' filter: add mutex to the thread context
-      // if (g_filter)
-      //   thr->filter_context.PushBack(addr);
       if (g_filter)
         thr->lockset_context.process_unlock(addr);
     }

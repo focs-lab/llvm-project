@@ -39,14 +39,15 @@ void PrintFilterStats() {
 
   Printf("ThreadSanitizer: ReX Filter Stats\n");
   Printf("  Total memory accesses processed: %llu\n", total);
-  Printf("  Accesses filtered (redundant): %llu (%d %%)\n",
-         filtered, static_cast<int>(filtered * 100.0 / total));
-  Printf("    - Intra-thread redundancy:   %llu (%d %% of filtered)\n",
-         intra, static_cast<int>(intra * 100.0 / filtered));
-  Printf("    - Inter-thread redundancy:   %llu (%d %% of filtered)\n",
-         inter, static_cast<int>(inter * 100.0 / filtered));
+  Printf("  Accesses filtered (redundant): %llu (%d %%)\n", filtered,
+         static_cast<int>(total ? filtered * 100.0 / total : 0));
+  Printf("    - Intra-thread redundancy:   %llu (%d %% of filtered)\n", intra,
+         static_cast<int>(filtered ? intra * 100.0 / filtered : 0));
+  Printf("    - Inter-thread redundancy:   %llu (%d %% of filtered)\n", inter,
+         static_cast<int>(filtered ? inter * 100.0 / filtered : 0));
   Printf("  Accesses not filtered (passed to TSan): %llu (%d %%)\n",
-         not_filtered, static_cast<int>(not_filtered * 100.0 / total));
+         not_filtered,
+         static_cast<int>(total ? not_filtered * 100.0 / total : 0));
 }
 
 //=========================== Trie Implementation ============================//
@@ -118,6 +119,55 @@ bool TrieNode::CheckAndAdd(u32 tid, bool is_write) {
   }
 }
 
+#define TSAN_LOCKFREE_TRIE 1
+#ifdef TSAN_LOCKFREE_TRIE
+// Remove Mutex children_mtx_;
+// Instead of DenseMap we need a concurrent alternative or a more complex manual
+// implementation. For starters we can try to do this with DenseMap and atomics,
+// but this requires very careful memory handling.
+TrieNode* TrieNode::GetOrCreateChild(uptr event_id) {
+  // 1. First try to read without locking
+  if (children_ && children_->find(event_id)) {
+    return (*children_)[event_id];
+  }
+
+  // 2. Node doesn't exist. Create a new one locally.
+  TrieNode* new_node = New<TrieNode>();
+
+  // 3. Now synchronization is needed for insertion
+  // This is where it gets complicated. Simple CAS won't work
+  // for the entire DenseMap.
+
+  // Simpler approach than full lock-free map:
+  // Keep the lock, BUT only during creation/insertion.
+  // Reading can be done without locking if using proper memory barriers.
+
+  // True lock-free implementation:
+  // Would require either a ready-made lock-free hash map, or manual
+  // implementation using CAS cycles for pointers to the "head" of list in each
+  // hash table bucket. This is a very complex topic.
+
+  // Implementation proposed in the paper that allows "race and leak":
+  // Lock lock(&children_mtx_); // Lock still needed to protect the map itself
+  if (children_ == nullptr) {
+    children_ = New<DenseMap<uptr, TrieNode*>>();
+    children_->init(16);
+  }
+  auto* bucket = children_->find(event_id);
+  if (bucket) {
+    DestroyAndFree(new_node);  // Don't forget to free if not needed
+    return bucket->second;
+  }
+
+  // Insert new node
+  (*children_)[event_id] = new_node;
+  return new_node;
+
+  // To make this lock-free, the find/insert operation in DenseMap itself
+  // would need to be atomic, which it isn't. So without replacing DenseMap with
+  // a concurrent alternative we can't fully get rid of locking.
+}
+#else
 TrieNode* TrieNode::GetOrCreateChild(uptr event_id) {
   // A single lock guards the entire operation to ensure thread safety
   // for both creating the map and adding elements to it.
@@ -131,15 +181,15 @@ TrieNode* TrieNode::GetOrCreateChild(uptr event_id) {
 
   // Look for an existing child node.
   auto* bucket = children_->find(event_id);
-  if (bucket) {
+  if (bucket)
     return bucket->second; // Return existing node.
-  }
 
   // If not found, create a new one.
   TrieNode* new_node = New<TrieNode>();
   (*children_)[event_id] = new_node;
   return new_node;
 }
+#endif  // TSAN_LOCKFREE_TRIE
 
 //======================= FilterHistory Implementation =======================//
 
@@ -169,8 +219,8 @@ bool FilterHistory::CheckRedundancy(uptr pc, uptr addr, bool is_write,
   // Because tid = 0 means "empty slot" in the trie
   tid++;
 
-  VPrintf(1, "Thread %d: CheckRedundancy: pc=%p addr=%p is_write=%d\n",
-          tid, (void*)pc, (void*)addr, is_write);
+  VPrintf(1, "Thread %d: CheckRedundancy: pc=%p addr=%p is_write=%d\n", tid,
+          (void*)pc, (void*)addr, is_write);
   // Level 1: Find or create the address-to-Trie map for the given PC.
   DenseMap<uptr, TrieNode*>* addr_map;
   {
@@ -210,23 +260,33 @@ bool FilterHistory::CheckRedundancy(uptr pc, uptr addr, bool is_write,
   // Level 3: Traverse the Trie using the concurrency context.
   VPrintf(1, "Level 3: Traversing trie with context size=%ud\n",
           context.context_internal.size());
-  TrieNode* current_node = root;
-  context.context_internal.forEach([&](const auto& bucket) -> bool {
-    VPrintf(1, "  Context[i]=%p\n", (void*)bucket.first);
-    current_node = current_node->GetOrCreateChild(bucket.first);
+
+  // 1. Create a canonical representation
+  InternalMmapVector<uptr> sorted_locks(context.context_internal.size());
+  context.context_internal.forEach([&](auto& bucket) -> bool {
+    // Add lock address as many times as it was recursively acquired
+    for (int i = 0; i < bucket.second; ++i)
+      sorted_locks.push_back(bucket.first);
     return true;
   });
+  Sort(sorted_locks.data(), sorted_locks.size());
+
+  // 2. Use it to traverse the Trie
+  TrieNode* current_node = root;
+  for (uptr lock_addr : sorted_locks) {
+    VPrintf(1, "  Context[i]=%p\n", (void*)lock_addr);
+    current_node = current_node->GetOrCreateChild(lock_addr);
+  }
 
   // Finally, check for redundancy at the leaf node.
   return current_node->CheckAndAdd(tid, is_write);
 }
 
+//=== Global Initialization ===//
 
-  //=== Global Initialization ===//
+FilterHistory* g_filter = nullptr;
 
-  FilterHistory* g_filter = nullptr;
-
-  void InitializeFilter() {
+void InitializeFilter() {
   // Check the flag provided by the user.
   if (!flags()->enable_filter)
     return;
@@ -237,7 +297,7 @@ bool FilterHistory::CheckRedundancy(uptr pc, uptr addr, bool is_write,
     // In a real TSan integration, this would use a custom allocator.
     // For now, standard 'new' is fine.
     g_filter = New<FilterHistory>();
-    VPrintf(1, "ThreadSanitizer: ReX redundancy filter initialized.\n");
+    Printf("ThreadSanitizer: ReX redundancy filter initialized.\n");
   }
 }
 
