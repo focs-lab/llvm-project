@@ -196,38 +196,63 @@ ALWAYS_INLINE
 bool CheckRaces(ThreadState* thr, RawShadow* shadow_mem, Shadow cur,
                 int unused0, int unused1, AccessType typ) {
   bool stored = false;
+  DPrintf2("#%d: CheckRaces: state=%d tid=%d\n", thr->tid,
+           static_cast<int>(cur.sid()), static_cast<int>(cur.epoch()));
+
   for (uptr idx = 0; idx < kShadowCnt; idx++) {
     RawShadow* sp = &shadow_mem[idx];
     Shadow old(LoadShadow(sp));
+    DPrintf2("  slot %zu: old={sid=%d epoch=%d access=0x%x}\n", idx,
+             static_cast<int>(old.sid()), static_cast<int>(old.epoch()),
+             old.access());
+
     if (LIKELY(old.raw() == Shadow::kEmpty)) {
+      DPrintf2("  slot %zu: empty slot, storing new access\n", idx);
       if (!(typ & kAccessCheckOnly) && !stored)
         StoreShadow(sp, cur.raw());
       return false;
     }
-    if (LIKELY(!(cur.access() & old.access())))
+
+    if (LIKELY(!(cur.access() & old.access()))) {
+      DPrintf2("  slot %zu: non-intersecting accesses, continuing\n", idx);
       continue;
+    }
+
     if (LIKELY(cur.sid() == old.sid())) {
+      DPrintf2("  slot %zu: same thread access\n", idx);
       if (!(typ & kAccessCheckOnly) &&
           LIKELY(cur.access() == old.access() && old.IsRWWeakerOrEqual(typ))) {
+        DPrintf2("  slot %zu: updating access info\n", idx);
         StoreShadow(sp, cur.raw());
         stored = true;
       }
       continue;
     }
-    if (LIKELY(old.IsBothReadsOrAtomic(typ)))
+
+    if (LIKELY(old.IsBothReadsOrAtomic(typ))) {
+      DPrintf2("  slot %zu: both reads or atomic, continuing\n", idx);
       continue;
-    if (LIKELY(thr->clock.Get(old.sid()) >= old.epoch()))
+    }
+
+    if (LIKELY(thr->clock.Get(old.sid()) >= old.epoch())) {
+      DPrintf2("  slot %zu: happens-before satisfied, continuing\n", idx);
       continue;
+    }
+
+    DPrintf2("  slot %zu: RACE DETECTED\n", idx);
     DoReportRace(thr, shadow_mem, cur, old, typ);
     return true;
   }
-  // We did not find any races and had already stored
-  // the current access info, so we are done.
-  if (LIKELY(stored))
+
+  if (LIKELY(stored)) {
+    DPrintf2("  access already stored, done\n");
     return false;
+  }
+
   // Choose a random candidate slot and replace it.
   uptr index =
       atomic_load_relaxed(&thr->trace_pos) / sizeof(Event) % kShadowCnt;
+  DPrintf2("  no empty slots, replacing random slot %zu\n", index);
   StoreShadow(&shadow_mem[index], cur.raw());
   return false;
 }
