@@ -36,7 +36,7 @@ class TrieNode {
   // Checks for redundancy based on the current thread ID (tid).
   // If not redundant, adds the tid to its internal state.
   // Returns true if the event is redundant, false otherwise.
-  bool CheckAndAdd(u32 tid, bool is_write);
+  bool CheckAndAdd(u32 my_tid, bool is_write);
 
   // Gets or creates a child node corresponding to a synchronization event ID.
   TrieNode* GetOrCreateChild(uptr event_id);
@@ -79,7 +79,7 @@ class FilterHistory {
   // tid: The current thread's ID.
   // Returns true if redundant, false otherwise.
   bool CheckRedundancy(uptr pc, uptr addr, bool is_write,
-                       const LocksetContext &context, u32 tid);
+                       const ThreadState* thr);
 
  private:
   // Maps PC to a Trie root

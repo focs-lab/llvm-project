@@ -161,19 +161,19 @@ struct TidSlot {
 // ReX redundancy filter implementation - lockset optimization
 struct LocksetContext {
   void process_lock(uptr addr) {
-    ++context_internal[addr];
+    ++internal_ctx[addr];
   }
 
   void process_unlock(uptr addr) {
-    auto *bucket = context_internal.find(addr);
+    auto *bucket = internal_ctx.find(addr);
     if (bucket) {
       bucket->second--;
       if (bucket->second == 0)
-        context_internal.erase(bucket);
+        internal_ctx.erase(bucket);
     }
   }
 
-  DenseMap<uptr, int> context_internal;
+  DenseMap<uptr, int> internal_ctx;
 };
 
 // This struct is stored in TLS.
@@ -257,7 +257,7 @@ struct ThreadState {
   explicit ThreadState(Tid tid);
 
   // ReX filter implementation
-  LocksetContext lockset_context;
+  LocksetContext filter_ctx;
 } ALIGNED(SANITIZER_CACHE_LINE_SIZE);
 
 #if !SANITIZER_GO

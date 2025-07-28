@@ -71,43 +71,127 @@ TrieNode::~TrieNode() {
   }
 }
 
-bool TrieNode::CheckAndAdd(u32 tid, bool is_write) {
+const char *get_thread_status_test(ThreadContext *tctx) {
+  // Check the status. A thread is "alive" if it has not yet finished.
+  switch (tctx->status) {
+    case ThreadStatusInvalid:
+      return "invalid";
+    case ThreadStatusCreated:
+      return "created";
+    case ThreadStatusRunning:
+      return "running";
+    case ThreadStatusFinished:
+      return "finished";
+    case ThreadStatusDead:
+      return "dead";
+  }
+  return "unknown";
+}
+
+// Our new helper function to check if a thread ID is still valid.
+static bool IsTidAlive(u32 tid) {
+  // IMPORTANT: Your filter receives a tid that was incremented by 1.
+  // The ThreadRegistry uses 0-indexed TIDs.
+  if (tid == 0) return false; // 0 is an empty slot, not a real tid
+  u32 registry_tid = tid - 1;
+  VPrintf(1, "Checking tid %u\n", registry_tid);
+
+  // Acquire a lock while accessing the thread registry.
+  ThreadRegistryLock lock(&ctx->thread_registry);
+
+  // Find the thread context by its ID.
+  ThreadContext *tctx = static_cast<ThreadContext*>(
+      ctx->thread_registry.GetThreadLocked(registry_tid));
+
+  // If there's no context (thread never existed or was fully cleaned up),
+  // then it's definitely not "alive".
+  if (tctx == nullptr)
+    return false;
+
+  VPrintf(1, "Thread status: %s\n", get_thread_status_test(tctx));
+
+  return tctx->status == ThreadStatusRunning;
+}
+
+bool TrieNode::CheckAndAdd(u32 my_tid, bool is_write) {
   // Select the appropriate atomic "stack" based on the access type.
   atomic_uint64_t* target_tids = is_write ? &write_tids_ : &read_tids_;
-
   u64 current_tids = atomic_load(target_tids, memory_order_relaxed);
-  while (true) {
+
+  for (;;) {
     const u32 tid1 = current_tids & 0xFFFFFFFF;
     const u32 tid2 = current_tids >> 32;
 
-    // Intra-thread redundancy: this thread has been here before with this context.
-    if (tid1 == tid || tid2 == tid) {
-      VPrintf(1, "\tThread %d: Intra-thread redundancy: is_write=%d\n\n", tid,
-              is_write);
+    // 1. Check intra-thread redundancy: this thread has been here before with
+    // this context.
+    if (tid1 == my_tid || tid2 == my_tid) {
+      VPrintf(1, "\tThread %d: Intra-thread redundancy: is_write=%d\n\n",
+              my_tid, is_write);
       atomic_fetch_add(&stats_filtered_intra_thread, 1, memory_order_relaxed);
-      return true;
+      return true;  // Redundant
     }
 
-    // Inter-thread redundancy: two other threads have already been here.
+// 2. Lazy cleanup and liveness check.
+    u32 live_tid1 = 0;
+    if (tid1 != 0 && IsTidAlive(tid1)) {
+      VPrintf(1, "TID1=%u is alive\n", tid1);
+      live_tid1 = tid1;
+    } else if (tid1 != 0) {
+      VPrintf(1, "TID1=%u is dead\n", tid1);
+    }
+
+    u32 live_tid2 = 0;
+    if (tid2 != 0 && IsTidAlive(tid2)) {
+      VPrintf(1, "TID2=%u is alive\n", tid2);
+      live_tid2 = tid2;
+    } else if (tid2 != 0) {
+      VPrintf(1, "TID2=%u is dead\n", tid2);
+    }
+
+    // If the new "cleaned" value is different from the old one, we found
+    // garbage.
+    u64 cleaned_tids = ((u64)live_tid2 << 32) | live_tid1;
+    if (cleaned_tids != current_tids) {
+      VPrintf(1, "Found dead TIDs: current=0x%llx cleaned=0x%llx\n",
+              current_tids, cleaned_tids);
+      // Try to atomically replace the value containing "dead" TIDs with the
+      // cleaned one.
+      if (atomic_compare_exchange_weak(target_tids, &current_tids, cleaned_tids,
+                                       memory_order_acq_rel)) {
+        VPrintf(1, "Successfully cleaned dead TIDs\n");
+        // Successfully cleaned. Restart the loop with the new, clean value.
+        current_tids = cleaned_tids;
+      } else {
+        VPrintf(1, "CAS failed - another thread cleaned TIDs\n");
+      }
+
+      // Failed - another thread beat us to it. Just restart the loop.
+      // current_val is updated by the failed CAS.
+      continue;
+    }
+
+    // --- From this point on, we know that tid1 and tid2 (if not 0) are "live"
+    // ---
+
+    // 3. Inter-thread redundancy: two other threads have already been here.
     if (tid1 != 0 && tid2 != 0) {
       VPrintf(1,
               "\tThread %d: Inter-thread redundancy: tid1=%u tid2=%u "
               "is_write=%d\n\n",
-              tid, tid1, tid2, is_write);
+              my_tid, tid1, tid2, is_write);
       atomic_fetch_add(&stats_filtered_inter_thread, 1, memory_order_relaxed);
-      return true;
+      return true; // Redundant
     }
 
     VPrintf(1, "\tThread %d: NO REDUNDANCY: tid1=%u tid2=%u is_write=%d\n\n",
-            tid, tid1, tid2, is_write);
+            my_tid, tid1, tid2, is_write);
 
-    // Not redundant. Try to add the new tid to an empty slot.
+    // 4. Not redundant. Try to add the new tid to an empty slot.
     u64 new_tids;
-    if (tid1 == 0) {
-      new_tids = current_tids | tid;
-    } else { // tid2 must be 0
-      new_tids = current_tids | ((u64)tid << 32);
-    }
+    if (tid1 == 0)
+      new_tids = current_tids | my_tid;
+    else // tid2 must be 0
+      new_tids = current_tids | ((u64)my_tid << 32);
 
     // Attempt to atomically update the tids.
     // If it succeeds, we "won the race", and the event is not redundant.
@@ -119,7 +203,7 @@ bool TrieNode::CheckAndAdd(u32 tid, bool is_write) {
   }
 }
 
-#define TSAN_LOCKFREE_TRIE 1
+// #define TSAN_LOCKFREE_TRIE 1
 #ifdef TSAN_LOCKFREE_TRIE
 // Remove Mutex children_mtx_;
 // Instead of DenseMap we need a concurrent alternative or a more complex manual
@@ -213,14 +297,11 @@ FilterHistory::~FilterHistory() {
 }
 
 bool FilterHistory::CheckRedundancy(uptr pc, uptr addr, bool is_write,
-                                    const LocksetContext& context, u32 tid) {
+                                    const ThreadState* thr) {
   atomic_fetch_add(&stats_total_accesses, 1, memory_order_relaxed);
 
-  // Because tid = 0 means "empty slot" in the trie
-  tid++;
-
-  VPrintf(1, "Thread %d: CheckRedundancy: pc=%p addr=%p is_write=%d\n", tid,
-          (void*)pc, (void*)addr, is_write);
+  VPrintf(1, "Thread %d: CheckRedundancy: pc=%p addr=%p is_write=%d\n",
+          thr->tid, (void*)pc, (void*)addr, is_write);
   // Level 1: Find or create the address-to-Trie map for the given PC.
   DenseMap<uptr, TrieNode*>* addr_map;
   {
@@ -259,11 +340,12 @@ bool FilterHistory::CheckRedundancy(uptr pc, uptr addr, bool is_write,
 
   // Level 3: Traverse the Trie using the concurrency context.
   VPrintf(1, "Level 3: Traversing trie with context size=%ud\n",
-          context.context_internal.size());
+          thr->filter_ctx.internal_ctx.size());
 
   // 1. Create a canonical representation
-  InternalMmapVector<uptr> sorted_locks(context.context_internal.size());
-  context.context_internal.forEach([&](auto& bucket) -> bool {
+  // InternalMmapVector<uptr> sorted_locks(context.context_internal.size());
+  InternalMmapVector<uptr> sorted_locks;
+  thr->filter_ctx.internal_ctx.forEach([&](auto& bucket) -> bool {
     // Add lock address as many times as it was recursively acquired
     for (int i = 0; i < bucket.second; ++i)
       sorted_locks.push_back(bucket.first);
@@ -279,7 +361,8 @@ bool FilterHistory::CheckRedundancy(uptr pc, uptr addr, bool is_write,
   }
 
   // Finally, check for redundancy at the leaf node.
-  return current_node->CheckAndAdd(tid, is_write);
+  // Increment because tid = 0 means "empty slot" in the trie
+  return current_node->CheckAndAdd(thr->tid + 1, is_write);
 }
 
 //=== Global Initialization ===//

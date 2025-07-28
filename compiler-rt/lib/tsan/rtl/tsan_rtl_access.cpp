@@ -446,8 +446,8 @@ NOINLINE void TraceRestartMemoryAccess(ThreadState* thr, uptr pc, uptr addr,
 ALWAYS_INLINE USED void MemoryAccess(ThreadState* thr, uptr pc, uptr addr,
                                      uptr size, AccessType typ) {
   // First, try to filter-out the memory access
-  if (g_filter && g_filter->CheckRedundancy(pc, addr, typ == kAccessWrite,
-                                            thr->lockset_context, thr->tid))
+  if (g_filter && ((typ == kAccessRead) || (typ == kAccessWrite)) &&
+      g_filter->CheckRedundancy(pc, addr, typ == kAccessWrite, thr))
     return;
 
   RawShadow* shadow_mem = MemToShadow(addr);
