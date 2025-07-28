@@ -5,25 +5,29 @@
 
 long properly_locked_data = 0;
 long racy_data = 0;
-pthread_mutex_t mutex1;
+pthread_mutex_t mutex1 = PTHREAD_MUTEX_INITIALIZER;
+pthread_barrier_t barrier;
 
 void* thread_func(void* arg) {
   // 1. A properly locked access.
   // After the first two threads, these accesses should be filtered.
   pthread_mutex_lock(&mutex1);
-  properly_locked_data++;
+  properly_locked_data = 111;
   pthread_mutex_unlock(&mutex1);
 
   // 2. An unprotected, racy access.
   // The filter must not prevent TSan from seeing this race.
-  racy_data++;
+  racy_data = 222;
+
+  pthread_barrier_wait(&barrier);
 
   return NULL;
 }
 
+__attribute__((no_sanitize("thread")))
 int main() {
   pthread_t threads[NUM_THREADS];
-  pthread_mutex_init(&mutex1, NULL);
+  pthread_barrier_init(&barrier, NULL, NUM_THREADS);
 
   for (int i = 0; i < NUM_THREADS; ++i)
     pthread_create(&threads[i], NULL, thread_func, NULL);
