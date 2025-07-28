@@ -17,7 +17,7 @@
 #ifndef TSAN_FILTER_H
 #define TSAN_FILTER_H
 
-#include <tsan_rtl.h>
+#include "tsan_rtl.h"
 
 #include "sanitizer_common/sanitizer_atomic.h"
 #include "sanitizer_common/sanitizer_dense_map.h"

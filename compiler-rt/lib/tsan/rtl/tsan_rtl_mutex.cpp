@@ -12,7 +12,8 @@
 
 #include <sanitizer_common/sanitizer_deadlock_detector_interface.h>
 #include <sanitizer_common/sanitizer_stackdepot.h>
-#include <tsan_filter.h>
+
+#include "tsan_filter.h"
 
 #include "tsan_flags.h"
 #include "tsan_platform.h"
