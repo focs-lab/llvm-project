@@ -805,7 +805,7 @@ int Finalize(ThreadState *thr) {
 
   failed = OnFinalize(failed);
 
-  PrintFilterStats();
+  PrintFilterStats(thr);
 
   return failed ? common_flags()->exitcode : 0;
 }

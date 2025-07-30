@@ -27,7 +27,7 @@ static atomic_uint64_t stats_total_accesses;
 static atomic_uint64_t stats_filtered_intra_thread;
 static atomic_uint64_t stats_filtered_inter_thread;
 
-void PrintFilterStats() {
+void PrintFilterStats(ThreadState* thr) {
   if (!flags()->enable_filter)
     return;
 
@@ -48,6 +48,8 @@ void PrintFilterStats() {
   Printf("  Accesses not filtered (passed to TSan): %llu (%d %%)\n",
          not_filtered,
          static_cast<int>(total ? not_filtered * 100.0 / total : 0));
+
+  g_filter->PrintStats(thr);
 }
 
 //=========================== Trie Implementation ============================//
@@ -365,7 +367,12 @@ bool FilterHistory::CheckRedundancy(uptr pc, uptr addr, bool is_write,
 
   // Finally, check for redundancy at the leaf node.
   // Increment because tid = 0 means "empty slot" in the trie
-  return current_node->CheckAndAdd(thr->tid + 1, is_write);
+  bool is_redundant = current_node->CheckAndAdd(thr->tid + 1, is_write);
+  if (is_redundant) {
+    Lock lock(&filtered_stats_mtx);  // Protect the entire operation
+    ++filtered_stats_map[pc];
+  }
+  return is_redundant;
 }
 
 void FilterHistory::OnMemoryFreed(uptr addr, uptr size) {
@@ -393,6 +400,35 @@ void FilterHistory::OnMemoryFreed(uptr addr, uptr size) {
     }
     return true;
   });
+}
+
+void FilterHistory::PrintStats(ThreadState *thr) {
+  Printf("\n=================================================\n");
+  Printf("TOP10 most frequently accessed program locations:\n");
+  Printf("=================================================\n");
+  InternalMmapVector<detail::DenseMapPair<uptr, u64>> sorted_stats;
+  {
+    filtered_stats_map.forEach([&](auto& pair) -> bool {
+      sorted_stats.push_back({pair.first, pair.second});
+      return true;
+    });
+  }
+
+  // Sort by count in descending order
+  Sort(sorted_stats.data(), sorted_stats.size(),
+       [](const auto& a, const auto& b) { return a.second > b.second; });
+
+  // Print top 10 or less if there are fewer entries
+  for (usize i = 0; i < sorted_stats.size() && i < 10; i++) {
+    Printf("-------------------------------------------------\n");
+    VarSizeStackTrace stack;
+    ObtainCurrentStack(thr, sorted_stats[i].first, &stack);
+    stack.Print();
+    // Printf("  #%lu: PC=%p\t", i + 1, (void*)sorted_stats[i].first);
+    Printf("Filtered %llu times\n", sorted_stats[i].second);
+    Printf("-------------------------------------------------\n");
+  }
+  Printf("=================================================\n");
 }
 
 //=== Global Initialization ===//

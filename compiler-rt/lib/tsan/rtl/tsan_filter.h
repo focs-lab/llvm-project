@@ -17,13 +17,12 @@
 #ifndef TSAN_FILTER_H
 #define TSAN_FILTER_H
 
-#include "tsan_rtl.h"
-
 #include "sanitizer_common/sanitizer_atomic.h"
 #include "sanitizer_common/sanitizer_dense_map.h"
 #include "sanitizer_common/sanitizer_mutex.h"
 #include "sanitizer_common/sanitizer_vector.h"
 #include "tsan_defs.h"
+#include "tsan_rtl.h"
 
 namespace __tsan {
 
@@ -83,11 +82,16 @@ class FilterHistory {
 
   // Find and erase all entries in the Trie at free()
   void OnMemoryFreed(uptr addr, uptr size);
+  void PrintStats(ThreadState *thr);
 
  private:
   // Maps PC to a Trie root
   DenseMap<uptr, DenseMap<uptr, TrieNode*>*> pc_map_;
   Mutex pc_map_mtx_;  // Protects pc_map_
+
+  // Statistics: PC -> count
+  DenseMap<uptr, u64> filtered_stats_map;
+  Mutex filtered_stats_mtx;
 
   FilterHistory(const FilterHistory&) = delete;
   void operator=(const FilterHistory&) = delete;
@@ -100,7 +104,7 @@ extern FilterHistory *g_filter;
 void InitializeFilter();
 
 // Print stats
-void PrintFilterStats();
+void PrintFilterStats(ThreadState* thr);
 
 }  // namespace __tsan
 
