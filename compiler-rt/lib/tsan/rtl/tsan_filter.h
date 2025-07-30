@@ -81,6 +81,9 @@ class FilterHistory {
   bool CheckRedundancy(uptr pc, uptr addr, bool is_write,
                        const ThreadState* thr);
 
+  // Find and erase all entries in the Trie at free()
+  void OnMemoryFreed(uptr addr, uptr size);
+
  private:
   // Maps PC to a Trie root
   DenseMap<uptr, DenseMap<uptr, TrieNode*>*> pc_map_;

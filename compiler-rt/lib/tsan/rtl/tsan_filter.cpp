@@ -94,7 +94,6 @@ static bool IsTidAlive(u32 tid) {
   // The ThreadRegistry uses 0-indexed TIDs.
   if (tid == 0) return false; // 0 is an empty slot, not a real tid
   u32 registry_tid = tid - 1;
-  VPrintf(1, "Checking tid %u\n", registry_tid);
 
   // Acquire a lock while accessing the thread registry.
   ThreadRegistryLock lock(&ctx->thread_registry);
@@ -108,7 +107,7 @@ static bool IsTidAlive(u32 tid) {
   if (tctx == nullptr)
     return false;
 
-  VPrintf(1, "Thread status: %s\n", get_thread_status_test(tctx));
+  VPrintf(1, "Thread %u status: %s\n", tid, get_thread_status_test(tctx));
 
   return tctx->status == ThreadStatusRunning;
 }
@@ -125,13 +124,13 @@ bool TrieNode::CheckAndAdd(u32 my_tid, bool is_write) {
     // 1. Check intra-thread redundancy: this thread has been here before with
     // this context.
     if (tid1 == my_tid || tid2 == my_tid) {
-      VPrintf(1, "\tThread %d: Intra-thread redundancy: is_write=%d\n\n",
+      VPrintf(1, "\tThread %d: INTRA-THREAD REDUNDANCY: is_write=%d\n\n",
               my_tid, is_write);
       atomic_fetch_add(&stats_filtered_intra_thread, 1, memory_order_relaxed);
       return true;  // Redundant
     }
 
-// 2. Lazy cleanup and liveness check.
+    // 2. Lazy cleanup and liveness check.
     u32 live_tid1 = 0;
     if (tid1 != 0 && IsTidAlive(tid1)) {
       VPrintf(1, "TID1=%u is alive\n", tid1);
@@ -176,14 +175,14 @@ bool TrieNode::CheckAndAdd(u32 my_tid, bool is_write) {
     // 3. Inter-thread redundancy: two other threads have already been here.
     if (tid1 != 0 && tid2 != 0) {
       VPrintf(1,
-              "\tThread %d: Inter-thread redundancy: tid1=%u tid2=%u "
+              "\tThread %d: INTER-THREAD REDUNDANCY: tid1=%u tid2=%u "
               "is_write=%d\n\n",
               my_tid, tid1, tid2, is_write);
       atomic_fetch_add(&stats_filtered_inter_thread, 1, memory_order_relaxed);
       return true; // Redundant
     }
 
-    VPrintf(1, "\tThread %d: NO REDUNDANCY: tid1=%u tid2=%u is_write=%d\n\n",
+    VPrintf(1, "\tThread %d: NO REDUNDANCY: tid1=%u tid2=%u is_write=%d\n",
             my_tid, tid1, tid2, is_write);
 
     // 4. Not redundant. Try to add the new tid to an empty slot.
@@ -196,8 +195,12 @@ bool TrieNode::CheckAndAdd(u32 my_tid, bool is_write) {
     // Attempt to atomically update the tids.
     // If it succeeds, we "won the race", and the event is not redundant.
     if (atomic_compare_exchange_weak(target_tids, &current_tids, new_tids,
-                                     memory_order_acq_rel))
+                                     memory_order_acq_rel)) {
+      VPrintf(1, "Successfully added tid %u to the trie\n\n", my_tid);
       return false;
+    }
+    VPrintf(1, "CAS failed - another thread added tid %u to the trie\n\n",
+            my_tid);
     // If CAS failed, another thread modified tids.
     // The loop continues with the new value of 'current_tids'.
   }
@@ -363,6 +366,33 @@ bool FilterHistory::CheckRedundancy(uptr pc, uptr addr, bool is_write,
   // Finally, check for redundancy at the leaf node.
   // Increment because tid = 0 means "empty slot" in the trie
   return current_node->CheckAndAdd(thr->tid + 1, is_write);
+}
+
+void FilterHistory::OnMemoryFreed(uptr addr, uptr size) {
+  Lock lock(&pc_map_mtx_);  // Protect the entire operation
+
+  pc_map_.forEach([&](auto& pc_pair) -> bool {
+    DenseMap<uptr, TrieNode*>* addr_map = pc_pair.second;
+
+    // We need to iterate and delete, which is dangerous.
+    // Better to collect keys for deletion first, then delete.
+    InternalMmapVector<uptr> addrs_to_remove;
+    addr_map->forEach([&](auto& addr_pair) -> bool {
+      if (addr_pair.first >= addr && addr_pair.first < addr + size) {
+        addrs_to_remove.push_back(addr_pair.first);
+      }
+      return true;
+    });
+
+    for (uptr addr_to_remove : addrs_to_remove) {
+      auto* bucket = addr_map->find(addr_to_remove);
+      if (bucket) {
+        DestroyAndFree(bucket->second);  // Recursively delete Trie
+        addr_map->erase(bucket);
+      }
+    }
+    return true;
+  });
 }
 
 //=== Global Initialization ===//

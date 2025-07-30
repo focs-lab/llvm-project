@@ -31,6 +31,7 @@ for SOURCE_FILE in *.c; do
     echo "Compiling: $SOURCE_FILE -> $BINARY_NAME"
 
     # Run the compilation command
+    echo $COMPILER $COMPILER_FLAGS "$SOURCE_FILE" -o "$BINARY_NAME"
     $COMPILER $COMPILER_FLAGS "$SOURCE_FILE" -o "$BINARY_NAME"
 
     # Check the exit code of the last command ($?)

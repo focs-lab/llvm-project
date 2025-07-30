@@ -235,9 +235,20 @@ bool CheckRaces(ThreadState* thr, RawShadow* shadow_mem, Shadow cur,
     }
 
     if (LIKELY(thr->clock.Get(old.sid()) >= old.epoch())) {
-      DPrintf2("  slot %zu: happens-before satisfied, continuing\n", idx);
+      DPrintf2(
+          "  slot %zu: happens-before satisfied: thr clock[%d]=%d >= "
+          "old.epoch=%d, continuing\n",
+          idx, static_cast<int>(old.sid()),
+          static_cast<int>(thr->clock.Get(old.sid())),
+          static_cast<int>(old.epoch()));
       continue;
     }
+    DPrintf2(
+        "  slot %zu: happens-before NOT satisfied: thr clock[%d]=%d >= "
+        "old.epoch=%d, continuing\n",
+        idx, static_cast<int>(old.sid()),
+        static_cast<int>(thr->clock.Get(old.sid())),
+        static_cast<int>(old.epoch()));
 
     DPrintf2("  slot %zu: RACE DETECTED\n", idx);
     DoReportRace(thr, shadow_mem, cur, old, typ);
@@ -618,6 +629,11 @@ void MemoryResetRange(ThreadState* thr, uptr pc, uptr addr, uptr size) {
 }
 
 void MemoryRangeFreed(ThreadState* thr, uptr pc, uptr addr, uptr size) {
+  VPrintf(1, "#%d: MEM_FREE at addr=%p size=%zu\n", thr->tid, (void*)addr,
+          size);
+  // Remove all address entries from the filter to consider memory reuse
+  g_filter->OnMemoryFreed(addr, size);
+
   // Callers must lock the slot to ensure synchronization with the reset.
   // The problem with "freed" memory is that it's not "monotonic"
   // with respect to bug detection: freed memory is bad to access,
