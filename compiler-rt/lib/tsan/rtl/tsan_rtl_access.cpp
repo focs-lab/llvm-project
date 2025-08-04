@@ -632,7 +632,8 @@ void MemoryRangeFreed(ThreadState* thr, uptr pc, uptr addr, uptr size) {
   VPrintf(1, "#%d: MEM_FREE at addr=%p size=%zu\n", thr->tid, (void*)addr,
           size);
   // Remove all address entries from the filter to consider memory reuse
-  g_filter->OnMemoryFreed(addr, size);
+  if (g_filter)
+    g_filter->OnMemoryFreed(addr, size);
 
   // Callers must lock the slot to ensure synchronization with the reset.
   // The problem with "freed" memory is that it's not "monotonic"
