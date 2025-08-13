@@ -214,15 +214,12 @@ public:
               sys::path::append(path, File->getFilename());
               FullPath = std::string(path.str());
               break; // Take path from first found compilation unit
-      }
-    }
+            }
+          }
 
       // Fallback option if no debug information is available
       if (FullPath.empty())
         FullPath = M->getSourceFileName();
-
-      outs() << "ThreadSanitizer: Completing work for file: " << FullPath
-             << "\n";
     }
 
     // --- Step 2: Create directory /tmp/__tsan__ ---
@@ -515,10 +512,6 @@ PreservedAnalyses ModuleThreadSanitizerPass::run(Module &M,
   InterceptorEnabled = new GlobalVariable(
       M, Type::getInt1Ty(M.getContext()), /*isConstant=*/false,
       GlobalValue::ExternalLinkage, nullptr, "InterceptorEnabled");
-
-  errs() << "ThreadSanitizer destructor called\n";
-  errs() << "Number of instrumented instructions: "
-         << NumInstrumentedReads + NumInstrumentedWrites << "\n";
 
   return PreservedAnalyses::none();
 }
