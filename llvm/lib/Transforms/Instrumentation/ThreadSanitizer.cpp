@@ -55,6 +55,11 @@
 #include <llvm/ADT/SCCIterator.h>
 #include <llvm/Analysis/AliasAnalysis.h>
 
+#include <llvm/Support/FileSystem.h>
+#include <llvm/Support/MemoryBuffer.h>
+#include <llvm/Support/Path.h>
+#include <source_location>
+
 using namespace llvm;
 
 #define DEBUG_TYPE "tsan"
@@ -174,6 +179,10 @@ GlobalVariable *InterceptorEnabled;
 /// ensures the __tsan_init function is in the list of global constructors for
 /// the module.
 struct ThreadSanitizer {
+private:
+  Module *M = nullptr;
+
+public:
   ThreadSanitizer() {
     // Check options and warn user.
     if (ClInstrumentReadBeforeWrite && ClCompoundReadBeforeWrite) {
@@ -188,6 +197,102 @@ struct ThreadSanitizer {
       llvm_shutdown();
     }
   }
+
+#define INSTR_STAT_ENABLED 1
+#ifdef INSTR_STAT_ENABLED
+  ~ThreadSanitizer() {
+    std::string FullPath;
+    if (M) {
+      // Most reliable way: use debug information
+      auto *CompileUnits = M->getNamedMetadata("llvm.dbg.cu");
+      if (CompileUnits)
+        for (const auto *Node : CompileUnits->operands())
+          if (const auto *CU = llvm::dyn_cast<llvm::DICompileUnit>(Node)) {
+            DIFile *File = CU->getFile();
+            if (File) {
+              SmallString<256> path(File->getDirectory());
+              sys::path::append(path, File->getFilename());
+              FullPath = std::string(path.str());
+              break; // Take path from first found compilation unit
+      }
+    }
+
+      // Fallback option if no debug information is available
+      if (FullPath.empty())
+        FullPath = M->getSourceFileName();
+
+      outs() << "ThreadSanitizer: Completing work for file: " << FullPath
+             << "\n";
+    }
+
+    // --- Step 2: Create directory /tmp/__tsan__ ---
+    const char *DirName = "/tmp/__tsan__";
+    std::error_code EC = sys::fs::create_directory(DirName);
+    if (EC) {
+      errs() << "TSan: Failed to create directory " << DirName << ": "
+             << EC.message() << "\n";
+      return;
+    }
+
+    // --- Step 3: Create filename and write result ---
+    // Convert path to safe filename by replacing separators
+    std::string OutputFileName = FullPath;
+    std::replace(OutputFileName.begin(), OutputFileName.end(), '/', '_');
+    std::replace(OutputFileName.begin(), OutputFileName.end(), '\\', '_');
+
+    SmallString<256> FinalFilePath(DirName);
+    sys::path::append(FinalFilePath, OutputFileName);
+
+    const auto NumInstrumentedInstructions =
+        NumInstrumentedReads + NumInstrumentedWrites;
+
+    // --- Step 3: Read file and check condition ---
+    bool ShouldWrite = true;
+    if (sys::fs::exists(FinalFilePath)) {
+      // Try to read file contents
+      auto FileOrErr = MemoryBuffer::getFile(FinalFilePath);
+      if (std::error_code ec = FileOrErr.getError()) {
+        errs() << "TSan: Failed to read existing file " << FinalFilePath << ": "
+               << ec.message() << "\n";
+        ShouldWrite = false; // Can't read, so don't overwrite
+      } else {
+        StringRef Content = (*FileOrErr)->getBuffer().trim();
+        if (!Content.empty()) {
+          unsigned existingValue;
+          if (Content.getAsInteger(10, existingValue)) {
+            // If failed to convert string to number, consider it an error
+            errs() << "TSan: Failed to parse number in file " << FinalFilePath
+                   << ". Content: \"" << Content << "\"\n";
+            ShouldWrite = false;
+          } else {
+            // Check condition
+            if (existingValue > NumInstrumentedInstructions) {
+              errs() << "TSan: Check failed! Existing value (" << existingValue
+                     << ") is greater than new value ("
+                     << NumInstrumentedInstructions << ") for file "
+                     << FinalFilePath << "\n";
+              ShouldWrite = false;
+            }
+          }
+        }
+      }
+    }
+
+    // --- Step 4: Write statistics
+    if (ShouldWrite) {
+      std::error_code FileEC;
+      raw_fd_ostream OutStream(FinalFilePath, FileEC, llvm::sys::fs::OF_None);
+      if (FileEC) {
+        errs() << "TSan: Error opening file " << FinalFilePath << ": "
+               << FileEC.message() << "\n";
+        return;
+      }
+
+      // Write the sum of instrumented instructions
+      OutStream << NumInstrumentedInstructions << "\n";
+    }
+  }
+#endif
 
   bool sanitizeFunction(
       Function &F, const TargetLibraryInfo &TLI,
@@ -410,6 +515,10 @@ PreservedAnalyses ModuleThreadSanitizerPass::run(Module &M,
   InterceptorEnabled = new GlobalVariable(
       M, Type::getInt1Ty(M.getContext()), /*isConstant=*/false,
       GlobalValue::ExternalLinkage, nullptr, "InterceptorEnabled");
+
+  errs() << "ThreadSanitizer destructor called\n";
+  errs() << "Number of instrumented instructions: "
+         << NumInstrumentedReads + NumInstrumentedWrites << "\n";
 
   return PreservedAnalyses::none();
 }
@@ -1136,6 +1245,7 @@ bool ThreadSanitizer::sanitizeFunction(
                        "%%%%%%%%%%%%%%%%%\n"
     "%%%%%%%%%%%%%%%%%%%% Func " << F.getName() << "\t%%%%%%%%%%%%%%%%%%%%%%\n"
     "%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%\n");
+  M = F.getParent();
 
   // This is required to prevent instrumenting call to __tsan_init from within
   // the module constructor.
