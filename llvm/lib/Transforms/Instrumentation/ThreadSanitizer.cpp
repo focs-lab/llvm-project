@@ -181,6 +181,7 @@ GlobalVariable *InterceptorEnabled;
 struct ThreadSanitizer {
 private:
   Module *M = nullptr;
+  Function *Func = nullptr;
 
 public:
   ThreadSanitizer() {
@@ -202,6 +203,7 @@ public:
 #ifdef INSTR_STAT_ENABLED
   ~ThreadSanitizer() {
     std::string FullPath;
+    const unsigned PathLength = 2048;
     if (M) {
       // Most reliable way: use debug information
       auto *CompileUnits = M->getNamedMetadata("llvm.dbg.cu");
@@ -210,7 +212,7 @@ public:
           if (const auto *CU = llvm::dyn_cast<llvm::DICompileUnit>(Node)) {
             DIFile *File = CU->getFile();
             if (File) {
-              SmallString<256> path(File->getDirectory());
+              SmallString<PathLength> path(File->getDirectory());
               sys::path::append(path, File->getFilename());
               FullPath = std::string(path.str());
               break; // Take path from first found compilation unit
@@ -237,7 +239,7 @@ public:
     std::replace(OutputFileName.begin(), OutputFileName.end(), '/', '_');
     std::replace(OutputFileName.begin(), OutputFileName.end(), '\\', '_');
 
-    SmallString<256> FinalFilePath(DirName);
+    SmallString<PathLength> FinalFilePath(DirName);
     sys::path::append(FinalFilePath, OutputFileName);
 
     const auto NumInstrumentedInstructions =
@@ -287,6 +289,8 @@ public:
 
       // Write the sum of instrumented instructions
       OutStream << NumInstrumentedInstructions << "\n";
+      // errs() << "TSan: Wrote " << NumInstrumentedInstructions
+      //        << " instructions to file " << FinalFilePath << "\n";
     }
   }
 #endif
@@ -1239,6 +1243,7 @@ bool ThreadSanitizer::sanitizeFunction(
     "%%%%%%%%%%%%%%%%%%%% Func " << F.getName() << "\t%%%%%%%%%%%%%%%%%%%%%%\n"
     "%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%\n");
   M = F.getParent();
+  Func = &F;
 
   // This is required to prevent instrumenting call to __tsan_init from within
   // the module constructor.
