@@ -16,6 +16,45 @@
 
 namespace __tsan {
 
+// How many log accesses to flush at one time
+#define STATS_BUFFER_COUNT 10000000
+
+struct AccessData {
+  uptr Address;
+  uptr Size;
+  Tid ThreadId;
+  u8 Type;
+};
+
+static Mutex LogMutex;
+static u32 LogDataOffset = 0;
+static AccessData LogData[STATS_BUFFER_COUNT];
+static char LogString[STATS_BUFFER_COUNT * 64];
+
+void LogFlushData() {
+  u32 Offset = 0;
+  for (u32 I = 0; I < LogDataOffset; ++I)
+    Offset += internal_snprintf(LogString + Offset,
+                                sizeof(LogString) - Offset,
+                                " > 0x%8lx %lu 0x%02x %u\n",
+                                LogData[I].Address,
+                                LogData[I].Size,
+                                LogData[I].Type,
+                                LogData[I].ThreadId);
+  Printf("%s", LogString);
+}
+
+void LogMemoryAccess(uptr Address, uptr Size,
+                     AccessType Type, Tid ThreadId) {
+  LogMutex.Lock();
+  LogData[LogDataOffset++] = {Address, Size, ThreadId, static_cast<u8>(Type)};
+  if (LogDataOffset == STATS_BUFFER_COUNT) {
+    LogFlushData();
+    LogDataOffset = 0;
+  }
+  LogMutex.Unlock();
+}
+
 ALWAYS_INLINE USED bool TryTraceMemoryAccess(ThreadState* thr, uptr pc,
                                              uptr addr, uptr size,
                                              AccessType typ) {
@@ -461,6 +500,8 @@ ALWAYS_INLINE USED void MemoryAccess(ThreadState* thr, uptr pc, uptr addr,
       g_filter->CheckRedundancy(pc, addr, typ == kAccessWrite, thr))
     return;
 
+  LogMemoryAccess(addr, size, typ, thr->tid);
+
   RawShadow* shadow_mem = MemToShadow(addr);
   UNUSED char memBuf[4][64];
   DPrintf2("#%d: Access: %d@%d %p/%zd typ=0x%x {%s, %s, %s, %s}\n", thr->tid,
@@ -496,6 +537,7 @@ void RestartMemoryAccess16(ThreadState* thr, uptr pc, uptr addr,
 ALWAYS_INLINE USED void MemoryAccess16(ThreadState* thr, uptr pc, uptr addr,
                                        AccessType typ) {
   const uptr size = 16;
+  LogMemoryAccess(addr, size, typ, thr->tid);
   FastState fast_state = thr->fast_state;
   if (UNLIKELY(fast_state.GetIgnoreBit()))
     return;
@@ -714,6 +756,7 @@ template <bool is_read>
 void MemoryAccessRangeT(ThreadState* thr, uptr pc, uptr addr, uptr size) {
   const AccessType typ =
       (is_read ? kAccessRead : kAccessWrite) | kAccessNoRodata;
+  LogMemoryAccess(addr, size, typ, thr->tid);
   RawShadow* shadow_mem = MemToShadow(addr);
   DPrintf2("#%d: MemoryAccessRange: @%p %p size=%d is_read=%d\n", thr->tid,
            (void*)pc, (void*)addr, (int)size, is_read);
