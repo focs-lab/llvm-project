@@ -54,6 +54,8 @@
 
 namespace __tsan {
 
+void LogFlushData();
+
 #if !SANITIZER_GO
 struct MapUnmapCallback;
 #  if defined(__mips64) || defined(__aarch64__) || defined(__loongarch__) || \

@@ -800,6 +800,8 @@ int Finalize(ThreadState *thr) {
 
   failed = OnFinalize(failed);
 
+  LogFlushData();
+
   return failed ? common_flags()->exitcode : 0;
 }
 
