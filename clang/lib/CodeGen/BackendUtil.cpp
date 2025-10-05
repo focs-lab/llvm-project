@@ -735,20 +735,21 @@ static void addSanitizers(const Triple &TargetTriple,
       MPM.addPass(ModuleThreadSanitizerPass());
       MPM.addPass(createModuleToFunctionPassAdaptor(ThreadSanitizerPass()));
 
-      // dwslim: Optimize the code that we added.
-      // Actually I originally just intended to add GVN but copied this from MSan's above.
-      // And felt why not run the others too just to feel better.
-      // If it is O0 then we shouldn't optimize, to respect the original optimization level.
-      if (Level != OptimizationLevel::O0) {
-        MPM.addPass(RequireAnalysisPass<GlobalsAA, llvm::Module>());
-        FunctionPassManager FPM;
-        FPM.addPass(EarlyCSEPass(true /* Enable mem-ssa. */));
-        FPM.addPass(InstCombinePass());
-        FPM.addPass(JumpThreadingPass());
-        FPM.addPass(GVNPass());         // experiments suggest that this is better than NewGVNPass
-        FPM.addPass(InstCombinePass());
-        MPM.addPass(createModuleToFunctionPassAdaptor(std::move(FPM)));
-      }
+      // BUG: unnecessary and also might be wrong
+      // // dwslim: Optimize the code that we added.
+      // // Actually I originally just intended to add GVN but copied this from MSan's above.
+      // // And felt why not run the others too just to feel better.
+      // // If it is O0 then we shouldn't optimize, to respect the original optimization level.
+      // if (Level != OptimizationLevel::O0) {
+      //   MPM.addPass(RequireAnalysisPass<GlobalsAA, llvm::Module>());
+      //   FunctionPassManager FPM;
+      //   FPM.addPass(EarlyCSEPass(true /* Enable mem-ssa. */));
+      //   FPM.addPass(InstCombinePass());
+      //   FPM.addPass(JumpThreadingPass());
+      //   FPM.addPass(GVNPass());         // experiments suggest that this is better than NewGVNPass
+      //   FPM.addPass(InstCombinePass());
+      //   MPM.addPass(createModuleToFunctionPassAdaptor(std::move(FPM)));
+      // }
     }
 
     if (LangOpts.Sanitize.has(SanitizerKind::Type))
