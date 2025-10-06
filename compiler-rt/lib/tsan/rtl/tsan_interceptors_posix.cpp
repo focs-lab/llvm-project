@@ -781,8 +781,6 @@ TSAN_INTERCEPTOR(char *, strcpy, char *dst, const char *src) {
 }
 
 TSAN_INTERCEPTOR(char*, strncpy, char *dst, char *src, usize n) {
-  SCOPED_TSAN_INTERCEPTOR(strncpy, dst, src, n);
-TSAN_INTERCEPTOR(char*, strncpy, char *dst, char *src, uptr n) {
   // SCOPED_TSAN_INTERCEPTOR(strncpy, dst, src, n);
   uptr srclen = internal_strnlen(src, n);
   // MemoryAccessRange(thr, pc, (uptr)dst, n, true);
@@ -3232,3 +3230,4 @@ SANITIZER_INTERFACE_ATTRIBUTE void __tsan_testonly_barrier_wait(
 }
 
 }  // extern "C"
+
