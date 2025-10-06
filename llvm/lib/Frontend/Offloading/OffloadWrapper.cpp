@@ -232,12 +232,13 @@ void createRegisterFunction(Module &M, GlobalVariable *BinDesc,
   // Construct function body
   IRBuilder<> Builder(BasicBlock::Create(C, "entry", Func));
 
+  Builder.CreateCall(RegFuncC, BinDesc);
+
   // Register the destructors with 'atexit'. This is expected by the CUDA
   // runtime and ensures that we clean up before dynamic objects are destroyed.
-  // This needs to be done before the runtime is called and registers its own.
+  // This needs to be done after plugin initialization to ensure that it is
+  // called before the plugin runtime is destroyed.
   Builder.CreateCall(AtExit, UnregFunc);
-
-  Builder.CreateCall(RegFuncC, BinDesc);
   Builder.CreateRetVoid();
 
   // Add this function to constructors.
@@ -574,7 +575,7 @@ void createRegisterFatbinFunction(Module &M, GlobalVariable *FatbinDesc,
 
   // Create the destructor to unregister the image with the runtime. We cannot
   // use a standard global destructor after CUDA 9.2 so this must be called by
-  // `atexit()` intead.
+  // `atexit()` instead.
   IRBuilder<> DtorBuilder(BasicBlock::Create(C, "entry", DtorFunc));
   LoadInst *BinaryHandle = DtorBuilder.CreateAlignedLoad(
       PtrTy, BinaryHandleGlobal,
