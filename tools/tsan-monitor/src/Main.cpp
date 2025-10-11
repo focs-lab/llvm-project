@@ -12,7 +12,8 @@ namespace {
 
 void PrintUsage() {
   std::cout << "tsan-monitor\n"
-            << "Usage: tsan-monitor --attach <pid> [options]\n\n"
+            << "Usage: tsan-monitor <pid> [options]\n"
+            << "   or: tsan-monitor --attach <pid> [options]\n\n"
             << "Options:\n"
             << "  --monitor-dir <path>  Override channel directory\n"
             << "  --refresh-ms <ms>     Directory rescan interval\n"
@@ -74,6 +75,17 @@ int main(int argc, char** argv) {
       options.refresh_interval = std::chrono::milliseconds(*value_ms);
     } else if (arg == "--verbose") {
       options.verbose = true;
+    } else if (!arg.empty() && arg.front() != '-') {
+      if (options.pid >= 0) {
+        std::cerr << "duplicate pid specified" << std::endl;
+        return EXIT_FAILURE;
+      }
+      auto pid = ParsePid(arg);
+      if (!pid) {
+        std::cerr << "invalid pid: " << arg << std::endl;
+        return EXIT_FAILURE;
+      }
+      options.pid = *pid;
     } else {
       std::cerr << "unknown option: " << arg << std::endl;
       PrintUsage();
