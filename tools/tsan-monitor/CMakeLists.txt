@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.20)
 project(TSanMonitor LANGUAGES CXX)
 
-set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
@@ -10,9 +10,12 @@ set(TSAN_MONITOR_SOURCES
   src/Channel.cpp
   src/Event.cpp
   src/EventQueue.cpp
+  src/Logger.cpp
   src/MonitorApp.cpp
   src/Reader.cpp
   src/Scheduler.cpp
+  src/Report.cpp
+  src/State.cpp
   src/Main.cpp
 )
 
@@ -25,6 +28,13 @@ target_compile_features(tsan-monitor PRIVATE cxx_std_17)
 target_include_directories(tsan-monitor
   PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+
+find_package(spdlog CONFIG REQUIRED)
+
+target_link_libraries(tsan-monitor
+  PRIVATE
+    spdlog::spdlog
 )
 
 if (CMAKE_CXX_COMPILER_ID MATCHES "Clang" OR CMAKE_CXX_COMPILER_ID STREQUAL "GNU")

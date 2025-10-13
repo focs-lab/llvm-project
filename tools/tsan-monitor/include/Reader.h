@@ -8,27 +8,28 @@
 #include "EventQueue.h"
 
 namespace monitor {
+    class Reader {
+    public:
+        Reader(std::shared_ptr<Channel> channel,
+               std::shared_ptr<EventQueue> queue,
+               std::atomic<bool> &stop);
 
-class Reader {
- public:
-  Reader(std::shared_ptr<Channel> channel,
-         std::shared_ptr<EventQueue> queue,
-         std::atomic<bool>& stop);
-  ~Reader();
+        ~Reader() = default;
 
-  Reader(const Reader&) = delete;
-  Reader& operator=(const Reader&) = delete;
+        Reader(const Reader &) = delete;
 
-  void Start();
-  void Stop();
+        Reader &operator=(const Reader &) = delete;
 
- private:
-  void Run();
+        void Start();
 
-  std::shared_ptr<Channel> channel_;
-  std::shared_ptr<EventQueue> queue_;
-  std::atomic<bool>& stop_;
-  std::thread thread_;
-};
+        void Stop();
 
-}  // namespace monitor
+    private:
+        void Run();
+
+        std::shared_ptr<Channel> channel_;
+        std::shared_ptr<EventQueue> queue_;
+        std::atomic<bool> &stop_;
+        std::thread thread_;
+    };
+} // namespace monitor

@@ -11,35 +11,48 @@
 #include "EventQueue.h"
 
 namespace monitor {
-
-class Scheduler {
+ class Scheduler {
  public:
-  Scheduler(Analyzer& analyzer, std::atomic<bool>& stop_flag);
+  Scheduler(Analyzer &analyzer, std::atomic<bool> &stop_flag);
+
   ~Scheduler();
 
-  Scheduler(const Scheduler&) = delete;
-  Scheduler& operator=(const Scheduler&) = delete;
+  Scheduler(const Scheduler &) = delete;
+
+  Scheduler &operator=(const Scheduler &) = delete;
 
   std::shared_ptr<EventQueue> RegisterQueue(int tid);
 
   void Start();
+
   void Stop();
+
   void Notify();
+
+  bool TerminationRequested() const;
+
+  bool HasPendingEvents() const;
+
+  bool RaceDetected() const;
 
  private:
   void Run();
 
-  Analyzer& analyzer_;
-  std::atomic<bool>& stop_;
+  bool QueuesEmptyLocked() const;
+
+  Analyzer &analyzer_;
+  std::atomic<bool> &stop_;
   std::atomic<bool> running_{false};
   std::thread thread_;
 
-  std::mutex queues_mutex_;
-  std::unordered_map<int, std::shared_ptr<EventQueue>> queues_;
+  mutable std::mutex queues_mutex_;
+  std::unordered_map<int, std::shared_ptr<EventQueue> > queues_;
+
+  std::atomic<bool> termination_requested_{false};
+  std::atomic<bool> race_detected_{false};
 
   std::mutex cv_mutex_;
   std::condition_variable cv_;
   std::size_t pending_notifications_ = 0;
-};
-
-}  // namespace monitor
+ };
+} // namespace monitor

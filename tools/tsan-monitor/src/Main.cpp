@@ -7,33 +7,32 @@
 #include <string>
 #include <string_view>
 
+#include "Logger.h"
 #include "MonitorApp.h"
 
 namespace {
-
-void PrintUsage() {
-  std::cout << "tsan-monitor\n"
-            << "Usage: tsan-monitor <pid>\n"
-            << "   or: tsan-monitor --attach <pid>\n\n"
-            << "所有运行时配置请通过 TSAN_OPTIONS 指定，例如:\n"
-            << "  TSAN_OPTIONS=monitor_dir=/tmp/custom:monitor_refresh_ms=500:monitor_verbose=1\n";
-}
-
-std::optional<pid_t> ParsePid(std::string_view value) {
-  char* end = nullptr;
-  const long parsed = std::strtol(std::string(value).c_str(), &end, 10);
-  if (end == nullptr || *end != '\0' || parsed < 0) {
-    return std::nullopt;
+  void PrintUsage() {
+    std::cout << "tsan-monitor\n"
+        << "Usage: tsan-monitor <pid>\n\n"
+        << "Configure runtime options via TSAN_OPTIONS, for example:\n"
+        << "  TSAN_OPTIONS=monitor_dir=/tmp/custom:monitor_refresh_ms=500:monitor_verbose=1\n";
   }
-  return static_cast<pid_t>(parsed);
-}
 
-}  // namespace
+  std::optional<pid_t> ParsePid(std::string_view value) {
+    char *end = nullptr;
+    const long parsed = std::strtol(std::string(value).c_str(), &end, 10);
+    if (end == nullptr || *end != '\0' || parsed < 0) {
+      return std::nullopt;
+    }
+    return static_cast<pid_t>(parsed);
+  }
+} // namespace
 
 struct EnvOverrides {
   std::optional<std::filesystem::path> directory;
   std::optional<std::chrono::milliseconds> refresh_interval;
   std::optional<bool> verbose;
+  std::optional<monitor::RaceAction> race_action;
 };
 
 std::string_view Trim(std::string_view s) {
@@ -48,7 +47,7 @@ std::string_view Trim(std::string_view s) {
 
 EnvOverrides ParseEnvOverrides() {
   EnvOverrides cfg;
-  const char* tsan_opts = std::getenv("TSAN_OPTIONS");
+  const char *tsan_opts = std::getenv("TSAN_OPTIONS");
   if (!tsan_opts || !tsan_opts[0])
     return cfg;
 
@@ -56,8 +55,9 @@ EnvOverrides ParseEnvOverrides() {
   size_t pos = 0;
   while (pos <= opts.size()) {
     size_t next = opts.find(':', pos);
-    std::string_view token = (next == std::string_view::npos) ? opts.substr(pos)
-                                                             : opts.substr(pos, next - pos);
+    std::string_view token = (next == std::string_view::npos)
+                               ? opts.substr(pos)
+                               : opts.substr(pos, next - pos);
     token = Trim(token);
     if (!token.empty()) {
       size_t eq = token.find('=');
@@ -73,6 +73,14 @@ EnvOverrides ParseEnvOverrides() {
               cfg.refresh_interval = std::chrono::milliseconds(ms);
           } catch (...) {
           }
+        } else if (key == "monitor_on_race" && !value.empty()) {
+          std::string val_lower(value);
+          for (char &c: val_lower)
+            c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+          if (val_lower == "stop")
+            cfg.race_action = monitor::RaceAction::kStop;
+          else if (val_lower == "continue")
+            cfg.race_action = monitor::RaceAction::kContinue;
         } else if (key == "monitor_verbose" && !value.empty()) {
           if (value == "1" || value == "true" || value == "True")
             cfg.verbose = true;
@@ -88,7 +96,7 @@ EnvOverrides ParseEnvOverrides() {
   return cfg;
 }
 
-int main(int argc, char** argv) {
+int main(int argc, char **argv) {
   if (argc <= 1) {
     PrintUsage();
     return EXIT_FAILURE;
@@ -117,11 +125,16 @@ int main(int argc, char** argv) {
     options.refresh_interval = *overrides.refresh_interval;
   if (overrides.verbose.has_value())
     options.verbose = *overrides.verbose;
+  if (overrides.race_action)
+    options.race_action = *overrides.race_action;
 
   if (options.directory.empty()) {
     options.directory = std::filesystem::path("/tmp") /
                         ("tsan.monitor." + std::to_string(options.pid));
   }
+
+  auto log_level = options.verbose ? spdlog::level::debug : spdlog::level::info;
+  monitor::InitLogger("tsan-monitor.log", log_level);
 
   monitor::MonitorApp app(std::move(options));
   return app.Run();

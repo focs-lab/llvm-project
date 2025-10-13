@@ -98,8 +98,8 @@ def slot_to_row(index: int, value: int) -> List[str]:
         "Arg",
         "kEventClear",
         f"0x{event_type:02x}",
-        "",
-        "",
+        "-",
+        "-",
         f"0x{value:016x}",
     ]
 

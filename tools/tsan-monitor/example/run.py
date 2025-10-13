@@ -27,8 +27,10 @@ DEFAULT_CONFIG = {
     "out": str(REPO_ROOT / "tools/tsan-monitor/example/out"),
     "cflags": "",
     "ldflags": "",
+    "verbose": False,
 }
 
+VERBOSE = 0
 
 def parse_args() -> argparse.Namespace:
   parser = argparse.ArgumentParser(description="构建并运行 TSan monitor 示例")
@@ -40,6 +42,7 @@ def parse_args() -> argparse.Namespace:
   parser.add_argument("--out", default=DEFAULT_CONFIG["out"], help="输出目录")
   parser.add_argument("--cflags", default=DEFAULT_CONFIG["cflags"], help="额外编译参数")
   parser.add_argument("--ldflags", default=DEFAULT_CONFIG["ldflags"], help="额外链接参数")
+  parser.add_argument("--verbose", default=DEFAULT_CONFIG["verbose"], help="打印调试信息")
   return parser.parse_args()
 
 
@@ -92,9 +95,9 @@ def build_example(args: argparse.Namespace,
 
 def run_with_monitor(exe: Path, monitor_path: Path, example_dir: Path) -> Path:
   env = os.environ.copy()
-  env["TSAN_OPTIONS"] = f"monitor_path={monitor_path}:monitor_verbose=0"
+  env["TSAN_OPTIONS"] = f"monitor_path={monitor_path}:monitor_verbose={VERBOSE}"
 
-  print("[+] 运行示例，等待 monitor 退出")
+  print(f"[+] 运行示例，等待 monitor 退出（环境变量 {env["TSAN_OPTIONS"]}）")
   proc = subprocess.Popen([str(exe)], env=env, cwd=example_dir)
   pid = proc.pid
   ret = proc.wait()
@@ -135,7 +138,7 @@ def render_channels(channel_dir: Path, example_dir: Path) -> None:
 
 def merge_with_defaults(cmd: argparse.Namespace) -> argparse.Namespace:
   merged = DEFAULT_CONFIG.copy()
-  for key in ["example", "clang", "clangxx", "monitor", "out", "cflags", "ldflags"]:
+  for key in ["example", "clang", "clangxx", "monitor", "out", "cflags", "ldflags", "verbose"]:
     value = getattr(cmd, key)
     if value:
       merged[key] = value
@@ -167,6 +170,9 @@ def main() -> None:
     raise FileNotFoundError(f"clang 未找到: {clang}")
   if not clangxx.exists():
     raise FileNotFoundError(f"clang++ 未找到: {clangxx}")
+
+  global VERBOSE
+  VERBOSE = 1 if int(args.verbose) else 0
 
   ir_path, exe_path = build_example(args, src_path, example_dir, clang, clangxx)
   channel_dir = run_with_monitor(exe_path, monitor_path, example_dir)
