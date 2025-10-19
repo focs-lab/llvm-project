@@ -17,7 +17,7 @@ EXAMPLE_DIR = Path(__file__).resolve().parent
 PRINT_CHANNEL = REPO_ROOT / "tools/tsan-monitor/scripts/print_channel.py"
 
 # 支持的 example
-SUPPORTED_EXAMPLE = ["rw", "ww", "write"]
+SUPPORTED_EXAMPLE = ["rw", "ww", "struct_race", "shared_counter", "lazy_init", "array_race"]
 
 DEFAULT_CONFIG = {
     "example": "write",
@@ -55,10 +55,11 @@ def build_example(args: argparse.Namespace,
                   example_dir: Path,
                   clang: Path,
                   clangxx: Path) -> tuple[Path, Path]:
-  is_c_source = src_path.suffix == ".c"
-  compiler = clang if is_c_source else clangxx
-  linker = clang if is_c_source else clangxx
-  thread_flags: List[str] = ["-pthread"] if is_c_source else []
+  # Examples are C++ sources; always use clang++ for compile and link.
+  # Keep -pthread to ensure libstdc++/libc++ threads are linked correctly.
+  compiler = clangxx
+  linker = clangxx
+  thread_flags: List[str] = ["-pthread"]
 
   ir_path = example_dir / f"{args.example}.ll"
   exe_path = example_dir / args.example

@@ -16,7 +16,7 @@ namespace monitor {
         std::filesystem::path directory;
         bool verbose = false;
         std::chrono::milliseconds refresh_interval = kDefaultRefreshInterval;
-        RaceAction race_action = RaceAction::kContinue;
+        RaceAction race_action = RaceAction::kStop;
     };
 
     class MonitorApp {
