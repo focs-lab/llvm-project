@@ -8,18 +8,19 @@
 #include <unordered_map>
 
 #include "Analyzer.h"
+#include "DependencyGraph.h"
 #include "EventQueue.h"
 
 namespace monitor {
- class Scheduler {
+class Scheduler {
  public:
-  Scheduler(Analyzer &analyzer, std::atomic<bool> &stop_flag);
+  Scheduler(Analyzer& analyzer, std::atomic<bool>& stop_flag);
 
   ~Scheduler();
 
-  Scheduler(const Scheduler &) = delete;
+  Scheduler(const Scheduler&) = delete;
 
-  Scheduler &operator=(const Scheduler &) = delete;
+  Scheduler& operator=(const Scheduler&) = delete;
 
   std::shared_ptr<EventQueue> RegisterQueue(int tid);
 
@@ -40,8 +41,8 @@ namespace monitor {
 
   bool QueuesEmptyLocked() const;
 
-  Analyzer &analyzer_;
-  std::atomic<bool> &stop_;
+  Analyzer& analyzer_;
+  std::atomic<bool>& stop_;
   std::atomic<bool> running_{false};
   std::thread thread_;
 
@@ -54,5 +55,8 @@ namespace monitor {
   std::mutex cv_mutex_;
   std::condition_variable cv_;
   std::size_t pending_notifications_ = 0;
- };
-} // namespace monitor
+
+  // Stage-3 V3: thread-level dependency graph
+  DependencyGraph dep_graph_;
+};
+}  // namespace monitor

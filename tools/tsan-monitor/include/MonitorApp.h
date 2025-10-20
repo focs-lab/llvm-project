@@ -7,44 +7,44 @@
 
 #include "Analyzer.h"
 #include "Constants.h"
-#include "Scheduler.h"
 #include "Reader.h"
+#include "Scheduler.h"
 
 namespace monitor {
-    struct MonitorOptions {
-        pid_t pid = -1;
-        std::filesystem::path directory;
-        bool verbose = false;
-        std::chrono::milliseconds refresh_interval = kDefaultRefreshInterval;
-        RaceAction race_action = RaceAction::kStop;
-    };
+struct MonitorOptions {
+  pid_t pid = -1;
+  std::filesystem::path directory;
+  bool verbose = false;
+  std::chrono::milliseconds refresh_interval = kDefaultRefreshInterval;
+  RaceAction race_action = RaceAction::kStop;
+};
 
-    class MonitorApp {
-    public:
-        explicit MonitorApp(MonitorOptions options);
+class MonitorApp {
+ public:
+  explicit MonitorApp(MonitorOptions options);
 
-        ~MonitorApp();
+  ~MonitorApp();
 
-        int Run();
+  int Run();
 
-    private:
-        void RefreshChannels();
+ private:
+  void RefreshChannels();
 
-        void StopAllReaders();
+  void StopAllReaders();
 
-        bool AllChannelsRegistered() const;
+  bool AllChannelsRegistered() const;
 
-        struct ThreadState;
+  struct ThreadState;
 
-        MonitorOptions options_;
-        std::atomic<bool> stop_{false};
-        Analyzer analyzer_;
-        Scheduler scheduler_;
+  MonitorOptions options_;
+  std::atomic<bool> stop_{false};
+  Analyzer analyzer_;
+  Scheduler scheduler_;
 
-        std::filesystem::path directory_;
-        std::atomic<bool> handshake_sent_{false};
+  std::filesystem::path directory_;
+  std::atomic<bool> handshake_sent_{false};
 
-        mutable std::mutex threads_mutex_;
-        std::unordered_map<int, std::unique_ptr<ThreadState> > threads_;
-    };
-} // namespace monitor
+  mutable std::mutex threads_mutex_;
+  std::unordered_map<int, std::unique_ptr<ThreadState> > threads_;
+};
+}  // namespace monitor

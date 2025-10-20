@@ -11,47 +11,52 @@
 #include "State.h"
 
 namespace monitor {
-    enum class AnalyzerResult {
-        kContinue,
-        kTerminate,
-        kStopOnRace,
-    };
+enum class AnalyzerResult {
+  kContinue,
+  kTerminate,
+  kStopOnRace,
+};
 
-    class Analyzer {
-    public:
-        explicit Analyzer(bool verbose, RaceAction race_action)
-            : verbose_(verbose), race_action_(race_action) {
-        }
+class Analyzer {
+ public:
+  explicit Analyzer(bool verbose, RaceAction race_action)
+      : verbose_(verbose), race_action_(race_action) {}
 
-        AnalyzerResult Process(const Event &event);
+  AnalyzerResult Process(const Event& event);
 
-    private:
-        struct ThreadState {
-            VectorClock clock;
-        };
+ private:
+  struct ThreadState {
+    VectorClock clock;
+    bool alive = true;
+  };
 
-        ThreadState &GetThreadState(int tid);
+  ThreadState& GetThreadState(int tid);
 
-        AddressState &GetAddressState(std::uint64_t address);
+  AddressState& GetAddressState(std::uint64_t address);
 
-        bool HandleRead(const Event &event, ThreadState &thread_state,
-                        AddressState &address_state, const Epoch &current_epoch);
+  bool HandleRead(const Event& event, ThreadState& thread_state,
+                  AddressState& address_state, const Epoch& current_epoch);
 
-        bool HandleWrite(const Event &event, ThreadState &thread_state,
-                         AddressState &address_state, const Epoch &current_epoch);
+  bool HandleWrite(const Event& event, ThreadState& thread_state,
+                   AddressState& address_state, const Epoch& current_epoch);
 
-        bool ReportRace(RaceKind kind, const Epoch &first, std::uint64_t first_value,
-                        const Epoch &second, std::uint64_t second_value,
-                        std::uint64_t address);
+  bool ReportRace(RaceKind kind, const Epoch& first, std::uint64_t first_value,
+                  const Epoch& second, std::uint64_t second_value,
+                  std::uint64_t address);
 
-        static bool HappensBefore(const Epoch &epoch, const VectorClock &clock);
+  static bool HappensBefore(const Epoch& epoch, const VectorClock& clock);
 
-        void PrintEvent(const Event &event);
+  void PrintEvent(const Event& event);
 
-        bool verbose_ = false;
-        RaceAction race_action_ = RaceAction::kContinue;
-        std::unordered_map<int, ThreadState> threads_;
-        std::unordered_map<std::uint64_t, AddressState> addresses_;
-        Report report_;
-    };
-} // namespace monitor
+  // Stage-3: Thread lifecycle HB propagation
+  void HandleThreadSpawn(const Event& event, ThreadState& parent_state);
+  void HandleThreadJoin(const Event& event, ThreadState& parent_state);
+  void HandleThreadExit(const Event& event, ThreadState& thread_state);
+
+  bool verbose_ = false;
+  RaceAction race_action_ = RaceAction::kContinue;
+  std::unordered_map<int, ThreadState> threads_;
+  std::unordered_map<std::uint64_t, AddressState> addresses_;
+  Report report_;
+};
+}  // namespace monitor

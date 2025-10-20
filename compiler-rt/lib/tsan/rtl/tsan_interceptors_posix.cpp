@@ -1050,6 +1050,11 @@ extern "C" void *__tsan_thread_start_func(void *arg) {
   // it mixes up stack traces.
   volatile int foo = 42;
   foo++;
+  // Ensure the monitor receives a ThreadExit marker even when the
+  // thread function returns normally (i.e. does not call pthread_exit).
+  // This mirrors the explicit marker we send in the pthread_exit interceptor
+  // and makes exit delivery reliable for the monitor.
+  __tsan_channel_send_exit();
   return res;
 }
 
@@ -1105,6 +1110,9 @@ TSAN_INTERCEPTOR(int, pthread_create,
     //    before the new thread got a chance to acquire from it in ThreadStart.
     p.created.Post();
     p.started.Wait();
+    // After child has started, send a Spawn event via the channel with the
+    // child's TSan tid so the monitor can propagate HB to the child.
+    __tsan_channel_send_spawn((u64)p.tid);
   }
   if (attr == &myattr)
     pthread_attr_destroy(&myattr);
@@ -1119,6 +1127,9 @@ TSAN_INTERCEPTOR(int, pthread_join, void *th, void **ret) {
   ThreadIgnoreEnd(thr);
   if (res == 0) {
     ThreadJoin(thr, pc, tid);
+    // Send a Join event via the channel with the child's TSan tid so the
+    // monitor can propagate HB back to the parent.
+    __tsan_channel_send_join((u64)tid);
   }
   return res;
 }
@@ -1153,6 +1164,8 @@ TSAN_INTERCEPTOR(void, pthread_exit, void *retval) {
     CHECK_EQ(thr, &cur_thread_placeholder);
 #endif
   }
+  // Send a ThreadExit marker for the current thread prior to exiting.
+  __tsan_channel_send_exit();
   REAL(pthread_exit)(retval);
 }
 
@@ -3230,4 +3243,3 @@ SANITIZER_INTERFACE_ATTRIBUTE void __tsan_testonly_barrier_wait(
 }
 
 }  // extern "C"
-

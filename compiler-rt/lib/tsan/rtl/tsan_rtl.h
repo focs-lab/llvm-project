@@ -59,6 +59,51 @@ extern THREADLOCAL u8 __tsan_sampling;
 
 extern u32* __tsan_counters;
 
+// ---------------------------------------------------------------------------
+// Channel helpers for monitor-mode events (spawn/join/exit)
+// These are lightweight inline utilities used by interceptors to send
+// synchronization events into the per-thread channel. They follow the
+// same write protocol as the IR-inserted logging: first write args to
+// (Idx+1..Idx+N) with relaxed ordering, then release-store the header at
+// (Idx), and finally advance the index by (1+N).
+// ---------------------------------------------------------------------------
+static inline void __tsan_channel_send_event_args(u8 eid, const u64 *args,
+                                                  int nargs) {
+  // If the channel is not set up (monitor disabled or early init), skip.
+  if (!__tsan_channel_ptr)
+    return;
+
+  u32 idx = __tsan_channel_idx;
+  u64 lap = (static_cast<u64>(idx) >> 12) & 0xF;  // 4-bit lap number derived from idx
+
+  // Store arguments before the header.
+  for (int i = 0; i < nargs; ++i) {
+    u32 slot = (idx + 1 + static_cast<u32>(i)) & 0xFFF;  // 4096-slot ring
+    atomic_store_relaxed(&__tsan_channel_ptr[slot], (u64)args[i]);
+  }
+
+  // Build and publish the header with release ordering.
+  u64 header = (static_cast<u64>(eid) << 56) | (lap << 52);  // addr48 is 0 for these events
+  atomic_store(&__tsan_channel_ptr[idx & 0xFFF], header, memory_order_release);
+
+  // Advance index.
+  __tsan_channel_idx = idx + 1 + static_cast<u32>(nargs);
+}
+
+static inline void __tsan_channel_send_spawn(u64 child_tid) {
+  const u64 args[1] = {child_tid};
+  __tsan_channel_send_event_args(25 /*kThreadSpawn*/, args, 1);
+}
+
+static inline void __tsan_channel_send_join(u64 child_tid) {
+  const u64 args[1] = {child_tid};
+  __tsan_channel_send_event_args(26 /*kThreadJoin*/, args, 1);
+}
+
+static inline void __tsan_channel_send_exit() {
+  __tsan_channel_send_event_args(27 /*kThreadExit*/, nullptr, 0);
+}
+
 namespace __tsan {
 
 #if !SANITIZER_GO

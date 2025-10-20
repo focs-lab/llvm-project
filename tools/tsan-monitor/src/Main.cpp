@@ -1,5 +1,5 @@
-#include <chrono>
 #include <cctype>
+#include <chrono>
 #include <cstdlib>
 #include <filesystem>
 #include <iostream>
@@ -11,22 +11,24 @@
 #include "MonitorApp.h"
 
 namespace {
-  void PrintUsage() {
-    std::cout << "tsan-monitor\n"
-        << "Usage: tsan-monitor <pid>\n\n"
-        << "Configure runtime options via TSAN_OPTIONS, for example:\n"
-        << "  TSAN_OPTIONS=monitor_dir=/tmp/custom:monitor_refresh_ms=500:monitor_verbose=1\n";
-  }
+void PrintUsage() {
+  std::cout << "tsan-monitor\n"
+            << "Usage: tsan-monitor <pid>\n\n"
+            << "Configure runtime options via TSAN_OPTIONS, for example:\n"
+            << "  "
+               "TSAN_OPTIONS=monitor_dir=/tmp/"
+               "custom:monitor_refresh_ms=500:monitor_verbose=1\n";
+}
 
-  std::optional<pid_t> ParsePid(std::string_view value) {
-    char *end = nullptr;
-    const long parsed = std::strtol(std::string(value).c_str(), &end, 10);
-    if (end == nullptr || *end != '\0' || parsed < 0) {
-      return std::nullopt;
-    }
-    return static_cast<pid_t>(parsed);
+std::optional<pid_t> ParsePid(std::string_view value) {
+  char* end = nullptr;
+  const long parsed = std::strtol(std::string(value).c_str(), &end, 10);
+  if (end == nullptr || *end != '\0' || parsed < 0) {
+    return std::nullopt;
   }
-} // namespace
+  return static_cast<pid_t>(parsed);
+}
+}  // namespace
 
 struct EnvOverrides {
   std::optional<std::filesystem::path> directory;
@@ -47,17 +49,16 @@ std::string_view Trim(std::string_view s) {
 
 EnvOverrides ParseEnvOverrides() {
   EnvOverrides cfg;
-  const char *tsan_opts = std::getenv("TSAN_OPTIONS");
-  if (!tsan_opts || !tsan_opts[0])
-    return cfg;
+  const char* tsan_opts = std::getenv("TSAN_OPTIONS");
+  if (!tsan_opts || !tsan_opts[0]) return cfg;
 
   std::string_view opts{tsan_opts};
   size_t pos = 0;
   while (pos <= opts.size()) {
     size_t next = opts.find(':', pos);
     std::string_view token = (next == std::string_view::npos)
-                               ? opts.substr(pos)
-                               : opts.substr(pos, next - pos);
+                                 ? opts.substr(pos)
+                                 : opts.substr(pos, next - pos);
     token = Trim(token);
     if (!token.empty()) {
       size_t eq = token.find('=');
@@ -69,13 +70,12 @@ EnvOverrides ParseEnvOverrides() {
         } else if (key == "monitor_refresh_ms" && !value.empty()) {
           try {
             long long ms = std::stoll(std::string(value));
-            if (ms > 0)
-              cfg.refresh_interval = std::chrono::milliseconds(ms);
+            if (ms > 0) cfg.refresh_interval = std::chrono::milliseconds(ms);
           } catch (...) {
           }
         } else if (key == "monitor_on_race" && !value.empty()) {
           std::string val_lower(value);
-          for (char &c: val_lower)
+          for (char& c : val_lower)
             c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
           if (val_lower == "stop")
             cfg.race_action = monitor::RaceAction::kStop;
@@ -89,14 +89,13 @@ EnvOverrides ParseEnvOverrides() {
         }
       }
     }
-    if (next == std::string_view::npos)
-      break;
+    if (next == std::string_view::npos) break;
     pos = next + 1;
   }
   return cfg;
 }
 
-int main(int argc, char **argv) {
+int main(int argc, char** argv) {
   if (argc <= 1) {
     PrintUsage();
     return EXIT_FAILURE;
@@ -119,14 +118,11 @@ int main(int argc, char **argv) {
   options.pid = *pid;
 
   EnvOverrides overrides = ParseEnvOverrides();
-  if (overrides.directory)
-    options.directory = *overrides.directory;
+  if (overrides.directory) options.directory = *overrides.directory;
   if (overrides.refresh_interval)
     options.refresh_interval = *overrides.refresh_interval;
-  if (overrides.verbose.has_value())
-    options.verbose = *overrides.verbose;
-  if (overrides.race_action)
-    options.race_action = *overrides.race_action;
+  if (overrides.verbose.has_value()) options.verbose = *overrides.verbose;
+  if (overrides.race_action) options.race_action = *overrides.race_action;
 
   if (options.directory.empty()) {
     options.directory = std::filesystem::path("/tmp") /

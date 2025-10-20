@@ -37,6 +37,9 @@ EVENT_TYPE_NAMES = {
     0x0B: "kEventAtomicFence",
     0x0C: "kEventReturn",
     0x0D: "kEventAtExit",
+    0x19: "kThreadSpawn",   # 25
+    0x1A: "kThreadJoin",    # 26
+    0x1B: "kThreadExit",    # 27
     0xFE: "kEventIgnoreBegin",
     0xFF: "kEventIgnoreEnd",
 }

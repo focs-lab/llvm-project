@@ -9,7 +9,7 @@
 #include "Event.h"
 
 namespace monitor {
- class EventQueue {
+class EventQueue {
  public:
   using NotifyFn = std::function<void()>;
 
@@ -17,13 +17,15 @@ namespace monitor {
 
   void Push(Event event);
 
-  bool TryPop(Event &event);
+  bool TryPop(Event& event);
 
   bool Empty() const;
+
+  bool TryPeek(Event& event) const;
 
  private:
   NotifyFn notify_;
   mutable std::mutex mutex_;
   std::deque<Event> queue_;
- };
-} // namespace monitor
+};
+}  // namespace monitor

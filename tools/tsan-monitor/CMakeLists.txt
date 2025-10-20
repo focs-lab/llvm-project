@@ -7,6 +7,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 set(TSAN_MONITOR_SOURCES
   src/Analyzer.cpp
+  src/DependencyGraph.cpp
   src/Channel.cpp
   src/Event.cpp
   src/EventQueue.cpp
@@ -23,7 +24,10 @@ add_executable(tsan-monitor
   ${TSAN_MONITOR_SOURCES}
 )
 
-target_compile_features(tsan-monitor PRIVATE cxx_std_17)
+# Enable debug logs from SPDLOG_DEBUG at compile-time
+target_compile_definitions(tsan-monitor PRIVATE SPDLOG_ACTIVE_LEVEL=SPDLOG_LEVEL_DEBUG)
+
+target_compile_features(tsan-monitor PRIVATE cxx_std_20)
 
 target_include_directories(tsan-monitor
   PRIVATE
