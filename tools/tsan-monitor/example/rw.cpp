@@ -3,12 +3,12 @@
 int x = 0;
 int r = 0;
 
-static void *writer(void *) {
+static void* writer(void*) {
   x = 42;
   return nullptr;
 }
 
-static void *reader(void *) {
+static void* reader(void*) {
   r = x;
   return nullptr;
 }

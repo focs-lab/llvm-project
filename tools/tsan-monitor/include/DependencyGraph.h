@@ -31,8 +31,6 @@ class DependencyGraph {
   std::optional<int> GetBlockingOnChild(int tid) const;
 
  private:
-  bool AreAllDescendantsExited(int tid) const;
-
   // Spawn tracking:
   std::unordered_set<int> spawned_children_;
 
@@ -43,11 +41,6 @@ class DependencyGraph {
   std::unordered_map<int, int> blocked_on_join_;  // p_tid -> c_tid
   std::unordered_map<int, std::unordered_set<int>>
       parents_waiting_on_;  // c_tid -> [p_tid ...]
-
-  // Parent-child relationships for nested join handling
-  std::unordered_map<int, int> parent_of_;  // c_tid -> p_tid
-  std::unordered_map<int, std::vector<int>>
-      children_of_;  // p_tid -> [c_tid ...]
 };
 
 }  // namespace monitor

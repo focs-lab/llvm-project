@@ -2,12 +2,12 @@
 
 int x = 0;
 
-static void *write_one(void *) {
+static void* write_one(void*) {
   x = 1;
   return nullptr;
 }
 
-static void *write_two(void *) {
+static void* write_two(void*) {
   x = 2;
   return nullptr;
 }

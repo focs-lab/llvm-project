@@ -6,7 +6,7 @@ int counter1 = 0;
 int counter2 = 0;
 int counter3 = 0;
 
-static void *increment_all(void *) {
+static void* increment_all(void*) {
   for (int i = 0; i < 1000; i++) {
     // Race: 三个计数器的读-改-写都不是原子的
     counter1 = counter1 + 1;
@@ -16,7 +16,7 @@ static void *increment_all(void *) {
   return nullptr;
 }
 
-static void *decrement_all(void *) {
+static void* decrement_all(void*) {
   for (int i = 0; i < 1000; i++) {
     // Race: 三个计数器的读-改-写都不是原子的
     counter1 = counter1 - 1;

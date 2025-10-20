@@ -10,7 +10,7 @@ struct Point {
 
 Point point = {0, 0};
 
-static void *mover_x(void *) {
+static void* mover_x(void*) {
   for (int i = 0; i < 100; i++) {
     // Race: 读-改-写 point.x 不是原子的
     int current_x = point.x;
@@ -20,7 +20,7 @@ static void *mover_x(void *) {
   return nullptr;
 }
 
-static void *mover_y(void *) {
+static void* mover_y(void*) {
   for (int i = 0; i < 100; i++) {
     // Race: 读-改-写 point.y 不是原子的
     int current_y = point.y;
@@ -30,7 +30,7 @@ static void *mover_y(void *) {
   return nullptr;
 }
 
-static void *mover_diagonal(void *) {
+static void* mover_diagonal(void*) {
   for (int i = 0; i < 100; i++) {
     // Race: 同时修改 x 和 y
     int current_x = point.x;
@@ -47,7 +47,8 @@ int main() {
 
   pthread_create(&t1, nullptr, mover_x, nullptr);
   pthread_create(&t2, nullptr, mover_y, nullptr);
-  pthread_create(&t3, nullptr, mover_diagonal, nullptr); // 若没有 t3 则不会检测到 race
+  pthread_create(&t3, nullptr, mover_diagonal,
+                 nullptr);  // 若没有 t3 则不会检测到 race
 
   pthread_join(t1, nullptr);
   pthread_join(t2, nullptr);

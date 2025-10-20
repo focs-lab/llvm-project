@@ -6,8 +6,6 @@ namespace monitor {
 
 void DependencyGraph::OnSpawnProcessed(int parent_tid, int child_tid) {
   spawned_children_.insert(child_tid);
-  parent_of_[child_tid] = parent_tid;
-  children_of_[parent_tid].push_back(child_tid);
   SPDLOG_DEBUG("[DepGraph] Spawn processed: parent={} child={}", parent_tid,
                child_tid);
 }
@@ -48,7 +46,7 @@ bool DependencyGraph::HasExited(int tid) const {
 }
 
 bool DependencyGraph::TryConsumeJoinDependency(int parent_tid, int child_tid) {
-  if (!HasExited(child_tid) || !AreAllDescendantsExited(child_tid)) {
+  if (!HasExited(child_tid)) {
     blocked_on_join_[parent_tid] = child_tid;
     parents_waiting_on_[child_tid].insert(parent_tid);
     SPDLOG_DEBUG("[DepGraph] Join parent={} waiting for child={}", parent_tid,
@@ -79,19 +77,6 @@ std::optional<int> DependencyGraph::GetBlockingOnChild(int tid) const {
   auto it = blocked_on_join_.find(tid);
   if (it == blocked_on_join_.end()) return std::nullopt;
   return it->second;
-}
-
-bool DependencyGraph::AreAllDescendantsExited(int tid) const {
-  auto it = children_of_.find(tid);
-  if (it == children_of_.end()) return true;
-  for (int child : it->second) {
-    if (!HasExited(child)) {
-      SPDLOG_DEBUG("[DepGraph] child {} of {} not exited", child, tid);
-      return false;
-    }
-    if (!AreAllDescendantsExited(child)) return false;
-  }
-  return true;
 }
 
 }  // namespace monitor
