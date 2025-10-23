@@ -41,6 +41,10 @@ class Scheduler {
 
   bool QueuesEmptyLocked() const;
 
+  bool IsSyncEventReady(const Event& event);
+
+  void AdvanceSyncCounter(const Event& event);
+
   Analyzer& analyzer_;
   std::atomic<bool>& stop_;
   std::atomic<bool> running_{false};
@@ -58,5 +62,8 @@ class Scheduler {
 
   // Stage-3 V3: thread-level dependency graph
   DependencyGraph dep_graph_;
+
+  std::unordered_map<std::uint64_t, std::uint64_t> atomic_next_counter_;
+  std::unordered_map<std::uint64_t, std::uint64_t> mutex_next_counter_;
 };
 }  // namespace monitor

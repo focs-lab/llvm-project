@@ -54,9 +54,9 @@ std::string Report::Format(const RaceEventInfo& info) const {
   auto access = [&](bool first) {
     switch (info.kind) {
       case RaceKind::kReadWrite:
-        return first ? "read" : "write";
-      case RaceKind::kWriteRead:
         return first ? "write" : "read";
+      case RaceKind::kWriteRead:
+        return first ? "read" : "write";
       case RaceKind::kWriteWrite:
         return "write";
     }

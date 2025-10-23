@@ -26,7 +26,9 @@ MonitorApp::MonitorApp(MonitorOptions options)
     : options_(std::move(options)),
       analyzer_(options_.verbose, options_.race_action),
       scheduler_(analyzer_, stop_),
-      directory_(options_.directory) {}
+      directory_(options_.directory) {
+  analyzer_.SetSyncTokenManager(&sync_tokens_);
+}
 
 MonitorApp::~MonitorApp() {
   StopAllReaders();

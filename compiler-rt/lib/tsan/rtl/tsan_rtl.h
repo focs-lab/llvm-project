@@ -56,8 +56,19 @@ using namespace __sanitizer;
 extern THREADLOCAL atomic_uint64_t* __tsan_channel_ptr;
 extern THREADLOCAL u32 __tsan_channel_idx;
 extern THREADLOCAL u8 __tsan_sampling;
+extern THREADLOCAL u32 __tsan_ignore_events;
 
-extern u32* __tsan_counters;
+extern u32* __tsan_atomic_counters;
+extern u32* __tsan_mutex_counters;
+
+static constexpr u8 kTsanEventMutexLock = 20;
+static constexpr u8 kTsanEventMutexUnlock = 21;
+static constexpr u8 kTsanEventThreadSpawn = 25;
+static constexpr u8 kTsanEventThreadJoin = 26;
+static constexpr u8 kTsanEventThreadExit = 27;
+static constexpr u8 kTsanEventThreadStart = 28;
+
+# define TSAN_MONITOR_DEBUG_OUTPUT 0
 
 // ---------------------------------------------------------------------------
 // Channel helpers for monitor-mode events (spawn/join/exit)
@@ -67,41 +78,80 @@ extern u32* __tsan_counters;
 // (Idx+1..Idx+N) with relaxed ordering, then release-store the header at
 // (Idx), and finally advance the index by (1+N).
 // ---------------------------------------------------------------------------
-static inline void __tsan_channel_send_event_args(u8 eid, const u64 *args,
-                                                  int nargs) {
-  // If the channel is not set up (monitor disabled or early init), skip.
+static inline void __tsan_channel_send_event_with_addr(u8 eid, uptr addr,
+                                                       const u64 *args,
+                                                       int nargs) {
   if (!__tsan_channel_ptr)
     return;
 
   u32 idx = __tsan_channel_idx;
-  u64 lap = (static_cast<u64>(idx) >> 12) & 0xF;  // 4-bit lap number derived from idx
+  u64 lap = (static_cast<u64>(idx) >> 12) & 0xF; // 4-bit lap number
 
-  // Store arguments before the header.
   for (int i = 0; i < nargs; ++i) {
-    u32 slot = (idx + 1 + static_cast<u32>(i)) & 0xFFF;  // 4096-slot ring
-    atomic_store_relaxed(&__tsan_channel_ptr[slot], (u64)args[i]);
+    u32 slot = (idx + 1 + static_cast<u32>(i)) & 0xFFF; // 4096-slot ring
+    u64 value = args ? args[i] : 0ULL;
+    atomic_store_relaxed(&__tsan_channel_ptr[slot], value);
   }
 
-  // Build and publish the header with release ordering.
-  u64 header = (static_cast<u64>(eid) << 56) | (lap << 52);  // addr48 is 0 for these events
+  const u64 addr48 = static_cast<u64>(addr) & ((1ULL << 48) - 1);
+  u64 header = (static_cast<u64>(eid) << 56) | (lap << 52) | addr48;
   atomic_store(&__tsan_channel_ptr[idx & 0xFFF], header, memory_order_release);
 
-  // Advance index.
   __tsan_channel_idx = idx + 1 + static_cast<u32>(nargs);
+}
+
+static inline void __tsan_channel_send_event_args(u8 eid, const u64 *args,
+                                                  int nargs) {
+  __tsan_channel_send_event_with_addr(eid, 0, args, nargs);
 }
 
 static inline void __tsan_channel_send_spawn(u64 child_tid) {
   const u64 args[1] = {child_tid};
-  __tsan_channel_send_event_args(25 /*kThreadSpawn*/, args, 1);
+  __tsan_channel_send_event_args(kTsanEventThreadSpawn, args, 1);
+}
+
+static inline void __tsan_channel_send_thread_start() {
+  __tsan_channel_send_event_args(kTsanEventThreadStart, nullptr, 0);
 }
 
 static inline void __tsan_channel_send_join(u64 child_tid) {
   const u64 args[1] = {child_tid};
-  __tsan_channel_send_event_args(26 /*kThreadJoin*/, args, 1);
+  __tsan_channel_send_event_args(kTsanEventThreadJoin, args, 1);
 }
 
 static inline void __tsan_channel_send_exit() {
-  __tsan_channel_send_event_args(27 /*kThreadExit*/, nullptr, 0);
+  __tsan_channel_send_event_args(kTsanEventThreadExit, nullptr, 0);
+}
+
+static inline u64 __tsan_counter_slot(uptr addr) {
+  return (addr & 0xfffffULL) << 1;
+}
+
+static inline u64 __tsan_mutex_counter(void *addr) {
+  if (!__tsan_mutex_counters)
+    return 0;
+  auto *base = reinterpret_cast<atomic_uint32_t *>(__tsan_mutex_counters);
+  uptr slot = __tsan_counter_slot(reinterpret_cast<uptr>(addr));
+  u32 prev = atomic_fetch_add(&base[slot], 1, memory_order_relaxed);
+  return static_cast<u64>(prev + 1);
+}
+
+static inline void __tsan_channel_send_mutex_lock(void *addr) {
+  if (!__tsan_channel_ptr)
+    return;
+  const u64 counter = __tsan_mutex_counter(addr);
+  const u64 args[1] = {counter};
+  __tsan_channel_send_event_with_addr(kTsanEventMutexLock,
+                                      reinterpret_cast<uptr>(addr), args, 1);
+}
+
+static inline void __tsan_channel_send_mutex_unlock(void *addr) {
+  if (!__tsan_channel_ptr)
+    return;
+  const u64 counter = __tsan_mutex_counter(addr);
+  const u64 args[1] = {counter};
+  __tsan_channel_send_event_with_addr(kTsanEventMutexUnlock,
+                                      reinterpret_cast<uptr>(addr), args, 1);
 }
 
 namespace __tsan {
@@ -567,6 +617,12 @@ bool IsExpectedReport(uptr addr, uptr size);
 # define DPrintf2 Printf
 #else
 # define DPrintf2(...)
+#endif
+
+#if defined(TSAN_MONITOR_DEBUG_OUTPUT) && TSAN_MONITOR_DEBUG_OUTPUT >= 1
+# define MDPrintf Printf
+#else
+# define MDPrintf(...)
 #endif
 
 StackID CurrentStackId(ThreadState *thr, uptr pc);

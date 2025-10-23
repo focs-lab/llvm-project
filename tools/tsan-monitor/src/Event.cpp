@@ -13,14 +13,19 @@ std::size_t EventArgCount(EventId id) {
       return 0;
     case EventId::kAtomicLoad:
     case EventId::kAtomicStore:
-      return 2;
-    case EventId::kAtomicRMW:
-    case EventId::kAtomicCAS:
       return 3;
+    case EventId::kAtomicRMW:
+      return 4;
+    case EventId::kAtomicCAS:
+      return 5;
+    case EventId::kMutexLock:
+    case EventId::kMutexUnlock:
+      return 1;
     case EventId::kThreadSpawn:
     case EventId::kThreadJoin:
-      return 1;  // child tid
+      return 1;
     case EventId::kThreadExit:
+    case EventId::kThreadStart:
       return 0;
     case EventId::kVptrLoad:
     case EventId::kMemset:
@@ -67,12 +72,18 @@ std::string_view EventName(EventId id) {
       return "AtExit";
     case EventId::kMonitorReady:
       return "MonitorReady";
+    case EventId::kMutexLock:
+      return "MutexLock";
+    case EventId::kMutexUnlock:
+      return "MutexUnlock";
     case EventId::kThreadSpawn:
       return "ThreadSpawn";
     case EventId::kThreadJoin:
       return "ThreadJoin";
     case EventId::kThreadExit:
       return "ThreadExit";
+    case EventId::kThreadStart:
+      return "ThreadStart";
     case EventId::kIgnoreBegin:
       return "IgnoreBegin";
     case EventId::kIgnoreEnd:

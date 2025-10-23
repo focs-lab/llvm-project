@@ -48,11 +48,15 @@ SANITIZER_INTERFACE_ATTRIBUTE
 THREADLOCAL u32 __tsan_channel_idx;
 SANITIZER_INTERFACE_ATTRIBUTE
 THREADLOCAL u8 __tsan_sampling;
+SANITIZER_INTERFACE_ATTRIBUTE
+THREADLOCAL u32 __tsan_ignore_events;
 constexpr u64 kMonitorReady = 0xcafebeef;
 constexpr u64 kProgramEnded = 0xdeaddead;
 
 __attribute__((visibility("default")))
-u32* __tsan_counters;
+u32* __tsan_atomic_counters;
+__attribute__((visibility("default")))
+u32* __tsan_mutex_counters;
 
 namespace __tsan {
 
@@ -756,7 +760,8 @@ void Initialize(ThreadState *thr) {
 #endif
   ctx->initialized = true;
 
-  __tsan_counters = reinterpret_cast<u32*>(CreateCountersArray());
+  __tsan_atomic_counters = reinterpret_cast<u32*>(CreateCountersArray());
+  __tsan_mutex_counters = reinterpret_cast<u32*>(CreateCountersArray());
   int monitor_pid = StartMonitor();
   ctx->monitor_pid = monitor_pid;
 
@@ -1083,6 +1088,7 @@ void ThreadIgnoreBegin(ThreadState* thr, uptr pc) {
   thr->ignore_reads_and_writes++;
   CHECK_GT(thr->ignore_reads_and_writes, 0);
   thr->fast_state.SetIgnoreBit();
+  __tsan_ignore_events++;
 #if !SANITIZER_GO
   if (pc && !ctx->after_multithreaded_fork)
     thr->mop_ignore_set.Add(CurrentStackId(thr, pc));
@@ -1099,6 +1105,8 @@ void ThreadIgnoreEnd(ThreadState *thr) {
     thr->mop_ignore_set.Reset();
 #endif
   }
+  CHECK_GT(__tsan_ignore_events, 0);
+  __tsan_ignore_events--;
 }
 
 #if !SANITIZER_GO

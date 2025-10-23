@@ -151,10 +151,12 @@ struct OnStartedArgs {
 
 void ThreadStart(ThreadState *thr, Tid tid, tid_t os_id,
                  ThreadType thread_type) {
+  __tsan_ignore_events = 0;
   if (UNLIKELY(!__tsan_channel_ptr)) {
     __tsan_channel_ptr = reinterpret_cast<atomic_uint64_t*>(CreateLogFile(tid, &thr->log_fd));
     __tsan_channel_idx = 0;
     __tsan_sampling = 1;
+    __tsan_ignore_events = 0;
   }
   ctx->thread_registry.StartThread(tid, os_id, thread_type, thr);
   if (!thr->ignore_sync) {

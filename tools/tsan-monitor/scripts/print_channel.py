@@ -37,9 +37,12 @@ EVENT_TYPE_NAMES = {
     0x0B: "kEventAtomicFence",
     0x0C: "kEventReturn",
     0x0D: "kEventAtExit",
+    0x14: "kMutexLock",
+    0x15: "kMutexUnlock",
     0x19: "kThreadSpawn",   # 25
     0x1A: "kThreadJoin",    # 26
     0x1B: "kThreadExit",    # 27
+    0x1C: "kThreadStart",   # 28
     0xFE: "kEventIgnoreBegin",
     0xFF: "kEventIgnoreEnd",
 }
@@ -99,8 +102,8 @@ def slot_to_row(index: int, value: int) -> List[str]:
     return [
         index,
         "Arg",
-        "kEventClear",
-        f"0x{event_type:02x}",
+        "-",
+        "-",
         "-",
         "-",
         f"0x{value:016x}",

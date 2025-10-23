@@ -6,6 +6,33 @@
 
 namespace __tsan {
 
+class ScopedChannelIgnore {
+public:
+  explicit ScopedChannelIgnore(ThreadState *thr, uptr pc = 0)
+      : thr_(thr), armed_(thr && thr->is_inited) {
+    if (armed_) {
+      // ThreadIgnoreBegin(thr_, pc);
+      __tsan_ignore_events++;
+      MDPrintf("[DEBUG] ScopedChannelIgnore: __tsan_ignore_events++, now is %d\n", __tsan_ignore_events);
+    }
+  }
+
+  ~ScopedChannelIgnore() {
+    if (armed_) {
+      // ThreadIgnoreEnd(thr_);
+      __tsan_ignore_events--;
+      MDPrintf("[DEBUG] ScopedChannelIgnore: __tsan_ignore_events--, now is %d\n", __tsan_ignore_events);
+    }
+  }
+
+  ScopedChannelIgnore(const ScopedChannelIgnore &) = delete;
+  ScopedChannelIgnore &operator=(const ScopedChannelIgnore &) = delete;
+
+private:
+  ThreadState *thr_;
+  bool armed_;
+};
+
 class ScopedInterceptor {
  public:
   ScopedInterceptor(ThreadState *thr, const char *fname, uptr pc);
@@ -69,6 +96,10 @@ inline bool MustIgnoreInterceptor(ThreadState *thr) {
 #else
 #  define CHECK_REAL_FUNC(func) DCHECK(REAL(func))
 #endif
+
+#define SCOPED_TSAN_CHANNEL__INTERCEPTOR() \
+  ThreadState *thr = cur_thread(); \
+  ScopedChannelIgnore guard(thr);
 
 #define SCOPED_TSAN_INTERCEPTOR(func, ...)   \
   SCOPED_INTERCEPTOR_RAW(func, __VA_ARGS__); \

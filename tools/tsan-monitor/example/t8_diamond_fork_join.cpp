@@ -1,5 +1,5 @@
-// Diamond fork-join: T0 → T1/T2 (T2 both spawn T3), then join all (race between T1 and T3)
-// Tests: multiple parents spawning, complex join dependencies
+// Diamond fork-join: T0 → T1/T2 (T2 both spawn T3), then join all (race between
+// T1 and T3) Tests: multiple parents spawning, complex join dependencies
 #include <pthread.h>
 
 #include <cstdio>

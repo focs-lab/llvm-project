@@ -9,6 +9,7 @@
 #include "Constants.h"
 #include "Reader.h"
 #include "Scheduler.h"
+#include "SyncTokenManager.h"
 
 namespace monitor {
 struct MonitorOptions {
@@ -38,6 +39,7 @@ class MonitorApp {
 
   MonitorOptions options_;
   std::atomic<bool> stop_{false};
+  SyncTokenManager sync_tokens_;
   Analyzer analyzer_;
   Scheduler scheduler_;
 

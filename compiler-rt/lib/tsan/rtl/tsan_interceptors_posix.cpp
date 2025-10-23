@@ -1043,6 +1043,7 @@ extern "C" void *__tsan_thread_start_func(void *arg) {
     Processor *proc = ProcCreate();
     ProcWire(proc, thr);
     ThreadStart(thr, p->tid, GetTid(), ThreadType::Regular);
+    __tsan_channel_send_thread_start();
     p->started.Post();
   }
   void *res = callback(param);
@@ -1101,6 +1102,9 @@ TSAN_INTERCEPTOR(int, pthread_create,
   if (res == 0) {
     p.tid = ThreadCreate(thr, pc, *(uptr *)th, IsStateDetached(detached));
     CHECK_NE(p.tid, kMainTid);
+    // Publish the spawn event before waking the child so the monitor observes
+    // the parent's release before the child's first acquire.
+    __tsan_channel_send_spawn((u64)p.tid);
     // Synchronization on p.tid serves two purposes:
     // 1. ThreadCreate must finish before the new thread starts.
     //    Otherwise the new thread can call pthread_detach, but the pthread_t
@@ -1110,9 +1114,6 @@ TSAN_INTERCEPTOR(int, pthread_create,
     //    before the new thread got a chance to acquire from it in ThreadStart.
     p.created.Post();
     p.started.Wait();
-    // After child has started, send a Spawn event via the channel with the
-    // child's TSan tid so the monitor can propagate HB to the child.
-    __tsan_channel_send_spawn((u64)p.tid);
   }
   if (attr == &myattr)
     pthread_attr_destroy(&myattr);
@@ -1405,62 +1406,46 @@ TSAN_INTERCEPTOR(int, pthread_mutex_destroy, void *m) {
 }
 
 TSAN_INTERCEPTOR(int, pthread_mutex_lock, void *m) {
-  // SCOPED_TSAN_INTERCEPTOR(pthread_mutex_lock, m);
-  // MutexPreLock(thr, pc, (uptr)m);
-  // int res = BLOCK_REAL(pthread_mutex_lock)(m);
+  SCOPED_TSAN_CHANNEL__INTERCEPTOR();
   int res = REAL(pthread_mutex_lock)(m);
-  // if (res == errno_EOWNERDEAD)
-  //   MutexRepair(thr, pc, (uptr)m);
-  // if (res == 0 || res == errno_EOWNERDEAD)
-  //   MutexPostLock(thr, pc, (uptr)m);
-  // if (res == errno_EINVAL)
-  //   MutexInvalidAccess(thr, pc, (uptr)m);
+  if (res == 0 || res == errno_EOWNERDEAD)
+    __tsan_channel_send_mutex_lock(m);
   return res;
 }
 
 TSAN_INTERCEPTOR(int, pthread_mutex_trylock, void *m) {
-  // SCOPED_TSAN_INTERCEPTOR(pthread_mutex_trylock, m);
+  SCOPED_TSAN_CHANNEL__INTERCEPTOR();
   int res = REAL(pthread_mutex_trylock)(m);
-  // if (res == errno_EOWNERDEAD)
-  //   MutexRepair(thr, pc, (uptr)m);
-  // if (res == 0 || res == errno_EOWNERDEAD)
-  //   MutexPostLock(thr, pc, (uptr)m, MutexFlagTryLock);
+  if (res == 0 || res == errno_EOWNERDEAD)
+    __tsan_channel_send_mutex_lock(m);
   return res;
 }
 
 #if !SANITIZER_APPLE
 TSAN_INTERCEPTOR(int, pthread_mutex_timedlock, void *m, void *abstime) {
-  // SCOPED_TSAN_INTERCEPTOR(pthread_mutex_timedlock, m, abstime);
+  SCOPED_TSAN_CHANNEL__INTERCEPTOR();
   int res = REAL(pthread_mutex_timedlock)(m, abstime);
-  // if (res == 0) {
-  //   MutexPostLock(thr, pc, (uptr)m, MutexFlagTryLock);
-  // }
+  if (res == 0 || res == errno_EOWNERDEAD)
+    __tsan_channel_send_mutex_lock(m);
   return res;
 }
 #endif
 
 TSAN_INTERCEPTOR(int, pthread_mutex_unlock, void *m) {
-  // SCOPED_TSAN_INTERCEPTOR(pthread_mutex_unlock, m);
-  // MutexUnlock(thr, pc, (uptr)m);
+  SCOPED_TSAN_CHANNEL__INTERCEPTOR();
   int res = REAL(pthread_mutex_unlock)(m);
-  // if (res == errno_EINVAL)
-  //   MutexInvalidAccess(thr, pc, (uptr)m);
+  if (res == 0)
+    __tsan_channel_send_mutex_unlock(m);
   return res;
 }
 
 #if SANITIZER_LINUX
 TSAN_INTERCEPTOR(int, pthread_mutex_clocklock, void *m,
                  __sanitizer_clockid_t clock, void *abstime) {
-  // SCOPED_TSAN_INTERCEPTOR(pthread_mutex_clocklock, m, clock, abstime);
-  // MutexPreLock(thr, pc, (uptr)m);
-  // int res = BLOCK_REAL(pthread_mutex_clocklock)(m, clock, abstime);
+  SCOPED_TSAN_CHANNEL__INTERCEPTOR();
   int res = REAL(pthread_mutex_clocklock)(m, clock, abstime);
-  // if (res == errno_EOWNERDEAD)
-  //   MutexRepair(thr, pc, (uptr)m);
-  // if (res == 0 || res == errno_EOWNERDEAD)
-  //   MutexPostLock(thr, pc, (uptr)m);
-  // if (res == errno_EINVAL)
-  //   MutexInvalidAccess(thr, pc, (uptr)m);
+  if (res == 0 || res == errno_EOWNERDEAD)
+    __tsan_channel_send_mutex_lock(m);
   return res;
 }
 #endif
@@ -1470,25 +1455,18 @@ TSAN_INTERCEPTOR(int, pthread_mutex_clocklock, void *m,
 // glibc 2.34 applies a non-default version for the two functions. They are no
 // longer expected to be intercepted by programs.
 TSAN_INTERCEPTOR(int, __pthread_mutex_lock, void *m) {
-  // SCOPED_TSAN_INTERCEPTOR(__pthread_mutex_lock, m);
-  // MutexPreLock(thr, pc, (uptr)m);
-  // int res = BLOCK_REAL(__pthread_mutex_lock)(m);
+  SCOPED_TSAN_CHANNEL__INTERCEPTOR();
   int res = REAL(__pthread_mutex_lock)(m);
-  // if (res == errno_EOWNERDEAD)
-  //   MutexRepair(thr, pc, (uptr)m);
-  // if (res == 0 || res == errno_EOWNERDEAD)
-  //   MutexPostLock(thr, pc, (uptr)m);
-  // if (res == errno_EINVAL)
-  //   MutexInvalidAccess(thr, pc, (uptr)m);
+  if (res == 0 || res == errno_EOWNERDEAD)
+    __tsan_channel_send_mutex_lock(m);
   return res;
 }
 
 TSAN_INTERCEPTOR(int, __pthread_mutex_unlock, void *m) {
-  // SCOPED_TSAN_INTERCEPTOR(__pthread_mutex_unlock, m);
-  // MutexUnlock(thr, pc, (uptr)m);
+  SCOPED_TSAN_CHANNEL__INTERCEPTOR();
   int res = REAL(__pthread_mutex_unlock)(m);
-  // if (res == errno_EINVAL)
-    // MutexInvalidAccess(thr, pc, (uptr)m);
+  if (res == 0)
+    __tsan_channel_send_mutex_unlock(m);
   return res;
 }
 #  endif

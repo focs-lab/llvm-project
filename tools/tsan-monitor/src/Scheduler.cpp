@@ -5,6 +5,7 @@
 #include <chrono>
 
 #include "Constants.h"
+#include "SyncTokenManager.h"
 
 namespace monitor {
 Scheduler::Scheduler(Analyzer& analyzer, std::atomic<bool>& stop_flag)
@@ -67,8 +68,37 @@ void Scheduler::Run() {
     bool progressed = false;
     {
       std::lock_guard<std::mutex> lock(queues_mutex_);
+      auto handle_result = [&](AnalyzerResult result) -> bool {
+        if (result == AnalyzerResult::kTerminate) {
+          termination_requested_.store(true, std::memory_order_release);
+          SPDLOG_DEBUG("Scheduler observed termination marker");
+        } else if (result == AnalyzerResult::kStopOnRace) {
+          race_detected_.store(true, std::memory_order_release);
+          stop_.store(true, std::memory_order_release);
+          SPDLOG_DEBUG("Scheduler stopping due to race detection");
+          return true;
+        }
+        return false;
+      };
+
       for (auto& [tid, queue] : queues_) {
-        // V3: Thread-level blocking - skip entire queue if thread not ready
+        Event event;
+        if (!queue->TryPeek(event)) {
+          continue;
+        }
+
+        AnalyzerResult result = AnalyzerResult::kContinue;
+
+        if (event.id == EventId::kProgramEndMarker) {
+          (void)queue->TryPop(event);
+          progressed = true;
+          result = analyzer_.Process(event);
+          if (handle_result(result)) {
+            break;
+          }
+          continue;
+        }
+
         if (dep_graph_.IsThreadBlocked(tid)) {
           if (dep_graph_.IsSpawnBlocked(tid)) {
             SPDLOG_DEBUG("[Scheduler] Thread {} spawn-blocked", tid);
@@ -76,15 +106,8 @@ void Scheduler::Run() {
             SPDLOG_DEBUG("[Scheduler] Thread {} join-blocked on child {}", tid,
                          dep_graph_.GetBlockingOnChild(tid).value_or(-1));
           }
-          continue;  // Skip entire queue - events stay in queue naturally
-        }
-
-        Event event;
-        if (!queue->TryPeek(event)) {
           continue;
         }
-
-        AnalyzerResult result = AnalyzerResult::kContinue;
 
         if (event.id == EventId::kThreadSpawn) {
           (void)queue->TryPop(event);
@@ -112,20 +135,24 @@ void Scheduler::Run() {
           (void)queue->TryPop(event);
           progressed = true;
           result = analyzer_.Process(event);
+        } else if (IsAtomicEvent(event) || IsMutexEvent(event)) {
+          if (!IsSyncEventReady(event)) {
+            SPDLOG_DEBUG(
+                "[Scheduler] T{} sync event not ready addr=0x{:x} count={}",
+                tid, event.address, ExtractCount(event));
+            continue;
+          }
+          (void)queue->TryPop(event);
+          progressed = true;
+          result = analyzer_.Process(event);
+          AdvanceSyncCounter(event);
         } else {
           // Regular event - just process (spawn gate already checked above)
           (void)queue->TryPop(event);
           progressed = true;
           result = analyzer_.Process(event);
         }
-
-        if (result == AnalyzerResult::kTerminate) {
-          termination_requested_.store(true, std::memory_order_release);
-          SPDLOG_DEBUG("Scheduler observed termination marker");
-        } else if (result == AnalyzerResult::kStopOnRace) {
-          race_detected_.store(true, std::memory_order_release);
-          stop_.store(true, std::memory_order_release);
-          SPDLOG_DEBUG("Scheduler stopping due to race detection");
+        if (handle_result(result)) {
           break;
         }
       }
@@ -153,5 +180,41 @@ bool Scheduler::QueuesEmptyLocked() const {
     }
   }
   return true;
+}
+
+bool Scheduler::IsSyncEventReady(const Event& event) {
+  if (IsAtomicEvent(event)) {
+    auto& expected = atomic_next_counter_[event.address];
+    if (expected == 0) {
+      expected = ExtractCount(event);
+      return true;
+    }
+    return ExtractCount(event) == expected;
+  }
+  if (IsMutexEvent(event)) {
+    auto& expected = mutex_next_counter_[event.address];
+    if (expected == 0) {
+      expected = ExtractCount(event);
+      return true;
+    }
+    return ExtractCount(event) == expected;
+  }
+  return true;
+}
+
+void Scheduler::AdvanceSyncCounter(const Event& event) {
+  if (IsAtomicEvent(event)) {
+    auto& expected = atomic_next_counter_[event.address];
+    if (expected == 0) {
+      expected = ExtractCount(event);
+    }
+    ++expected;
+  } else if (IsMutexEvent(event)) {
+    auto& expected = mutex_next_counter_[event.address];
+    if (expected == 0) {
+      expected = ExtractCount(event);
+    }
+    ++expected;
+  }
 }
 }  // namespace monitor

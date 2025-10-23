@@ -19,6 +19,11 @@ AnalyzerResult Analyzer::Process(const Event& event) {
     HandleThreadSpawn(event, parent_state);
     return AnalyzerResult::kContinue;
   }
+  if (event.id == EventId::kThreadStart) {
+    ThreadState& child_state = GetThreadState(event.tid);
+    HandleThreadStart(event, child_state);
+    return AnalyzerResult::kContinue;
+  }
   if (event.id == EventId::kThreadJoin) {
     ThreadState& parent_state = GetThreadState(event.tid);
     HandleThreadJoin(event, parent_state);
@@ -27,6 +32,37 @@ AnalyzerResult Analyzer::Process(const Event& event) {
   if (event.id == EventId::kThreadExit) {
     ThreadState& thread_state = GetThreadState(event.tid);
     HandleThreadExit(event, thread_state);
+    return AnalyzerResult::kContinue;
+  }
+
+  if (IsMutexEvent(event)) {
+    ThreadState& thread_state = GetThreadState(event.tid);
+    if (event.id == EventId::kMutexLock) {
+      HandleMutexLock(event, thread_state);
+    } else {
+      HandleMutexUnlock(event, thread_state);
+    }
+    return AnalyzerResult::kContinue;
+  }
+
+  if (IsAtomicEvent(event)) {
+    ThreadState& thread_state = GetThreadState(event.tid);
+    switch (event.id) {
+      case EventId::kAtomicLoad:
+        HandleAtomicLoad(event, thread_state);
+        break;
+      case EventId::kAtomicStore:
+        HandleAtomicStore(event, thread_state);
+        break;
+      case EventId::kAtomicRMW:
+        HandleAtomicRMW(event, thread_state);
+        break;
+      case EventId::kAtomicCAS:
+        HandleAtomicCAS(event, thread_state);
+        break;
+      default:
+        break;
+    }
     return AnalyzerResult::kContinue;
   }
 
@@ -160,26 +196,42 @@ void Analyzer::HandleThreadSpawn(const Event& event,
   const int child_tid = static_cast<int>(event.args[0]);
   ThreadState& child_state = GetThreadState(child_tid);
 
-  SPDLOG_DEBUG("[Analyzer] Spawn: parent T{} VC before={}", event.tid,
+  SPDLOG_DEBUG("[Analyzer] Spawn: parent T{} VC before tick={}", event.tid,
                parent_state.clock.ToString());
 
-  for (const auto& entry : parent_state.clock.Entries()) {
-    const int t = entry.first;
-    const std::uint64_t v = entry.second;
-    const std::uint64_t cur = child_state.clock.Get(t);
-    if (v > cur) {
-      child_state.clock.Set(t, v);
-    }
+  const std::uint64_t parent_clock = parent_state.clock.Tick(event.tid);
+  child_state.pending_spawn_clock = parent_state.clock;
+  child_state.has_pending_spawn = true;
+  child_state.pending_parent_tid = event.tid;
+  child_state.clock = VectorClock();
+
+  SPDLOG_DEBUG(
+      "[Analyzer] Spawn: parent T{} ticked -> clock={} VC={} (stored for child "
+      "T{}):{}",
+      event.tid, parent_clock, parent_state.clock.ToString(), child_tid,
+      child_state.pending_spawn_clock.ToString());
+}
+
+void Analyzer::HandleThreadStart(const Event& event,
+                                 Analyzer::ThreadState& child_state) {
+  SPDLOG_DEBUG("[Analyzer] Start: child T{} VC before acquire={} pending={}",
+               event.tid, child_state.clock.ToString(),
+               child_state.has_pending_spawn);
+
+  if (child_state.has_pending_spawn) {
+    child_state.clock.Merge(child_state.pending_spawn_clock);
+    child_state.has_pending_spawn = false;
+    SPDLOG_DEBUG("[Analyzer] Start: child T{} merged parent({}) VC -> {}",
+                 event.tid, child_state.pending_parent_tid,
+                 child_state.clock.ToString());
+    child_state.pending_parent_tid = -1;
+    child_state.pending_spawn_clock = VectorClock();
   }
 
-  SPDLOG_DEBUG("[Analyzer] Spawn: child T{} VC after merge={}", child_tid,
-               child_state.clock.ToString());
-
-  const std::uint64_t parent_clock = parent_state.clock.Tick(event.tid);
-  SPDLOG_DEBUG("[Analyzer] Spawn: parent T{} ticked -> clock={} VC={}",
-               event.tid, parent_clock, parent_state.clock.ToString());
-
+  const std::uint64_t child_clock = child_state.clock.Tick(event.tid);
   child_state.alive = true;
+  SPDLOG_DEBUG("[Analyzer] Start: child T{} ticked -> clock={} VC={}",
+               event.tid, child_clock, child_state.clock.ToString());
 }
 
 void Analyzer::HandleThreadJoin(const Event& event,
@@ -215,6 +267,108 @@ void Analyzer::HandleThreadExit(const Event& event,
                                 Analyzer::ThreadState& thread_state) {
   SPDLOG_DEBUG("[Analyzer] Exit: thread T{} VC={}", event.tid,
                thread_state.clock.ToString());
+}
+
+void Analyzer::HandleMutexLock(const Event& event,
+                               Analyzer::ThreadState& thread_state) {
+  const std::uint64_t count = ExtractCount(event);
+  if (sync_token_mgr_) {
+    if (auto published =
+            sync_token_mgr_->TryAcquireMutexLock(event.address, count)) {
+      thread_state.clock.Merge(*published);
+    }
+  }
+  thread_state.clock.Tick(event.tid);
+  SPDLOG_DEBUG("[Analyzer] MutexLock: T{} addr=0x{:x} count={} VC={}",
+               event.tid, event.address, count, thread_state.clock.ToString());
+}
+
+void Analyzer::HandleMutexUnlock(const Event& event,
+                                 Analyzer::ThreadState& thread_state) {
+  const std::uint64_t count = ExtractCount(event);
+  if (sync_token_mgr_) {
+    sync_token_mgr_->PublishMutexUnlock(event.address, count,
+                                        thread_state.clock, event.tid);
+  }
+  thread_state.clock.Tick(event.tid);
+  SPDLOG_DEBUG("[Analyzer] MutexUnlock: T{} addr=0x{:x} count={} VC={}",
+               event.tid, event.address, count, thread_state.clock.ToString());
+}
+
+void Analyzer::HandleAtomicLoad(const Event& event,
+                                Analyzer::ThreadState& thread_state) {
+  const std::uint64_t count = ExtractCount(event);
+  const std::uint32_t mo = ExtractMemoryOrder(event);
+  if (sync_token_mgr_) {
+    if (auto published =
+            sync_token_mgr_->TryAcquireAtomic(event.address, count, mo)) {
+      thread_state.clock.Merge(*published);
+    }
+  }
+  thread_state.clock.Tick(event.tid);
+  SPDLOG_DEBUG("[Analyzer] AtomicLoad: T{} addr=0x{:x} count={} mo={} VC={}",
+               event.tid, event.address, count, mo,
+               thread_state.clock.ToString());
+}
+
+void Analyzer::HandleAtomicStore(const Event& event,
+                                 Analyzer::ThreadState& thread_state) {
+  const std::uint64_t count = ExtractCount(event);
+  const std::uint32_t mo = ExtractMemoryOrder(event);
+  if (sync_token_mgr_ && IsReleaseOrder(mo)) {
+    sync_token_mgr_->PublishAtomic(event.address, count, thread_state.clock,
+                                   event.tid, mo);
+  }
+  thread_state.clock.Tick(event.tid);
+  SPDLOG_DEBUG("[Analyzer] AtomicStore: T{} addr=0x{:x} count={} mo={} VC={}",
+               event.tid, event.address, count, mo,
+               thread_state.clock.ToString());
+}
+
+void Analyzer::HandleAtomicRMW(const Event& event,
+                               Analyzer::ThreadState& thread_state) {
+  const std::uint64_t count = ExtractCount(event);
+  const std::uint32_t mo = ExtractMemoryOrder(event);
+  if (sync_token_mgr_) {
+    if (IsAcquireOrder(mo)) {
+      if (auto published =
+              sync_token_mgr_->TryAcquireAtomic(event.address, count, mo)) {
+        thread_state.clock.Merge(*published);
+      }
+    }
+    if (IsReleaseOrder(mo)) {
+      sync_token_mgr_->PublishAtomic(event.address, count, thread_state.clock,
+                                     event.tid, mo);
+    }
+  }
+  thread_state.clock.Tick(event.tid);
+  SPDLOG_DEBUG("[Analyzer] AtomicRMW: T{} addr=0x{:x} count={} mo={} VC={}",
+               event.tid, event.address, count, mo,
+               thread_state.clock.ToString());
+}
+
+void Analyzer::HandleAtomicCAS(const Event& event,
+                               Analyzer::ThreadState& thread_state) {
+  const std::uint64_t count = ExtractCount(event);
+  const std::uint32_t mo = ExtractMemoryOrder(event);
+  const bool success = ExtractSuccess(event);
+  if (sync_token_mgr_) {
+    if (IsAcquireOrder(mo)) {
+      if (auto published =
+              sync_token_mgr_->TryAcquireAtomic(event.address, count, mo)) {
+        thread_state.clock.Merge(*published);
+      }
+    }
+    if (success && IsReleaseOrder(mo)) {
+      sync_token_mgr_->PublishAtomic(event.address, count, thread_state.clock,
+                                     event.tid, mo);
+    }
+  }
+  thread_state.clock.Tick(event.tid);
+  SPDLOG_DEBUG(
+      "[Analyzer] AtomicCAS: T{} addr=0x{:x} count={} mo={} success={} VC={}",
+      event.tid, event.address, count, mo, success,
+      thread_state.clock.ToString());
 }
 
 }  // namespace monitor

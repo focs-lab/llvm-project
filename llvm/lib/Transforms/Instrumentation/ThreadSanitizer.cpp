@@ -19,6 +19,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/Transforms/Instrumentation/ThreadSanitizer.h"
+#include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/SmallVector.h"
@@ -130,9 +131,55 @@ enum EventType : uint8_t {
 
   kEventReturn = 12,
   kEventAtExit = 13,
+  // TODO(zengyan): why not continue
+  kEventMutexLock = 20,
+  kEventMutexUnlock = 21,
   kEventIgnoreBegin = 0xfe,
   kEventIgnoreEnd = 0xff
 };
+
+// only MemoryAccess event could be ignored
+static bool isIgnoreEligible(EventType Eid) {
+  switch (Eid) {
+  case kEventRead:
+  case kEventWrite:
+  case kEventMemset:
+  case kEventMemcpy:
+  case kEventAtomicLoad:
+  case kEventAtomicStore:
+  case kEventAtomicRMW:
+  case kEventAtomicCAS:
+  case kEventAtomicFence:
+    return true;
+  default:
+    return false;
+  }
+}
+
+// Convert EventType to string for debugging
+static const char *getEventTypeName(EventType Eid) {
+  switch (Eid) {
+  case kEventClear: return "Clear";
+  case kEventRead: return "Read";
+  case kEventWrite: return "Write";
+  case kEventVptrUpdate: return "VptrUpdate";
+  case kEventVptrLoad: return "VptrLoad";
+  case kEventMemset: return "Memset";
+  case kEventMemcpy: return "Memcpy";
+  case kEventAtomicLoad: return "AtomicLoad";
+  case kEventAtomicStore: return "AtomicStore";
+  case kEventAtomicRMW: return "AtomicRMW";
+  case kEventAtomicCAS: return "AtomicCAS";
+  case kEventAtomicFence: return "AtomicFence";
+  case kEventReturn: return "Return";
+  case kEventAtExit: return "AtExit";
+  case kEventMutexLock: return "MutexLock";
+  case kEventMutexUnlock: return "MutexUnlock";
+  case kEventIgnoreBegin: return "IgnoreBegin";
+  case kEventIgnoreEnd: return "IgnoreEnd";
+  default: return "Unknown";
+  }
+}
 
 /// ThreadSanitizer: instrument the code in module to find races.
 ///
@@ -177,23 +224,26 @@ private:
   int getMemoryAccessFuncIndex(Type *OrigTy, Value *Addr, const DataLayout &DL);
   void InsertRuntimeIgnores(Function &F);
   Value* MakeEvent(IRBuilder<> &IRB, EventType Eid, Value *Addr);
-  void InsertAtomicEventSend(IRBuilder<> &IRB, EventType Eid, Value *Addr);
-  void InsertAtomicEventSend(IRBuilder<> &IRB, EventType Eid, Value *Addr, Value *Val);
-  void InsertAtomicEventSend(IRBuilder<> &IRB, EventType Eid, Value *Addr, Value *OldVal, Value* NewVal);
+  void InsertAtomicEventSend(IRBuilder<> &IRB, EventType Eid, Value *Addr,
+                             ArrayRef<Value *> Payload);
   void InsertAtomicEventLock(IRBuilder<> &IRB, Value *Addr);
   void InsertAtomicEventUnlock(IRBuilder<> &IRB, Value *Addr);
   void InsertEventSend(IRBuilder<> &IRB, EventType Eid);
   void InsertEventSend(IRBuilder<> &IRB, EventType Eid, Value *Addr);
   void InsertEventSend(IRBuilder<> &IRB, EventType Eid, Value *Addr, Value *Val);
-  void InsertEventSend(IRBuilder<> &IRB, Value *Event, Value **Values, int Count);
-  Value* FetchAndUpdateCounter(IRBuilder<> &IRB, Value *Addr);
+  void InsertEventSend(IRBuilder<> &IRB, EventType Eid, Value *Addr,
+                       ArrayRef<Value *> Args);
+  Value* FetchAndUpdateCounter(IRBuilder<> &IRB, Value *Addr,
+                               Value *CounterBase);
   void PromoteIdxLoadStores(Function &F);
   GlobalVariable *TsanChannelPtr;
   GlobalVariable *TsanChannelIdx;
-  GlobalVariable *TsanCounters;
+  GlobalVariable *TsanAtomicCounters;
+  GlobalVariable *TsanMutexCounters;
   GlobalVariable *TsanSampling;
+  GlobalVariable *TsanIgnoreCounter;
   Value *Channel;
-  Value *Counters;
+  Value *AtomicCounters;
   Value *Sampling;
 #if MONITOR_USE_LOCAL_IDX
   AllocaInst *LocalIdx;
@@ -203,6 +253,7 @@ private:
 #if MONITOR_DEBUG
   // For debugging
   GlobalVariable *EventFormatString;
+  GlobalVariable *IgnoreFormatString;
 #endif
 
   Type *IntptrTy;
@@ -284,14 +335,35 @@ void ThreadSanitizer::initialize(Module &M, const TargetLibraryInfo &TLI) {
     return GV;
   });
   TsanChannelIdx = cast<GlobalVariable>(ChannelIdx);
-  auto *Counters = M.getOrInsertGlobal("__tsan_counters", IRB.getPtrTy(), [&] {
-    auto *GV = new GlobalVariable(M, IRB.getPtrTy(), /*isConstant=*/false,
-                                  GlobalValue::ExternalLinkage, nullptr,
-                                  "__tsan_counters", nullptr);
-    appendToCompilerUsed(M, GV);
-    return GV;
-  });
-  TsanCounters = cast<GlobalVariable>(Counters);
+  auto *IgnoreCounter =
+      M.getOrInsertGlobal("__tsan_ignore_events", IRB.getInt32Ty(), [&] {
+        auto *GV = new GlobalVariable(M, IRB.getInt32Ty(), /*isConstant=*/false,
+                                      GlobalValue::ExternalLinkage, nullptr,
+                                      "__tsan_ignore_events", nullptr,
+                                      GlobalVariable::InitialExecTLSModel);
+        appendToCompilerUsed(M, GV);
+        return GV;
+      });
+  TsanIgnoreCounter = cast<GlobalVariable>(IgnoreCounter);
+  auto *AtomicCounters =
+      M.getOrInsertGlobal("__tsan_atomic_counters", IRB.getPtrTy(), [&] {
+        auto *GV = new GlobalVariable(M, IRB.getPtrTy(), /*isConstant=*/false,
+                                      GlobalValue::ExternalLinkage, nullptr,
+                                      "__tsan_atomic_counters", nullptr);
+        appendToCompilerUsed(M, GV);
+        return GV;
+      });
+  TsanAtomicCounters = cast<GlobalVariable>(AtomicCounters);
+
+  auto *MutexCounters =
+      M.getOrInsertGlobal("__tsan_mutex_counters", IRB.getPtrTy(), [&] {
+        auto *GV = new GlobalVariable(M, IRB.getPtrTy(), /*isConstant=*/false,
+                                      GlobalValue::ExternalLinkage, nullptr,
+                                      "__tsan_mutex_counters", nullptr);
+        appendToCompilerUsed(M, GV);
+        return GV;
+      });
+  TsanMutexCounters = cast<GlobalVariable>(MutexCounters);
 #if MONITOR_SAMPLING
   auto *Sampling = M.getOrInsertGlobal("__tsan_sampling", IRB.getInt8Ty(), [&] {
     auto *GV = new GlobalVariable(M, IRB.getInt8Ty(), /*isConstant=*/false,
@@ -305,18 +377,17 @@ void ThreadSanitizer::initialize(Module &M, const TargetLibraryInfo &TLI) {
 #endif
 #if MONITOR_DEBUG
   // Create a global string for our printf format
-  Constant *EventFormatStrC = ConstantDataArray::getString(
-    M.getContext(),
-    "Event: %p %x\n"
-  );
-  EventFormatString = new GlobalVariable(
-    M,
-    EventFormatStrC->getType(),
-    true,
-    GlobalValue::PrivateLinkage,
-    EventFormatStrC,
-    "event format string"
-  );
+  // Constant *EventFormatStrC = ConstantDataArray::getString(
+  //     M.getContext(), "Event: channel=%p idx=%x\n");
+  // EventFormatString = new GlobalVariable(
+  //     M, EventFormatStrC->getType(), true, GlobalValue::PrivateLinkage,
+  //     EventFormatStrC, "event format string");
+
+  Constant *IgnoreFormatStrC = ConstantDataArray::getString(
+      M.getContext(), "Ignore check: event=%s counter=%d\n");
+  IgnoreFormatString = new GlobalVariable(
+      M, IgnoreFormatStrC->getType(), true, GlobalValue::PrivateLinkage,
+      IgnoreFormatStrC, "ignore format string");
 #endif
 
   AttributeList Attr;
@@ -620,7 +691,7 @@ void ThreadSanitizer::InsertAtomicEventLock(IRBuilder<> &IRB, Value *Addr) {
   auto *Trunc = IRB.CreateAnd(Cast, IRB.getInt64(0xfffff));
   auto *Ptr = IRB.CreateGEP(
     IRB.getInt32Ty(),                         // The type of elements in the array
-    Counters,                                  // The pointer to the start of the array
+    AtomicCounters,                           // The pointer to the start of the array
     IRB.CreateAdd(IRB.CreateShl(Trunc, IRB.getInt64(1)), IRB.getInt64(1))     // The index to access
   );
 
@@ -662,7 +733,7 @@ void ThreadSanitizer::InsertAtomicEventUnlock(IRBuilder<> &IRB, Value *Addr) {
   auto *Trunc = IRB.CreateAnd(Cast, IRB.getInt64(0xfffff));
   auto *Ptr = IRB.CreateGEP(
     IRB.getInt32Ty(),                         // The type of elements in the array
-    Counters,                                  // The pointer to the start of the array
+    AtomicCounters,                           // The pointer to the start of the array
     IRB.CreateAdd(IRB.CreateShl(Trunc, IRB.getInt64(1)), IRB.getInt64(1))     // The index to access
   );
 
@@ -673,19 +744,22 @@ void ThreadSanitizer::InsertAtomicEventUnlock(IRBuilder<> &IRB, Value *Addr) {
   Store->setAtomic(AtomicOrdering::Release);
 }
 
-Value* ThreadSanitizer::FetchAndUpdateCounter(IRBuilder<> &IRB, Value *Addr) {
+Value* ThreadSanitizer::FetchAndUpdateCounter(IRBuilder<> &IRB, Value *Addr,
+                                             Value *CounterBase) {
   // Perform the GEP to get the element pointer: Channel[Idx]
   // auto *Trunc = IRB.CreateAnd(IRB.CreateLShr(Addr, 4), IRB.getInt32(0xfffff));
   auto *Cast = IRB.CreateCast(Instruction::PtrToInt, Addr, IRB.getInt64Ty());
   auto *Trunc = IRB.CreateAnd(Cast, IRB.getInt64(0xfffff));
   auto *Ptr = IRB.CreateGEP(
     IRB.getInt32Ty(),                         // The type of elements in the array
-    Counters,                                  // The pointer to the start of the array
+    CounterBase,                              // The pointer to the start of the array
     IRB.CreateAdd(IRB.CreateShl(Trunc, IRB.getInt64(1)), IRB.getInt64(0))     // The index to access
   );
 
-  auto *Count = IRB.CreateAtomicRMW(AtomicRMWInst::Add, Ptr, IRB.getInt32(1), MaybeAlign(), AtomicOrdering::Monotonic);
-  return Count;
+  auto *Prev = IRB.CreateAtomicRMW(AtomicRMWInst::Add, Ptr, IRB.getInt32(1),
+                                   MaybeAlign(), AtomicOrdering::Monotonic);
+  auto *Next = IRB.CreateAdd(Prev, IRB.getInt32(1));
+  return IRB.CreateZExt(Next, IRB.getInt64Ty());
 }
 
 Value* ThreadSanitizer::MakeEvent(IRBuilder<> &IRB, EventType Eid, Value *Addr) {
@@ -697,61 +771,78 @@ Value* ThreadSanitizer::MakeEvent(IRBuilder<> &IRB, EventType Eid, Value *Addr) 
   return Event;
 }
 
-void ThreadSanitizer::InsertAtomicEventSend(IRBuilder<> &IRB, EventType Eid, Value *Addr) {
-  auto *Event = MakeEvent(IRB, Eid, Addr);
-  auto *Count = FetchAndUpdateCounter(IRB, Addr);
-  Value* Args[] = { Count };
-  constexpr int NumArgs = sizeof(Args) / sizeof(Value*);
-  InsertEventSend(IRB, Event, Args, NumArgs);
-}
-
-void ThreadSanitizer::InsertAtomicEventSend(IRBuilder<> &IRB, EventType Eid, Value *Addr, Value *Val) {
-  auto *Event = MakeEvent(IRB, Eid, Addr);
-  auto *Count = FetchAndUpdateCounter(IRB, Addr);
-
-  Value* Args[] = { Count, Val };
-  constexpr int NumArgs = sizeof(Args) / sizeof(Value*);
-  InsertEventSend(IRB, Event, Args, NumArgs);
-}
-
-void ThreadSanitizer::InsertAtomicEventSend(IRBuilder<> &IRB, EventType Eid, Value *Addr, Value *OldVal, Value* NewVal) {
-  auto *Event = MakeEvent(IRB, Eid, Addr);
-  auto *Count = FetchAndUpdateCounter(IRB, Addr);
-
-  Value* Args[] = { Count, OldVal, NewVal };
-  constexpr int NumArgs = sizeof(Args) / sizeof(Value*);
-  InsertEventSend(IRB, Event, Args, NumArgs);
+void ThreadSanitizer::InsertAtomicEventSend(IRBuilder<> &IRB, EventType Eid,
+                                            Value *Addr,
+                                            ArrayRef<Value *> Payload) {
+  auto *Count = FetchAndUpdateCounter(IRB, Addr, AtomicCounters);
+  SmallVector<Value *, 6> Args;
+  Args.push_back(Count);
+  Args.append(Payload.begin(), Payload.end());
+  InsertEventSend(IRB, Eid, Addr, Args);
 }
 
 void ThreadSanitizer::InsertEventSend(IRBuilder<> &IRB, EventType Eid) {
-  auto *Event = IRB.CreateShl(IRB.getInt64(Eid), 56);
-  InsertEventSend(IRB, Event, {}, 0);
+  SmallVector<Value *, 1> Args;
+  InsertEventSend(IRB, Eid, nullptr, Args);
 }
 
-void ThreadSanitizer::InsertEventSend(IRBuilder<> &IRB, EventType Eid, Value *Addr) {
-  auto *Event = MakeEvent(IRB, Eid, Addr);
-  InsertEventSend(IRB, Event, {}, 0);
+void ThreadSanitizer::InsertEventSend(IRBuilder<> &IRB, EventType Eid,
+                                      Value *Addr) {
+  SmallVector<Value *, 1> Args;
+  InsertEventSend(IRB, Eid, Addr, Args);
 }
 
-void ThreadSanitizer::InsertEventSend(IRBuilder<> &IRB, EventType Eid, Value *Addr, Value *Val) {
-  auto *Event = MakeEvent(IRB, Eid, Addr);
-  Value* Args[] = { Val };
-  constexpr int NumArgs = sizeof(Args) / sizeof(Value*);
-  InsertEventSend(IRB, Event, Args, NumArgs);
+void ThreadSanitizer::InsertEventSend(IRBuilder<> &IRB, EventType Eid,
+                                      Value *Addr, Value *Val) {
+  SmallVector<Value *, 1> Args;
+  Args.push_back(Val);
+  InsertEventSend(IRB, Eid, Addr, Args);
 }
 
-void ThreadSanitizer::InsertEventSend(IRBuilder<> &IRB, Value *Event, Value **Args, int NumArgs) {
-  // Check if sampling
-#if MONITOR_SAMPLING
-  auto *IsSampling = IRB.CreateICmpNE(Sampling, IRB.getInt8(0));
+void ThreadSanitizer::InsertEventSend(IRBuilder<> &IRB, EventType Eid,
+                                      Value *Addr, ArrayRef<Value *> Args) {
+  auto OuterCont = IRB.GetInsertPoint();
+  Value *EventValue = nullptr;
+  if (Addr)
+    EventValue = MakeEvent(IRB, Eid, Addr);
+  else
+    EventValue = IRB.CreateShl(IRB.getInt64(Eid), 56);
+
+  bool CouldIgnore = isIgnoreEligible(Eid);
+  Value *IgnoreValue = nullptr;
+  Value *ShouldLog = nullptr;
+  Instruction *IgnoreThen = nullptr;
+
+  if (CouldIgnore) {
+    IgnoreValue =
+        IRB.CreateLoad(TsanIgnoreCounter->getValueType(), TsanIgnoreCounter);
+    ShouldLog = IRB.CreateICmpEQ(IgnoreValue, IRB.getInt32(0));
+
+#if MONITOR_DEBUG
+    Module *M = IRB.GetInsertBlock()->getParent()->getParent();
+    FunctionCallee Printf = M->getOrInsertFunction(
+        "printf", FunctionType::get(
+                       IntegerType::getInt32Ty(M->getContext()),
+                       PointerType::get(Type::getInt8Ty(M->getContext()), 0),
+                       true));
+
+    Value *EventTypePtr = IRB.CreateGlobalStringPtr(getEventTypeName(Eid));
+    Value *IgnoreArgs[] = {IgnoreFormatString, EventTypePtr, IgnoreValue};
+    IRB.CreateCall(Printf, IgnoreArgs);
 #endif
 
-  // Split the basic block for conditionally logging. Taken from AddressSanitizer.cpp
+    IgnoreThen =
+        SplitBlockAndInsertIfThen(ShouldLog, IRB.GetInsertPoint(), false);
+    IRB.SetInsertPoint(IgnoreThen);
+  }
+
 #if MONITOR_SAMPLING
+  auto *IsSampling = IRB.CreateICmpNE(Sampling, IRB.getInt8(0));
   auto ContPoint = IRB.GetInsertPoint();
   auto *LogBB =
-    SplitBlockAndInsertIfThen(IsSampling, IRB.GetInsertPoint(), false,
-                              MDBuilder(IRB.getContext()).createUnlikelyBranchWeights());
+      SplitBlockAndInsertIfThen(
+          IsSampling, IRB.GetInsertPoint(), false,
+          MDBuilder(IRB.getContext()).createUnlikelyBranchWeights());
   IRB.SetInsertPoint(LogBB);
 #endif
 
@@ -762,38 +853,61 @@ void ThreadSanitizer::InsertEventSend(IRBuilder<> &IRB, Value *Event, Value **Ar
     auto *Idx = IRB.CreateLoad(TsanChannelIdx->getValueType(), TsanChannelIdx);
 #endif
     auto *Idx64 = IRB.CreateCast(Instruction::ZExt, Idx, IRB.getInt64Ty());
-    auto *LapNumber = IRB.CreateLShr(Idx64, 12);                  // idx max value is 0xfff - 12 bits
-    auto *LapNumberTrunc = IRB.CreateAnd(LapNumber, 0xf);         // only take 4 bits
-    auto *LapNumberShift = IRB.CreateShl(LapNumberTrunc, 52);     // first 8 bits are for event type, next is this
+    auto *LapNumber =
+        IRB.CreateLShr(Idx64, 12); // idx max value is 0xfff - 12 bits
+    auto *LapNumberTrunc = IRB.CreateAnd(LapNumber, 0xf); // only take 4 bits
+    auto *LapNumberShift = IRB.CreateShl(
+        LapNumberTrunc, 52); // first 8 bits are for event type, next is this
 
-    auto *EventCast = IRB.CreateCast(Instruction::ZExt, Event, IRB.getInt64Ty());
+    auto *EventCast =
+        IRB.CreateCast(Instruction::ZExt, EventValue, IRB.getInt64Ty());
     auto *EventFull = IRB.CreateOr(EventCast, LapNumberShift);
 
     // Store the args before the event
-    for (int i = 0; i < NumArgs; ++i) {
-      auto *ArgIdx = IRB.CreateAdd(Idx, IRB.getInt32(1+i));
-      auto *ArgTrunc = IRB.CreateAnd(ArgIdx, IRB.getInt32(0xfff));     // cannot use CreateTrunc because that performs sign extend
+    for (unsigned i = 0; i < Args.size(); ++i) {
+      Value *ArgValue = Args[i];
+      Type *ArgTy = ArgValue->getType();
+      if (!ArgTy->isIntegerTy(64)) {
+        if (ArgTy->isPointerTy()) {
+          ArgValue = IRB.CreatePtrToInt(ArgValue, IRB.getInt64Ty());
+        } else if (ArgTy->isIntegerTy()) {
+          ArgValue = IRB.CreateZExtOrTrunc(ArgValue, IRB.getInt64Ty());
+        } else if (ArgTy->isFloatingPointTy()) {
+          unsigned Bits = ArgTy->getPrimitiveSizeInBits();
+          Type *IntTy = IRB.getIntNTy(Bits);
+          ArgValue = IRB.CreateBitCast(ArgValue, IntTy);
+          ArgValue = IRB.CreateZExtOrTrunc(ArgValue, IRB.getInt64Ty());
+        } else {
+          unsigned Bits = ArgTy->getPrimitiveSizeInBits();
+          Type *IntTy = IRB.getIntNTy(Bits ? Bits : 64);
+          ArgValue = IRB.CreateBitCast(ArgValue, IntTy);
+          ArgValue = IRB.CreateZExtOrTrunc(ArgValue, IRB.getInt64Ty());
+        }
+      }
+      auto *ArgIdx = IRB.CreateAdd(Idx, IRB.getInt32(1 + static_cast<int>(i)));
+      auto *ArgTrunc = IRB.CreateAnd(ArgIdx, IRB.getInt32(0xfff));
       auto *ArgPtr = IRB.CreateGEP(
-        IRB.getInt64Ty(),           // The type of elements in the array
-        Channel,                    // The pointer to the start of the array
-        ArgTrunc                    // The index to access
-      );
-      auto *ArgStore = IRB.CreateStore(Args[i], ArgPtr);
+          IRB.getInt64Ty(), // The type of elements in the array
+          Channel,           // The pointer to the start of the array
+          ArgTrunc);         // The index to access
+      IRB.CreateStore(ArgValue, ArgPtr);
     }
 
     // Now store the event
-    // Perform the GEP to get the element pointer: Channel[Idx]
-    auto *Trunc = IRB.CreateAnd(Idx, IRB.getInt32(0xfff));     // cannot use CreateTrunc because that performs sign extend
+    auto *Trunc = IRB.CreateAnd(
+        Idx,
+        IRB.getInt32(0xfff)); // cannot use CreateTrunc because that performs
+                               // sign extend
     auto *Ptr = IRB.CreateGEP(
-      IRB.getInt64Ty(),           // The type of elements in the array
-      Channel,                    // The pointer to the start of the array
-      Trunc                        // The index to access
-    );
-    auto* EventStore = IRB.CreateStore(EventFull, Ptr);
-    EventStore->setAtomic(AtomicOrdering::Release);   // actually atomic might not be needed but do so for now
+        IRB.getInt64Ty(), // The type of elements in the array
+        Channel,          // The pointer to the start of the array
+        Trunc);           // The index to access
+    auto *EventStore = IRB.CreateStore(EventFull, Ptr);
+    EventStore->setAtomic(AtomicOrdering::Release);
 
     // Update idx
-    auto *NextIndx = IRB.CreateAdd(Idx, IRB.getInt32(1+NumArgs));
+    auto *NextIndx =
+        IRB.CreateAdd(Idx, IRB.getInt32(1 + static_cast<int>(Args.size())));
 #if MONITOR_USE_LOCAL_IDX
     IRB.CreateStore(NextIndx, LocalIdx);
 #else
@@ -801,32 +915,21 @@ void ThreadSanitizer::InsertEventSend(IRBuilder<> &IRB, Value *Event, Value **Ar
 #endif
 
 #if MONITOR_DEBUG
-    // Declare printf if it's not already declared
-    Module* M = IRB.GetInsertBlock()->getParent()->getParent();
-    FunctionCallee Printf = M->getOrInsertFunction(
-      "printf",
-      FunctionType::get(
-        IntegerType::getInt32Ty(M->getContext()),
-        PointerType::get(Type::getInt8Ty(M->getContext()), 0),
-        true /* this is vararg */
-      )
-    );
-
-    // Create printf arguments
-    Value *Args[] = {
-      EventFormatString,
-      Channel,
-      Idx
-    };
-
-    // Create the printf call
-    IRB.CreateCall(Printf, Args);
+    // Module *M = IRB.GetInsertBlock()->getParent()->getParent();
+    // FunctionCallee Printf = M->getOrInsertFunction(
+    //     "printf", FunctionType::get(
+    //                    IntegerType::getInt32Ty(M->getContext()),
+    //                    PointerType::get(Type::getInt8Ty(M->getContext()), 0),
+    //                    true));
+    // Value *DbgArgs[] = {EventFormatString, Channel, Idx};
+    // IRB.CreateCall(Printf, DbgArgs);
 #endif
   }
 
 #if MONITOR_SAMPLING
   IRB.SetInsertPoint(ContPoint);
 #endif
+  IRB.SetInsertPoint(OuterCont);
 }
 
 bool ThreadSanitizer::sanitizeFunction(Function &F,
@@ -892,7 +995,8 @@ bool ThreadSanitizer::sanitizeFunction(Function &F,
   InstrumentationIRBuilder IRB(F.getEntryBlock().getFirstNonPHI());
   Channel = IRB.CreateLoad(TsanChannelPtr->getValueType(), TsanChannelPtr);
   auto *Idx = IRB.CreateLoad(TsanChannelIdx->getValueType(), TsanChannelIdx);
-  Counters = IRB.CreateLoad(TsanCounters->getValueType(), TsanCounters);
+  AtomicCounters =
+      IRB.CreateLoad(TsanAtomicCounters->getValueType(), TsanAtomicCounters);
 #if MONITOR_USE_LOCAL_IDX
   LocalIdx = IRB.CreateAlloca(Idx->getType());
   IRB.CreateStore(Idx, LocalIdx);
@@ -1091,7 +1195,8 @@ bool ThreadSanitizer::instrumentLoadOrStore(const InstructionInfo &II,
 #endif
 #if MONITOR_CALL_LOGGER
   if (IsWrite)
-    InsertEventSend(IRB, kEventWrite, Addr, cast<StoreInst>(II.Inst)->getValueOperand());
+    InsertEventSend(IRB, kEventWrite, Addr,
+                    cast<StoreInst>(II.Inst)->getValueOperand());
   else {
     // Can only log the event after the load has happened.
     IRB.SetInsertPoint(II.Inst->getNextNode());
@@ -1186,9 +1291,10 @@ bool ThreadSanitizer::instrumentAtomic(Instruction *I, const DataLayout &DL) {
     I->replaceAllUsesWith(Cast);
 #endif
 #if MONITOR_CALL_LOGGER
-  // do this after the load
-  IRB.SetInsertPoint(I->getNextNode());
-  InsertAtomicEventSend(IRB, kEventAtomicLoad, Addr, LI);
+  // do this after the load so we observe the real value
+  IRB.SetInsertPoint(LI->getNextNode());
+  Value *Order = createOrdering(&IRB, LI->getOrdering());
+  InsertAtomicEventSend(IRB, kEventAtomicLoad, Addr, {LI, Order});
 #endif
   } else if (StoreInst *SI = dyn_cast<StoreInst>(I)) {
     Value *Addr = SI->getPointerOperand();
@@ -1207,7 +1313,9 @@ bool ThreadSanitizer::instrumentAtomic(Instruction *I, const DataLayout &DL) {
     SI->eraseFromParent();
 #endif
 #if MONITOR_CALL_LOGGER
-  InsertAtomicEventSend(IRB, kEventAtomicStore, Addr, SI->getValueOperand());
+  Value *Order = createOrdering(&IRB, SI->getOrdering());
+  InsertAtomicEventSend(IRB, kEventAtomicStore, Addr,
+                        {SI->getValueOperand(), Order});
 #endif
   } else if (AtomicRMWInst *RMWI = dyn_cast<AtomicRMWInst>(I)) {
     Value *Addr = RMWI->getPointerOperand();
@@ -1230,10 +1338,13 @@ bool ThreadSanitizer::instrumentAtomic(Instruction *I, const DataLayout &DL) {
     I->eraseFromParent();
 #endif
 #if MONITOR_CALL_LOGGER
+  // TODO(zengyan): why there are locks for RMW events?
   InsertAtomicEventLock(IRB, Addr);
   IRB.SetInsertPoint(RMWI->getNextNode());
   auto* NewVal = IRB.CreateLoad(Addr->getType(), Addr);
-  InsertAtomicEventSend(IRB, kEventAtomicRMW, Addr, RMWI, NewVal);    // remember that RMW returns the old value
+  Value *Order = createOrdering(&IRB, RMWI->getOrdering());
+  InsertAtomicEventSend(IRB, kEventAtomicRMW, Addr,
+                        {RMWI, NewVal, Order});
   InsertAtomicEventUnlock(IRB, Addr);
 #endif
   } else if (AtomicCmpXchgInst *CASI = dyn_cast<AtomicCmpXchgInst>(I)) {
@@ -1271,11 +1382,16 @@ bool ThreadSanitizer::instrumentAtomic(Instruction *I, const DataLayout &DL) {
     I->eraseFromParent();
 #endif
 #if MONITOR_CALL_LOGGER
+  // TODO(zengyan): why there are locks for CAS events?
   InsertAtomicEventLock(IRB, Addr);
   IRB.SetInsertPoint(CASI->getNextNode());
-  auto* OldVal = IRB.CreateExtractValue(CASI, 1);
-  InsertAtomicEventSend(IRB, kEventAtomicCAS, Addr, OldVal, CASI->getNewValOperand());
-  // TODO(dwslim): Also check whether succeeded, and also log the orderings
+  auto *OldVal = IRB.CreateExtractValue(CASI, 0);
+  auto *Success = IRB.CreateExtractValue(CASI, 1);
+  Value *SuccessOrder = createOrdering(&IRB, CASI->getSuccessOrdering());
+  Value *FailureOrder = createOrdering(&IRB, CASI->getFailureOrdering());
+  Value *Order = IRB.CreateSelect(Success, SuccessOrder, FailureOrder);
+  InsertAtomicEventSend(IRB, kEventAtomicCAS, Addr,
+                        {OldVal, CASI->getNewValOperand(), Order, Success});
   InsertAtomicEventUnlock(IRB, Addr);
 #endif
   } else if (FenceInst *FI = dyn_cast<FenceInst>(I)) {
