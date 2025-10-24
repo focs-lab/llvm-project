@@ -1,3 +1,4 @@
+// NO RACE
 #include <atomic>
 #include <iostream>
 #include <thread>

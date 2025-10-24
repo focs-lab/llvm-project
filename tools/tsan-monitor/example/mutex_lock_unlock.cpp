@@ -1,3 +1,4 @@
+// NO RACE
 #include <cstdio>
 #include <iostream>
 #include <mutex>
