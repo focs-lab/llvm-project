@@ -49,7 +49,7 @@ THREADLOCAL u32 __tsan_channel_idx;
 SANITIZER_INTERFACE_ATTRIBUTE
 THREADLOCAL u8 __tsan_sampling;
 SANITIZER_INTERFACE_ATTRIBUTE
-THREADLOCAL u32 __tsan_ignore_events;
+THREADLOCAL u32 __tsan_ignore_events = 0;
 constexpr u64 kMonitorReady = 0xcafebeef;
 constexpr u64 kProgramEnded = 0xdeaddead;
 
@@ -1106,7 +1106,17 @@ void ThreadIgnoreEnd(ThreadState *thr) {
 #endif
   }
   CHECK_GT(__tsan_ignore_events, 0);
-  __tsan_ignore_events--;
+  // __tsan_ignore_events--;
+  __tsan_ignore_events++;
+}
+
+void ThreadIgnoreEventBegin() {
+  __tsan_ignore_events++;
+}
+
+void ThreadIgnoreEventEnd() {
+  // __tsan_ignore_events--;
+  __tsan_ignore_events++;
 }
 
 #if !SANITIZER_GO

@@ -1023,6 +1023,7 @@ struct ThreadParam {
 };
 
 extern "C" void *__tsan_thread_start_func(void *arg) {
+  ThreadIgnoreEventBegin();
   ThreadParam *p = (ThreadParam*)arg;
   void* (*callback)(void *arg) = p->callback;
   void *param = p->param;
@@ -1046,6 +1047,7 @@ extern "C" void *__tsan_thread_start_func(void *arg) {
     __tsan_channel_send_thread_start();
     p->started.Post();
   }
+  ThreadIgnoreEventEnd();
   void *res = callback(param);
   // Prevent the callback from being tail called,
   // it mixes up stack traces.
@@ -1062,6 +1064,7 @@ extern "C" void *__tsan_thread_start_func(void *arg) {
 TSAN_INTERCEPTOR(int, pthread_create,
     void *th, void *attr, void *(*callback)(void*), void * param) {
   SCOPED_INTERCEPTOR_RAW(pthread_create, th, attr, callback, param);
+  ScopedChannelIgnore sci(thr);
 
   MaybeSpawnBackgroundThread();
 
@@ -1087,6 +1090,7 @@ TSAN_INTERCEPTOR(int, pthread_create,
   REAL(pthread_attr_getdetachstate)(attr, &detached);
   AdjustStackSize(attr);
 
+  MDPrintf("[DEBUG] Start write ThreadParam: __tsan_ignore_events = %d\n", __tsan_ignore_events);
   ThreadParam p;
   p.callback = callback;
   p.param = param;
@@ -1104,6 +1108,7 @@ TSAN_INTERCEPTOR(int, pthread_create,
     CHECK_NE(p.tid, kMainTid);
     // Publish the spawn event before waking the child so the monitor observes
     // the parent's release before the child's first acquire.
+    MDPrintf("[DEBUG] Before __tsan_channel_send_spawn: __tsan_ignore_events = %d\n", __tsan_ignore_events);
     __tsan_channel_send_spawn((u64)p.tid);
     // Synchronization on p.tid serves two purposes:
     // 1. ThreadCreate must finish before the new thread starts.
@@ -1406,7 +1411,7 @@ TSAN_INTERCEPTOR(int, pthread_mutex_destroy, void *m) {
 }
 
 TSAN_INTERCEPTOR(int, pthread_mutex_lock, void *m) {
-  SCOPED_TSAN_CHANNEL__INTERCEPTOR();
+  SCOPED_TSAN_CHANNEL_INTERCEPTOR();
   int res = REAL(pthread_mutex_lock)(m);
   if (res == 0 || res == errno_EOWNERDEAD)
     __tsan_channel_send_mutex_lock(m);
@@ -1414,7 +1419,7 @@ TSAN_INTERCEPTOR(int, pthread_mutex_lock, void *m) {
 }
 
 TSAN_INTERCEPTOR(int, pthread_mutex_trylock, void *m) {
-  SCOPED_TSAN_CHANNEL__INTERCEPTOR();
+  SCOPED_TSAN_CHANNEL_INTERCEPTOR();
   int res = REAL(pthread_mutex_trylock)(m);
   if (res == 0 || res == errno_EOWNERDEAD)
     __tsan_channel_send_mutex_lock(m);
@@ -1423,7 +1428,7 @@ TSAN_INTERCEPTOR(int, pthread_mutex_trylock, void *m) {
 
 #if !SANITIZER_APPLE
 TSAN_INTERCEPTOR(int, pthread_mutex_timedlock, void *m, void *abstime) {
-  SCOPED_TSAN_CHANNEL__INTERCEPTOR();
+  SCOPED_TSAN_CHANNEL_INTERCEPTOR();
   int res = REAL(pthread_mutex_timedlock)(m, abstime);
   if (res == 0 || res == errno_EOWNERDEAD)
     __tsan_channel_send_mutex_lock(m);
@@ -1432,7 +1437,7 @@ TSAN_INTERCEPTOR(int, pthread_mutex_timedlock, void *m, void *abstime) {
 #endif
 
 TSAN_INTERCEPTOR(int, pthread_mutex_unlock, void *m) {
-  SCOPED_TSAN_CHANNEL__INTERCEPTOR();
+  SCOPED_TSAN_CHANNEL_INTERCEPTOR();
   int res = REAL(pthread_mutex_unlock)(m);
   if (res == 0)
     __tsan_channel_send_mutex_unlock(m);
@@ -1442,7 +1447,7 @@ TSAN_INTERCEPTOR(int, pthread_mutex_unlock, void *m) {
 #if SANITIZER_LINUX
 TSAN_INTERCEPTOR(int, pthread_mutex_clocklock, void *m,
                  __sanitizer_clockid_t clock, void *abstime) {
-  SCOPED_TSAN_CHANNEL__INTERCEPTOR();
+  SCOPED_TSAN_CHANNEL_INTERCEPTOR();
   int res = REAL(pthread_mutex_clocklock)(m, clock, abstime);
   if (res == 0 || res == errno_EOWNERDEAD)
     __tsan_channel_send_mutex_lock(m);
