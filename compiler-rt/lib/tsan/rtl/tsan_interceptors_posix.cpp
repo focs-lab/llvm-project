@@ -1415,6 +1415,8 @@ TSAN_INTERCEPTOR(int, pthread_mutex_lock, void *m) {
   //   MutexPostLock(thr, pc, (uptr)m);
   // if (res == errno_EINVAL)
   //   MutexInvalidAccess(thr, pc, (uptr)m);
+  if (res == 0 || res == errno_EOWNERDEAD)
+    __tsan_channel_send_mutex_lock(m);
   return res;
 }
 
@@ -1425,6 +1427,8 @@ TSAN_INTERCEPTOR(int, pthread_mutex_trylock, void *m) {
   //   MutexRepair(thr, pc, (uptr)m);
   // if (res == 0 || res == errno_EOWNERDEAD)
   //   MutexPostLock(thr, pc, (uptr)m, MutexFlagTryLock);
+  if (res == 0 || res == errno_EOWNERDEAD)
+    __tsan_channel_send_mutex_lock(m);
   return res;
 }
 
@@ -1435,6 +1439,8 @@ TSAN_INTERCEPTOR(int, pthread_mutex_timedlock, void *m, void *abstime) {
   // if (res == 0) {
   //   MutexPostLock(thr, pc, (uptr)m, MutexFlagTryLock);
   // }
+  if (res == 0 || res == errno_EOWNERDEAD)
+    __tsan_channel_send_mutex_lock(m);
   return res;
 }
 #endif
@@ -1445,6 +1451,8 @@ TSAN_INTERCEPTOR(int, pthread_mutex_unlock, void *m) {
   int res = REAL(pthread_mutex_unlock)(m);
   // if (res == errno_EINVAL)
   //   MutexInvalidAccess(thr, pc, (uptr)m);
+  if (res == 0)
+    __tsan_channel_send_mutex_unlock(m);
   return res;
 }
 
@@ -1461,6 +1469,8 @@ TSAN_INTERCEPTOR(int, pthread_mutex_clocklock, void *m,
   //   MutexPostLock(thr, pc, (uptr)m);
   // if (res == errno_EINVAL)
   //   MutexInvalidAccess(thr, pc, (uptr)m);
+  if (res == 0 || res == errno_EOWNERDEAD)
+    __tsan_channel_send_mutex_lock(m);
   return res;
 }
 #endif
@@ -1480,6 +1490,8 @@ TSAN_INTERCEPTOR(int, __pthread_mutex_lock, void *m) {
   //   MutexPostLock(thr, pc, (uptr)m);
   // if (res == errno_EINVAL)
   //   MutexInvalidAccess(thr, pc, (uptr)m);
+  if (res == 0 || res == errno_EOWNERDEAD)
+    __tsan_channel_send_mutex_lock(m);
   return res;
 }
 
@@ -1489,6 +1501,8 @@ TSAN_INTERCEPTOR(int, __pthread_mutex_unlock, void *m) {
   int res = REAL(__pthread_mutex_unlock)(m);
   // if (res == errno_EINVAL)
     // MutexInvalidAccess(thr, pc, (uptr)m);
+  if (res == errno_EINVAL)
+    __tsan_channel_send_mutex_unlock(m);
   return res;
 }
 #  endif

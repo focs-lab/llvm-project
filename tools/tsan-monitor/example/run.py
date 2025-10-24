@@ -17,17 +17,42 @@ EXAMPLE_DIR = Path(__file__).resolve().parent
 PRINT_CHANNEL = REPO_ROOT / "tools/tsan-monitor/scripts/print_channel.py"
 
 # 支持的 example
-SUPPORTED_EXAMPLE = ["rw", "ww", "struct_race", "shared_counter", "lazy_init", "array_race",
-                     "bank_account", "linked_list_race", "producer_consumer",
-                     "t1_parent_write_child_read",
-                     "t2_child_write_parent_read",
-                     "t3_no_join_race",
-                     "t4_nested_spawn",
-                     "t5_nested_join_race",
-                     "t6_multiple_children",
-                     "t7_partial_join_race",
-                     "t8_diamond_fork_join",
-                     ]
+SUPPORTED_EXAMPLE = [
+    "rw", "ww", "struct_race", "shared_counter", "lazy_init", "array_race",
+    "bank_account", "linked_list_race", "producer_consumer",
+
+    "t1_parent_write_child_read",
+    "t2_child_write_parent_read",
+    "t3_no_join_race",
+    "t4_nested_spawn",
+    "t5_nested_join_race",
+    "t6_multiple_children",
+    "t7_partial_join_race",
+    "t8_diamond_fork_join",
+
+    "mutex_lock_unlock",
+    "mutex_race_missing_lock",
+    "mutex_two_locks",
+    "mutex_wrong_lock",
+    "mutex_multiple_acquire",
+    "mutex_lock_order",
+    # "mutex_read_write_lock",
+    "mutex_read_write_lock_posix",
+
+    "atomic_release_acquire",
+    "atomic_relaxed_race",
+    "atomic_seq_cst",
+    # "atomic_acq_rel",
+    "atomic_cas_success",
+    "atomic_cas_fail",
+    "atomic_fetch_add",
+    "atomic_exchange",
+    "atomic_write_write_race",
+    # "atomic_double_checked_locking",
+    "atomic_broken_double_check",
+
+    "mutex_atomic_mix",
+]
 
 DEFAULT_CONFIG = {
     "example": "write",

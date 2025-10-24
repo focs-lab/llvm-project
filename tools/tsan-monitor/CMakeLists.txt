@@ -15,6 +15,7 @@ set(TSAN_MONITOR_SOURCES
   src/MonitorApp.cpp
   src/Reader.cpp
   src/Scheduler.cpp
+  src/SyncTokenManager.cpp
   src/Report.cpp
   src/State.cpp
   src/Main.cpp

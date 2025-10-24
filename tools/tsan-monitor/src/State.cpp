@@ -20,6 +20,16 @@ std::uint64_t VectorClock::Tick(int tid) {
   return value;
 }
 
+void VectorClock::Merge(const VectorClock& other) {
+  for (const auto& entry : other.Entries()) {
+    const int tid = entry.first;
+    const std::uint64_t other_value = entry.second;
+    if (other_value > Get(tid)) {
+      Set(tid, other_value);
+    }
+  }
+}
+
 void AddressState::ClearReads() { read_set.clear(); }
 
 void AddressState::AddOrUpdateRead(const Epoch& epoch, std::uint64_t value) {

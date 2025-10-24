@@ -52,7 +52,9 @@ constexpr u64 kMonitorReady = 0xcafebeef;
 constexpr u64 kProgramEnded = 0xdeaddead;
 
 __attribute__((visibility("default")))
-u32* __tsan_counters;
+u32* __tsan_atomic_counters;
+__attribute__((visibility("default")))
+u32* __tsan_mutex_counters;
 
 namespace __tsan {
 
@@ -756,7 +758,8 @@ void Initialize(ThreadState *thr) {
 #endif
   ctx->initialized = true;
 
-  __tsan_counters = reinterpret_cast<u32*>(CreateCountersArray());
+  __tsan_atomic_counters = reinterpret_cast<u32*>(CreateCountersArray());
+  __tsan_mutex_counters = reinterpret_cast<u32*>(CreateCountersArray());
   int monitor_pid = StartMonitor();
   ctx->monitor_pid = monitor_pid;
 

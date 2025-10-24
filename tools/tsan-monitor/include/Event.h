@@ -23,10 +23,12 @@ enum class EventId : std::uint8_t {
   kReturn = 12,
   kAtExit = 13,
   kMonitorReady = 14,
-  // Stage-3: thread lifecycle events
+  kMutexLock = 20,
+  kMutexUnlock = 21,
   kThreadSpawn = 25,
   kThreadJoin = 26,
   kThreadExit = 27,
+  kThreadStart = 28,
   kIgnoreBegin = 0xfe,
   kIgnoreEnd = 0xff,
   kProgramEndMarker =

@@ -22,6 +22,8 @@ class VectorClock {
 
   std::uint64_t Tick(int tid);
 
+  void Merge(const VectorClock& other);
+
   const std::unordered_map<int, std::uint64_t>& Entries() const {
     return clock_;
   }

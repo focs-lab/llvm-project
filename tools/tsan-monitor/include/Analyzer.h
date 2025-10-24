@@ -9,6 +9,7 @@
 #include "Event.h"
 #include "Report.h"
 #include "State.h"
+#include "SyncTokenManager.h"
 
 namespace monitor {
 enum class AnalyzerResult {
@@ -24,10 +25,17 @@ class Analyzer {
 
   AnalyzerResult Process(const Event& event);
 
+  void SetSyncTokenManager(SyncTokenManager* manager) {
+    sync_token_mgr_ = manager;
+  }
+
  private:
   struct ThreadState {
     VectorClock clock;
     bool alive = true;
+    VectorClock pending_spawn_clock;
+    bool has_pending_spawn = false;
+    int pending_parent_tid = -1;
   };
 
   ThreadState& GetThreadState(int tid);
@@ -50,6 +58,7 @@ class Analyzer {
 
   // Stage-3: Thread lifecycle HB propagation
   void HandleThreadSpawn(const Event& event, ThreadState& parent_state);
+  void HandleThreadStart(const Event& event, ThreadState& child_state);
   void HandleThreadJoin(const Event& event, ThreadState& parent_state);
   void HandleThreadExit(const Event& event, ThreadState& thread_state);
 
@@ -58,5 +67,13 @@ class Analyzer {
   std::unordered_map<int, ThreadState> threads_;
   std::unordered_map<std::uint64_t, AddressState> addresses_;
   Report report_;
+  SyncTokenManager* sync_token_mgr_ = nullptr;
+
+  void HandleMutexLock(const Event& event, ThreadState& thread_state);
+  void HandleMutexUnlock(const Event& event, ThreadState& thread_state);
+  void HandleAtomicLoad(const Event& event, ThreadState& thread_state);
+  void HandleAtomicStore(const Event& event, ThreadState& thread_state);
+  void HandleAtomicRMW(const Event& event, ThreadState& thread_state);
+  void HandleAtomicCAS(const Event& event, ThreadState& thread_state);
 };
 }  // namespace monitor
