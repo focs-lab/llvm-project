@@ -28,6 +28,10 @@ MonitorApp::MonitorApp(MonitorOptions options)
       scheduler_(analyzer_, stop_),
       directory_(options_.directory) {
   analyzer_.SetSyncTokenManager(&sync_tokens_);
+  // Allow the report module to write the sentinel into the channels directory on first race.
+  analyzer_.SetSentinelDirectory(directory_);
+  // Set Origin process PID for signal sending on race detection.
+  analyzer_.SetOriginPid(options_.pid);
 }
 
 MonitorApp::~MonitorApp() {

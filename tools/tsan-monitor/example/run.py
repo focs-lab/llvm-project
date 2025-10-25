@@ -133,7 +133,7 @@ def build_example(args: argparse.Namespace,
 def run_with_monitor(exe: Path, monitor_path: Path, example_dir: Path) -> Path:
     """Run example with monitor and return channel directory."""
     env = os.environ.copy()
-    env["TSAN_OPTIONS"] = f"monitor_path={monitor_path}"
+    env["TSAN_OPTIONS"] = f"monitor_path={monitor_path}:exit_on_race=1:atexit_sleep_ms=2000"
 
     dprint(f"[+] Running example, waiting for monitor to exit (TSAN_OPTIONS: {env['TSAN_OPTIONS']})")
 

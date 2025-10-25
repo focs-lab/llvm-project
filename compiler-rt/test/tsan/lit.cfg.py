@@ -21,7 +21,8 @@ config.name = "ThreadSanitizer" + config.name_suffix
 config.test_source_root = os.path.dirname(__file__)
 
 # Setup environment variables for running ThreadSanitizer.
-default_tsan_opts = "atexit_sleep_ms=0"
+# default_tsan_opts = "atexit_sleep_ms=0"
+default_tsan_opts = "atexit_sleep_ms=1000"
 
 if config.host_os == "Darwin":
     # On Darwin, we default to `abort_on_error=1`, which would make tests run
@@ -33,6 +34,22 @@ if config.host_os == "Darwin":
     default_tsan_opts += ":ignore_noninstrumented_modules=0"
     default_tsan_opts += ":ignore_interceptors_accesses=0"
 
+# Ensure the runtime exits with non-zero when a race is detected by the external monitor.
+# This helps %deflake accept the run and forward output to FileCheck sooner.
+default_tsan_opts += ":exit_on_race=1"
+
+# Enable external TSan monitor by default if the binary exists.
+# Adjust the path below to your local build of tsan-monitor.
+monitor_binary = \
+    "/work/llvm-project-focs/build/tsan-monitor/tsan-monitor"
+if os.path.exists(monitor_binary):
+    default_tsan_opts += f":monitor_path={monitor_binary}"
+    if 'lit_config' in globals():
+        lit_config.note(f"TSan Monitor enabled: {monitor_binary}")
+else:
+    if 'lit_config' in globals():
+        lit_config.note(f"TSan Monitor not found at {monitor_binary}")
+
 # Platform-specific default TSAN_OPTIONS for lit tests.
 if default_tsan_opts:
     config.environment["TSAN_OPTIONS"] = default_tsan_opts
@@ -40,6 +57,7 @@ if default_tsan_opts:
 config.substitutions.append(
     ("%env_tsan_opts=", "env TSAN_OPTIONS=" + default_tsan_opts)
 )
+lit_config.note(f"TSan options: {default_tsan_opts}")
 
 # GCC driver doesn't add necessary compile/link flags with -fsanitize=thread.
 if config.compiler_id == "GNU":

@@ -5,6 +5,13 @@
 #include <filesystem>
 #include <format>
 #include <fstream>
+#include <fcntl.h>
+#include <unistd.h>
+#include <signal.h>
+#include <cstdio>
+#include <cerrno>
+#include <cstring>
+#include <spdlog/spdlog.h>
 
 namespace monitor {
 namespace {
@@ -36,11 +43,25 @@ Report::Report(std::filesystem::path output_dir)
 
 void Report::OnRace(const RaceEventInfo& info) {
   const auto key = MakeKey(info);
-  std::lock_guard<std::mutex> lock(mutex_);
-  auto& counter = counters_[key];
-  ++counter;
-
-  Emit(info, Format(info));
+  std::string content = Format(info);
+  bool first_emit = false;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto& counter = counters_[key];
+    ++counter;
+    // Always emit a file per race occurrence to preserve history for offline analysis.
+    Emit(info, content);
+    // On the first race only, also mirror to stderr and create a sentinel file.
+    if (!emitted_once_) {
+      emitted_once_ = true;
+      first_emit = true;
+    }
+  }
+  if (first_emit) {
+    EmitToStderrOnce(content);
+    CreateRaceSentinel();
+    SendRaceSignal();  // 🆕 Send signal to Origin process on first race
+  }
 }
 
 std::string Report::MakeKey(const RaceEventInfo& info) const {
@@ -63,17 +84,23 @@ std::string Report::Format(const RaceEventInfo& info) const {
     return "access";
   };
 
+  // Keep WARNING and SUMMARY lines verbatim for llvm-lit/FileCheck compatibility.
   return std::format(
+      "==================\n"
+      "WARNING: ThreadSanitizer: data race\n"
       "Race detected: {}\n"
       "Address        : 0x{:x}\n"
       "First  Thread  : tid={} clock={} {} value=0x{:x}\n"
       "Second Thread  : tid={} clock={} {} value=0x{:x}\n"
       "Conflict       : thread {} {} conflicts with thread {} {} on the same "
-      "address.\n",
+      "address.\n"
+      "SUMMARY: ThreadSanitizer: data race (Thread-{} with Thread-{})\n"
+      "==================\n",
       RaceKindToString(info.kind), info.address, info.first.tid,
       info.first.clock, access(true), info.first_value, info.second.tid,
       info.second.clock, access(false), info.second_value, info.first.tid,
-      access(true), info.second.tid, access(false));
+      access(true), info.second.tid, access(false), info.first.tid,
+      info.second.tid);
 }
 
 void Report::Emit(const RaceEventInfo& info, const std::string& content) {
@@ -89,5 +116,34 @@ void Report::Emit(const RaceEventInfo& info, const std::string& content) {
     return;
   }
   ofs << content;
+}
+
+void Report::EmitToStderrOnce(const std::string& content) {
+  // Write as a single chunk to avoid interleaving between lines.
+  (void)::write(STDERR_FILENO, content.data(), content.size());
+}
+
+void Report::CreateRaceSentinel() {
+  if (sentinel_dir_.empty()) return;
+  std::error_code ec;
+  std::filesystem::create_directories(sentinel_dir_, ec);
+  const auto p = sentinel_dir_ / "race_found";
+  int fd = ::open(p.c_str(), O_CREAT | O_WRONLY | O_TRUNC, 0644);
+  if (fd >= 0) ::close(fd);
+}
+
+void Report::SendRaceSignal() {
+  if (origin_pid_ <= 0) {
+    SPDLOG_WARN("No Origin PID available for signal sending");
+    return;
+  }
+
+  // Send SIGUSR1 signal to Origin process
+  if (kill(origin_pid_, SIGUSR1) == 0) {
+    SPDLOG_INFO("Race detection signal sent to Origin process {}", origin_pid_);
+  } else {
+    SPDLOG_ERROR("Failed to send race detection signal to Origin process {}: {}",
+                 origin_pid_, strerror(errno));
+  }
 }
 }  // namespace monitor

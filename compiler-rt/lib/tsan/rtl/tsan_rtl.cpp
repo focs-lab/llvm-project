@@ -30,7 +30,20 @@
 #include "tsan_symbolize.h"
 #include "ubsan/ubsan_init.h"
 
+#include <unistd.h>
+#include <signal.h>
+
 volatile int __tsan_resumed = 0;
+
+// Race detection signal flag (async-signal-safe)
+static volatile sig_atomic_t g_race_detected_sig = 0;
+
+// Signal handler for race detection (async-signal-safe)
+static void RaceDetectedSignalHandler(int signo) {
+  if (signo == SIGUSR1) {
+    g_race_detected_sig = 1;
+  }
+}
 
 extern "C" void __tsan_resume() {
   __tsan_resumed = 1;
@@ -778,6 +791,17 @@ void Initialize(ThreadState *thr) {
     else
       Printf("[+] Monitor Ready\n");
     __tsan_channel_idx++;
+
+    // Install signal handler for race detection (must be after monitor is ready)
+    struct sigaction sa;
+    sa.sa_handler = RaceDetectedSignalHandler;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = SA_RESTART;  // Restart interrupted system calls
+    if (sigaction(SIGUSR1, &sa, nullptr) == 0) {
+      Printf("[+] Race detection signal handler installed\n");
+    } else {
+      Printf("[!] Failed to install race detection signal handler\n");
+    }
   }
   else {
     Printf("[+] No monitor_path options found in TSAN_OPTIONS. Running without monitor.\n");
@@ -815,7 +839,81 @@ int Finalize(ThreadState *thr) {
     DumpProcessMap();
 #endif
 
-  if (flags()->atexit_sleep_ms > 0 && ThreadCount(thr) > 1)
+  // Write program ended signal to monitor
+  atomic_store_relaxed(&__tsan_channel_ptr[__tsan_channel_idx & 0xfff], kProgramEnded);
+
+  // Race detection logic: signal fast path + wait window + sentinel fallback
+  {
+    char path[256];
+    internal_snprintf(path, sizeof(path), "/tmp/tsan.monitor.%lu/race_found", internal_getpid());
+
+    // Step 1: Fast path - check signal flag immediately
+    if (g_race_detected_sig) {
+      Printf("[+] Race detected via signal!\n");
+      if (flags()->exit_on_race) {
+        Printf("[+] Race detected via signal, exit now! (exit_on_race=1)\n");
+        internal__exit(66);
+      }
+      goto continue_execution;
+    }
+
+    // Step 2: Wait window (only if atexit_sleep_ms > 0)
+    if (flags()->atexit_sleep_ms > 0) {
+      const int total_wait_ms = flags()->atexit_sleep_ms;
+      const int poll_interval_ms = 10;  // 10ms poll interval
+      int elapsed_ms = 0;
+
+      Printf("[+] Starting race detection wait window (%d ms total)\n", total_wait_ms);
+
+      while (elapsed_ms < total_wait_ms) {
+        // Check signal flag during wait window
+        if (g_race_detected_sig) {
+          Printf("[+] Race detected via signal during wait window! (elapsed %d ms)\n", elapsed_ms);
+          if (flags()->exit_on_race) {
+            internal__exit(66);
+          }
+          goto continue_execution;
+        }
+
+        // Check sentinel file during wait window
+        if (::access(path, F_OK) == 0) {
+          Printf("[+] Race detected via sentinel file during wait window! (elapsed %d ms)\n", elapsed_ms);
+          if (flags()->exit_on_race) {
+            Printf("[+] Race detected via sentinel file, exit now! (exit_on_race=1)\n");
+            internal__exit(66);
+          } else {
+            Printf("[+] Monitor detected race but continuing execution (exit_on_race=0)\n");
+            internal_unlink(path);  // Clean up sentinel file
+          }
+          goto continue_execution;
+        }
+
+        // Sleep and continue polling
+        internal_usleep(poll_interval_ms * 1000);
+        elapsed_ms += poll_interval_ms;
+      }
+
+      Printf("[+] Wait window expired, no race detected\n");
+    } else {
+      // atexit_sleep_ms = 0: check sentinel file once as fallback
+      if (::access(path, F_OK) == 0) {
+        Printf("[+] Race detected via sentinel file!\n");
+        if (flags()->exit_on_race) {
+          Printf("[+] Race detected via sentinel file, exit now! (exit_on_race=1)\n");
+          internal__exit(66);
+        } else {
+          Printf("[+] Monitor detected race but continuing execution (exit_on_race=0)\n");
+          internal_unlink(path);
+        }
+      }
+    }
+
+continue_execution:
+    Printf("[+] Continuing execution (exit_on_race=%d)\n", flags()->exit_on_race);
+  }
+
+  // Legacy sleep behavior (only for non-monitor scenarios)
+  if (flags()->atexit_sleep_ms > 0 && ThreadCount(thr) > 1 && !flags()->monitor_path)
     internal_usleep(u64(flags()->atexit_sleep_ms) * 1000);
 
   {
@@ -839,7 +937,6 @@ int Finalize(ThreadState *thr) {
   }
 
   // KillMonitor(ctx->monitor_pid);
-  atomic_store_relaxed(&__tsan_channel_ptr[__tsan_channel_idx & 0xfff], kProgramEnded);
 
   if (common_flags()->print_suppressions)
     PrintMatchedSuppressions();

@@ -38,7 +38,7 @@ class ExampleRunner:
         """
         # Set up environment variables for TSan
         env = os.environ.copy()
-        env["TSAN_OPTIONS"] = f"monitor_path={self.monitor_path}"
+        env["TSAN_OPTIONS"] = f"monitor_path={self.monitor_path}:exit_on_race=1:atexit_sleep_ms=200"
 
         # Run the program
         proc = subprocess.Popen(
