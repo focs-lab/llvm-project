@@ -44,6 +44,8 @@ TSAN_FLAG(bool, force_background_thread, false,
           "instead of waiting for a user call to pthread_create.")
 TSAN_FLAG(bool, halt_on_error, false, "Exit after first reported error.")
 TSAN_FLAG(const char *, monitor_path, "", "Monitor program path.")
+TSAN_FLAG(bool, monitor_verbose, false,
+          "Enable verbose logging for monitor-mode runtime wiring.")
 TSAN_FLAG(bool, exit_on_race, true,
           "Exit with non-zero code when race is detected by external monitor.")
 TSAN_FLAG(int, atexit_sleep_ms, 1000,

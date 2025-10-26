@@ -208,7 +208,7 @@ static NOINLINE void MapRodata(char* buffer, uptr size) {
 }
 
 int StartMonitor() {
-  Printf("StartMonitor\n");
+  MDPrintf("StartMonitor\n");
   const char* monitor_path = flags()->monitor_path;
   if (!monitor_path || !monitor_path[0]) {
     return -1;

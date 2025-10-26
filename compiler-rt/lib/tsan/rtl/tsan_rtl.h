@@ -67,8 +67,6 @@ static constexpr u8 kTsanEventThreadJoin = 26;
 static constexpr u8 kTsanEventThreadExit = 27;
 static constexpr u8 kTsanEventThreadStart = 28;
 
-#define TSAN_MONITOR_DEBUG_OUTPUT 0
-
 // ---------------------------------------------------------------------------
 // Channel helpers for monitor-mode events (spawn/join/exit)
 // These are lightweight inline utilities used by interceptors to send
@@ -618,11 +616,15 @@ bool IsExpectedReport(uptr addr, uptr size);
 # define DPrintf2(...)
 #endif
 
-#if defined(TSAN_MONITOR_DEBUG_OUTPUT) && TSAN_MONITOR_DEBUG_OUTPUT >= 1
-# define MDPrintf Printf
-#else
-# define MDPrintf(...)
-#endif
+ALWAYS_INLINE bool MonitorVerboseEnabled() {
+  return ctx->flags.monitor_verbose;
+}
+
+#define MDPrintf(...)                                                          \
+  do {                                                                         \
+    if (UNLIKELY(MonitorVerboseEnabled()))                                     \
+      Printf(__VA_ARGS__);                                                     \
+  } while (false)
 
 StackID CurrentStackId(ThreadState *thr, uptr pc);
 ReportStack *SymbolizeStackId(StackID stack_id);

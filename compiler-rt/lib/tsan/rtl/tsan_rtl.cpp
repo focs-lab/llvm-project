@@ -779,7 +779,7 @@ void Initialize(ThreadState *thr) {
   // need to let the monitor process start up before continuing
   const char* monitor_path = flags()->monitor_path;
   if (monitor_path && monitor_path[0] != 0) {
-    Printf("[+] Waiting for monitor to get ready\n");
+    MDPrintf("[+] Waiting for monitor to get ready\n");
     int monitor_wait_count = 0;
     constexpr int monitor_wait_threshold = 10;
     while(atomic_load_relaxed(__tsan_channel_ptr) != kMonitorReady && monitor_wait_count < monitor_wait_threshold) {
@@ -787,9 +787,9 @@ void Initialize(ThreadState *thr) {
       monitor_wait_count++;
     }
     if (monitor_wait_count == monitor_wait_threshold)
-      Printf("[!] Monitor did not signal ready. Resuming program regardless.\n");
+      MDPrintf("[!] Monitor did not signal ready. Resuming program regardless.\n");
     else
-      Printf("[+] Monitor Ready\n");
+      MDPrintf("[+] Monitor Ready\n");
     __tsan_channel_idx++;
 
     // Install signal handler for race detection (must be after monitor is ready)
@@ -798,17 +798,17 @@ void Initialize(ThreadState *thr) {
     sigemptyset(&sa.sa_mask);
     sa.sa_flags = SA_RESTART;  // Restart interrupted system calls
     if (sigaction(SIGUSR1, &sa, nullptr) == 0) {
-      Printf("[+] Race detection signal handler installed\n");
+      MDPrintf("[+] Race detection signal handler installed\n");
     } else {
-      Printf("[!] Failed to install race detection signal handler\n");
+      MDPrintf("[!] Failed to install race detection signal handler\n");
     }
   }
   else {
-    Printf("[+] No monitor_path options found in TSAN_OPTIONS. Running without monitor.\n");
+    MDPrintf("[+] No monitor_path options found in TSAN_OPTIONS. Running without monitor.\n");
   }
 
   if (flags()->stop_on_start) {
-    Printf("ThreadSanitizer is suspended at startup (pid %d)."
+    MDPrintf("ThreadSanitizer is suspended at startup (pid %d)."
            " Call __tsan_resume().\n",
            (int)internal_getpid());
     while (__tsan_resumed == 0) {}
@@ -849,9 +849,9 @@ int Finalize(ThreadState *thr) {
 
     // Step 1: Fast path - check signal flag immediately
     if (g_race_detected_sig) {
-      Printf("[+] Race detected via signal!\n");
+      MDPrintf("[+] Race detected via signal!\n");
       if (flags()->exit_on_race) {
-        Printf("[+] Race detected via signal, exit now! (exit_on_race=1)\n");
+        MDPrintf("[+] Race detected via signal, exit now! (exit_on_race=1)\n");
         internal__exit(66);
       }
       goto continue_execution;
@@ -863,12 +863,12 @@ int Finalize(ThreadState *thr) {
       const int poll_interval_ms = 10;  // 10ms poll interval
       int elapsed_ms = 0;
 
-      Printf("[+] Starting race detection wait window (%d ms total)\n", total_wait_ms);
+      MDPrintf("[+] Starting race detection wait window (%d ms total)\n", total_wait_ms);
 
       while (elapsed_ms < total_wait_ms) {
         // Check signal flag during wait window
         if (g_race_detected_sig) {
-          Printf("[+] Race detected via signal during wait window! (elapsed %d ms)\n", elapsed_ms);
+          MDPrintf("[+] Race detected via signal during wait window! (elapsed %d ms)\n", elapsed_ms);
           if (flags()->exit_on_race) {
             internal__exit(66);
           }
@@ -877,12 +877,12 @@ int Finalize(ThreadState *thr) {
 
         // Check sentinel file during wait window
         if (::access(path, F_OK) == 0) {
-          Printf("[+] Race detected via sentinel file during wait window! (elapsed %d ms)\n", elapsed_ms);
+          MDPrintf("[+] Race detected via sentinel file during wait window! (elapsed %d ms)\n", elapsed_ms);
           if (flags()->exit_on_race) {
-            Printf("[+] Race detected via sentinel file, exit now! (exit_on_race=1)\n");
+            MDPrintf("[+] Race detected via sentinel file, exit now! (exit_on_race=1)\n");
             internal__exit(66);
           } else {
-            Printf("[+] Monitor detected race but continuing execution (exit_on_race=0)\n");
+            MDPrintf("[+] Monitor detected race but continuing execution (exit_on_race=0)\n");
             internal_unlink(path);  // Clean up sentinel file
           }
           goto continue_execution;
@@ -893,23 +893,23 @@ int Finalize(ThreadState *thr) {
         elapsed_ms += poll_interval_ms;
       }
 
-      Printf("[+] Wait window expired, no race detected\n");
+      MDPrintf("[+] Wait window expired, no race detected\n");
     } else {
       // atexit_sleep_ms = 0: check sentinel file once as fallback
       if (::access(path, F_OK) == 0) {
-        Printf("[+] Race detected via sentinel file!\n");
+        DPrintf("[+] Race detected via sentinel file!\n");
         if (flags()->exit_on_race) {
-          Printf("[+] Race detected via sentinel file, exit now! (exit_on_race=1)\n");
+          DPrintf("[+] Race detected via sentinel file, exit now! (exit_on_race=1)\n");
           internal__exit(66);
         } else {
-          Printf("[+] Monitor detected race but continuing execution (exit_on_race=0)\n");
+          DPrintf("[+] Monitor detected race but continuing execution (exit_on_race=0)\n");
           internal_unlink(path);
         }
       }
     }
 
 continue_execution:
-    Printf("[+] Continuing execution (exit_on_race=%d)\n", flags()->exit_on_race);
+    MDPrintf("[+] Continuing execution (exit_on_race=%d)\n", flags()->exit_on_race);
   }
 
   // Legacy sleep behavior (only for non-monitor scenarios)

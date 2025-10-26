@@ -777,8 +777,17 @@ void ThreadSanitizer::InsertEventSend(IRBuilder<> &IRB, EventType Eid,
     auto *LapNumberShift = IRB.CreateShl(
         LapNumberTrunc, 52); // first 8 bits are for event type, next is this
 
-    auto *EventCast =
-        IRB.CreateCast(Instruction::ZExt, EventValue, IRB.getInt64Ty());
+    Value *EventCast = EventValue;
+    Type *EventTy = EventCast->getType();
+    if (!EventTy->isIntegerTy(64)) {
+      if (EventTy->isIntegerTy()) {
+        EventCast = IRB.CreateZExtOrTrunc(EventCast, IRB.getInt64Ty());
+      } else if (EventTy->isPointerTy()) {
+        EventCast = IRB.CreatePtrToInt(EventCast, IRB.getInt64Ty());
+      } else {
+        EventCast = IRB.CreateBitCast(EventCast, IRB.getInt64Ty());
+      }
+    }
     auto *EventFull = IRB.CreateOr(EventCast, LapNumberShift);
 
     // Store the args before the event

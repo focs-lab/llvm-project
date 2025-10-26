@@ -37,16 +37,16 @@ SUPPORTED_EXAMPLE = [
     "mutex_lock_order",
     "mutex_read_write_lock",
 
-    "atomic_release_acquire",
+    "atomic_release_acquire", # Not supported
     "atomic_relaxed_race",
     "atomic_seq_cst",
-    # "atomic_acq_rel",
+    "atomic_acq_rel", # Not supported
     "atomic_cas_success",
     "atomic_cas_fail",
-    "atomic_fetch_add",
+    "atomic_fetch_add", # Not supported
     "atomic_exchange",
     "atomic_write_write_race",
-    # "atomic_double_checked_locking",
+    "atomic_double_checked_locking", # Not supported
     "atomic_broken_double_check",
 
     "mutex_atomic_mix",
