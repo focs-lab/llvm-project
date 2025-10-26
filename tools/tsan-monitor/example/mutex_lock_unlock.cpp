@@ -1,34 +1,45 @@
 // NO RACE
 #include <cstdio>
 #include <iostream>
-#include <mutex>
-#include <thread>
+#include <pthread.h>
+#include <unistd.h>
 
 namespace {
-std::mutex mtx;
-int shared_counter = 0;
+  pthread_mutex_t mtx = PTHREAD_MUTEX_INITIALIZER;
+  int shared_counter = 0;
 
-void increment() {
-  std::lock_guard<std::mutex> lock(mtx);
-  ++shared_counter;
-}
+  void* increment(void*) {
+    pthread_mutex_lock(&mtx);
+    ++shared_counter;
+    pthread_mutex_unlock(&mtx);
+    return nullptr;
+  }
 
-void read_once() {
-  std::lock_guard<std::mutex> lock(mtx);
-  std::cout << "read once value=" << shared_counter << "\n";
-}
+  void* read_once(void*) {
+    pthread_mutex_lock(&mtx);
+    std::cout << "read once value=" << shared_counter << "\n";
+    pthread_mutex_unlock(&mtx);
+    return nullptr;
+  }
 }  // namespace
 
 int main() {
-  std::thread t1(increment);
-  std::thread t2(read_once);
+  pthread_t t1, t2;
+  pthread_create(&t1, nullptr, increment, nullptr);
+  pthread_create(&t2, nullptr, read_once, nullptr);
+
   printf("&mtx = %p\n", (void*)&mtx);
   printf("&shared_counter = %p\n", (void*)&shared_counter);
   printf("&t1 = %p\n", (void*)&t1);
   printf("&t2 = %p\n", (void*)&t2);
-  t1.join();
-  t2.join();
-  // std::lock_guard<std::mutex> final_lock(mtx);
+
+  pthread_join(t1, nullptr);
+  pthread_join(t2, nullptr);
+
+  // pthread_mutex_lock(&mtx);
   // std::cout << "final counter=" << shared_counter << "\n";
+  // pthread_mutex_unlock(&mtx);
+
+  pthread_mutex_destroy(&mtx);
   return 0;
 }

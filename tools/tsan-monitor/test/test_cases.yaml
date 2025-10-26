@@ -67,81 +67,77 @@ test_cases:
 
   # Tests that must NOT detect races
   should_not_have_race:
-#    - name: "proper_mutex_usage"
-#      source: "mutex_lock_unlock.cpp"
-#      description: "Proper mutex usage should prevent race"
-#
-#    - name: "two_independent_locks"
-#      source: "mutex_two_locks.cpp"
-#      description: "Different mutexes on different variables"
-#
-#    - name: "mutex_lock_order"
-#      source: "mutex_lock_order.cpp"
-#      description: "Consistent mutex lock order"
-#
-#    - name: "mutex_multiple_acquire"
-#      source: "mutex_multiple_acquire.cpp"
-#      description: "Multiple threads acquiring same mutex"
-#
-#    - name: "mutex_read_write_lock"
-#      source: "mutex_read_write_lock.cpp"
-#      description: "Read-write lock synchronization"
+    - name: "proper_mutex_usage"
+      source: "mutex_lock_unlock.cpp"
+      description: "Proper mutex usage should prevent race"
 
-    - name: "read_write_lock_posix"
-      source: "mutex_read_write_lock_posix.cpp"
-      description: "POSIX read-write lock usage"
+    - name: "two_independent_locks"
+      source: "mutex_two_locks.cpp"
+      description: "Different mutexes on different variables"
+
+    - name: "mutex_lock_order"
+      source: "mutex_lock_order.cpp"
+      description: "Consistent mutex lock order"
+
+    - name: "mutex_multiple_acquire"
+      source: "mutex_multiple_acquire.cpp"
+      description: "Multiple threads acquiring same mutex"
+
+    - name: "mutex_read_write_lock"
+      source: "mutex_read_write_lock.cpp"
+      description: "Read-write lock synchronization"
 
 #    - name: "atomic_acq_rel"
 #      source: "atomic_acq_rel.cpp"
 #      description: "Atomic acquire-release operations"
-#
+
 #    - name: "atomic_double_checked_locking"
 #      source: "atomic_double_checked_locking.cpp"
 #      description: "Proper double-checked locking pattern"
-#
-#    - name: "atomic_write_write_race"
-#      source: "atomic_write_write_race.cpp"
-#      description: "Atomic write-write race"
-#
+
+    - name: "atomic_write_write_race"
+      source: "atomic_write_write_race.cpp"
+      description: "Atomic write-write race"
+
 #    - name: "atomic_release_acquire"
 #      source: "atomic_release_acquire.cpp"
 #      description: "Proper atomic acquire-release should prevent race"
-#
-#    - name: "atomic_seq_cst"
-#      source: "atomic_seq_cst.cpp"
-#      description: "Sequentially consistent atomic operations"
-#
-#    - name: "atomic_cas_success"
-#      source: "atomic_cas_success.cpp"
-#      description: "Compare-and-swap operations"
-#
-#    - name: "atomic_cas_fail"
-#      source: "atomic_cas_fail.cpp"
-#      description: "Failed CAS operations"
-#
+
+    - name: "atomic_seq_cst"
+      source: "atomic_seq_cst.cpp"
+      description: "Sequentially consistent atomic operations"
+
+    - name: "atomic_cas_success"
+      source: "atomic_cas_success.cpp"
+      description: "Compare-and-swap operations"
+
+    - name: "atomic_cas_fail"
+      source: "atomic_cas_fail.cpp"
+      description: "Failed CAS operations"
+
 #    - name: "atomic_fetch_add"
 #      source: "atomic_fetch_add.cpp"
 #      description: "Atomic fetch-add operations"
-#
-#    - name: "atomic_exchange"
-#      source: "atomic_exchange.cpp"
-#      description: "Atomic exchange operations"
-#
-#    - name: "mutex_atomic_mix"
-#      source: "mutex_atomic_mix.cpp"
-#      description: "Proper mixing of mutex and atomic operations"
-#
-#    - name: "parent_write_child_read"
-#      source: "t1_parent_write_child_read.cpp"
-#      description: "Parent writes, child reads - spawn synchronization"
+
+    - name: "atomic_exchange"
+      source: "atomic_exchange.cpp"
+      description: "Atomic exchange operations"
+
+    - name: "mutex_atomic_mix"
+      source: "mutex_atomic_mix.cpp"
+      description: "Proper mixing of mutex and atomic operations"
+
+    - name: "parent_write_child_read"
+      source: "t1_parent_write_child_read.cpp"
+      description: "Parent writes, child reads - spawn synchronization"
 
     - name: "child_write_parent_read"
       source: "t2_child_write_parent_read.cpp"
       description: "Child writes, parent reads - join synchronization"
 
-#    - name: "nested_spawn"
-#      source: "t4_nested_spawn.cpp"
-#      description: "Nested thread spawning"
+    - name: "nested_spawn"
+      source: "t4_nested_spawn.cpp"
+      description: "Nested thread spawning"
 
     - name: "multiple_children"
       source: "t6_multiple_children.cpp"

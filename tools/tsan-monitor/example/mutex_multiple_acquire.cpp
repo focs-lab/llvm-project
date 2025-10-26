@@ -2,31 +2,41 @@
 // Expected: NO RACE (lock provides total order)
 
 #include <iostream>
-#include <mutex>
-#include <thread>
-#include <vector>
+#include <pthread.h>
 
 namespace {
-std::mutex mtx;
-int shared_counter = 0;
+  pthread_mutex_t mtx = PTHREAD_MUTEX_INITIALIZER;
+  int shared_counter = 0;
 
-void increment_many(int tid) {
-  for (int i = 0; i < 100; ++i) {
-    std::lock_guard<std::mutex> lock(mtx);
-    ++shared_counter;
+  struct ThreadArg {
+    int tid;
+  };
+
+  void* increment_many(void* arg) {
+    int tid = static_cast<ThreadArg*>(arg)->tid;
+    for (int i = 0; i < 100; ++i) {
+      pthread_mutex_lock(&mtx);
+      ++shared_counter;
+      pthread_mutex_unlock(&mtx);
+    }
+    std::cout << "Thread " << tid << " done\n";
+    return nullptr;
   }
-  std::cout << "Thread " << tid << " done\n";
-}
 }  // namespace
 
 int main() {
-  std::vector<std::thread> threads;
-  for (int i = 0; i < 4; ++i) {
-    threads.emplace_back(increment_many, i);
+  const int num_threads = 4;
+  pthread_t threads[num_threads];
+  ThreadArg args[num_threads];
+
+  for (int i = 0; i < num_threads; ++i) {
+    args[i].tid = i;
+    pthread_create(&threads[i], nullptr, increment_many, &args[i]);
   }
-  for (auto& t : threads) {
-    t.join();
+  for (int i = 0; i < num_threads; ++i) {
+    pthread_join(threads[i], nullptr);
   }
   std::cout << "Final counter: " << shared_counter << "\n";
+  pthread_mutex_destroy(&mtx);
   return 0;
 }

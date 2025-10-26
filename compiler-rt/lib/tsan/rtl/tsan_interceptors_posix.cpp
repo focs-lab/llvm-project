@@ -1043,6 +1043,7 @@ extern "C" void *__tsan_thread_start_func(void *arg) {
     Processor *proc = ProcCreate();
     ProcWire(proc, thr);
     ThreadStart(thr, p->tid, GetTid(), ThreadType::Regular);
+    __tsan_channel_send_thread_start();
     p->started.Post();
   }
   void *res = callback(param);

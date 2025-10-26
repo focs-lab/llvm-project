@@ -1,42 +1,57 @@
 // Test: Multiple readers, single writer pattern with mutex
 // Expected: NO RACE (all accesses protected by mutex)
 
-#include <cstdio>
-#include <iostream>
-#include <mutex>
-#include <thread>
-#include <vector>
+#include <pthread.h>
+#include <stdio.h>
 
-namespace {
-std::mutex mtx;
+pthread_mutex_t mtx = PTHREAD_MUTEX_INITIALIZER;
 int shared_value = 0;
 
-void reader(int id) {
-  std::lock_guard<std::mutex> lock(mtx);
+void* reader(void* arg) {
+  int id = *(int*)arg;
+  pthread_mutex_lock(&mtx);
   printf("reader%d: shared_value=%d\n", id, shared_value);
+  pthread_mutex_unlock(&mtx);
+  return NULL;
 }
 
-void writer(int new_value) {
-  std::lock_guard<std::mutex> lock(mtx);
+void* writer(void* arg) {
+  int new_value = *(int*)arg;
+  pthread_mutex_lock(&mtx);
   shared_value = new_value;
+  pthread_mutex_unlock(&mtx);
+  return NULL;
 }
-}  // namespace
 
 int main() {
-  std::vector<std::thread> threads;
+  pthread_t threads[5];
+  int args[5];
+
   printf("&mtx = %p\n", (void*)&mtx);
   printf("&shared_value = %p\n", (void*)&shared_value);
   printf("&threads = %p\n", (void*)&threads);
   printf("&writer = %p\n", (void*)writer);
   printf("&reader = %p\n", (void*)reader);
-  threads.emplace_back(writer, 10);  // thread-1
-  threads.emplace_back(reader, 1);   // thread-2
-  threads.emplace_back(reader, 2);   // thread-3
-  threads.emplace_back(writer, 11);  // thread-4
-  threads.emplace_back(reader, 3);   // thread-5
 
-  for (auto& t : threads) {
-    t.join();
+  args[0] = 10;
+  pthread_create(&threads[0], NULL, writer, &args[0]);
+
+  args[1] = 1;
+  pthread_create(&threads[1], NULL, reader, &args[1]);
+
+  args[2] = 2;
+  pthread_create(&threads[2], NULL, reader, &args[2]);
+
+  args[3] = 11;
+  pthread_create(&threads[3], NULL, writer, &args[3]);
+
+  args[4] = 3;
+  pthread_create(&threads[4], NULL, reader, &args[4]);
+
+  for (int i = 0; i < 5; ++i) {
+    pthread_join(threads[i], NULL);
   }
+
+  pthread_mutex_destroy(&mtx);
   return 0;
 }

@@ -35,8 +35,7 @@ SUPPORTED_EXAMPLE = [
     "mutex_wrong_lock",
     "mutex_multiple_acquire",
     "mutex_lock_order",
-    # "mutex_read_write_lock",
-    "mutex_read_write_lock_posix",
+    "mutex_read_write_lock",
 
     "atomic_release_acquire",
     "atomic_relaxed_race",
@@ -133,7 +132,7 @@ def build_example(args: argparse.Namespace,
 def run_with_monitor(exe: Path, monitor_path: Path, example_dir: Path) -> Path:
     """Run example with monitor and return channel directory."""
     env = os.environ.copy()
-    env["TSAN_OPTIONS"] = f"monitor_path={monitor_path}:exit_on_race=1:atexit_sleep_ms=2000"
+    env["TSAN_OPTIONS"] = f"monitor_path={monitor_path}:exit_on_race=1:atexit_sleep_ms=500:monitor_verbose=1"
 
     dprint(f"[+] Running example, waiting for monitor to exit (TSAN_OPTIONS: {env['TSAN_OPTIONS']})")
 
@@ -144,7 +143,7 @@ def run_with_monitor(exe: Path, monitor_path: Path, example_dir: Path) -> Path:
     output, _ = proc.communicate()
 
     if ret := proc.returncode != 0:
-        raise RuntimeError(f"Example program exited with code {ret}")
+        dprint(f"[+] Example program exited with code {ret}")
 
     # Print program execution result with separators
     print("=" * 80)

@@ -2,43 +2,50 @@
 // Expected: NO RACE (each data protected by its own mutex)
 
 #include <iostream>
-#include <mutex>
-#include <thread>
+#include <pthread.h>
 
 namespace {
-std::mutex mtx1;
-std::mutex mtx2;
-int data1 = 0;
-int data2 = 0;
+  pthread_mutex_t mtx1 = PTHREAD_MUTEX_INITIALIZER;
+  pthread_mutex_t mtx2 = PTHREAD_MUTEX_INITIALIZER;
+  int data1 = 0;
+  int data2 = 0;
 
-void thread1() {
-  {
-    std::lock_guard<std::mutex> lock(mtx1);
+  void* thread1(void*) {
+    pthread_mutex_lock(&mtx1);
     data1 = 100;
-  }
-  {
-    std::lock_guard<std::mutex> lock(mtx2);
-    data2 = 200;
-  }
-}
+    pthread_mutex_unlock(&mtx1);
 
-void thread2() {
-  {
-    std::lock_guard<std::mutex> lock(mtx1);
+    pthread_mutex_lock(&mtx2);
+    data2 = 200;
+    pthread_mutex_unlock(&mtx2);
+
+    return nullptr;
+  }
+
+  void* thread2(void*) {
+    pthread_mutex_lock(&mtx1);
     data1 = 300;
-  }
-  {
-    std::lock_guard<std::mutex> lock(mtx2);
+    pthread_mutex_unlock(&mtx1);
+
+    pthread_mutex_lock(&mtx2);
     data2 = 400;
+    pthread_mutex_unlock(&mtx2);
+
+    return nullptr;
   }
-}
 }  // namespace
 
 int main() {
-  std::thread t1(thread1);
-  std::thread t2(thread2);
-  t1.join();
-  t2.join();
+  pthread_t t1, t2;
+  pthread_create(&t1, nullptr, thread1, nullptr);
+  pthread_create(&t2, nullptr, thread2, nullptr);
+
+  pthread_join(t1, nullptr);
+  pthread_join(t2, nullptr);
+
   std::cout << "data1=" << data1 << ", data2=" << data2 << "\n";
+
+  pthread_mutex_destroy(&mtx1);
+  pthread_mutex_destroy(&mtx2);
   return 0;
 }
