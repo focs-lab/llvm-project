@@ -2,151 +2,151 @@ test_cases:
   # Tests that must detect races
   should_have_race:
     - name: "write_write_race"
-      source: "ww.cpp"
+      source: "dr_ww.cpp"
       description: "Two threads writing to same variable without synchronization"
 
     - name: "read_write_race"
-      source: "rw.cpp"
+      source: "dr_rw.cpp"
       description: "One thread reads while another writes without synchronization"
 
     - name: "struct_race"
-      source: "struct_race.cpp"
+      source: "dr_struct.cpp"
       description: "Race on struct member access"
 
     - name: "shared_counter_race"
-      source: "shared_counter.cpp"
+      source: "dr_counter.cpp"
       description: "Race on shared counter variable"
 
     - name: "array_race"
-      source: "array_race.cpp"
+      source: "dr_array.cpp"
       description: "Race on array element access"
 
     - name: "lazy_init_race"
-      source: "lazy_init.cpp"
+      source: "dr_lazy.cpp"
       description: "Race during lazy initialization"
 
     - name: "bank_account_race"
-      source: "bank_account.cpp"
+      source: "dr_bank.cpp"
       description: "Race on bank account balance"
 
     - name: "linked_list_race"
-      source: "linked_list_race.cpp"
+      source: "dr_list.cpp"
       description: "Race on linked list operations"
 
     - name: "producer_consumer_race"
-      source: "producer_consumer.cpp"
+      source: "dr_prodcons.cpp"
       description: "Race in producer-consumer pattern"
 
     - name: "mutex_missing_lock"
-      source: "mutex_race_missing_lock.cpp"
+      source: "dr_mx_missing.cpp"
       description: "Missing mutex lock should cause race"
 
     - name: "wrong_mutex_usage"
-      source: "mutex_wrong_lock.cpp"
+      source: "dr_mx_wrong.cpp"
       description: "Using wrong mutex should cause race"
 
     - name: "atomic_relaxed_race"
-      source: "atomic_relaxed_race.cpp"
+      source: "at_relaxed_race.cpp"
       description: "Relaxed atomic operations can still race"
 
     - name: "no_join_race"
-      source: "t3_no_join_race.cpp"
+      source: "th_no_join_race.cpp"
       description: "Missing join may cause race"
 
     - name: "nested_join_race"
-      source: "t5_nested_join_race.cpp"
+      source: "th_nested_join_race.cpp"
       description: "Nested join operations"
 
     - name: "partial_join_race"
-      source: "t7_partial_join_race.cpp"
+      source: "th_partial_join_race.cpp"
       description: "Partial thread joining"
 
     - name: "diamond_fork_join"
-      source: "t8_diamond_fork_join.cpp"
+      source: "th_diamond_fork_join.cpp"
       description: "Diamond fork-join pattern"
 
   # Tests that must NOT detect races
   should_not_have_race:
     - name: "proper_mutex_usage"
-      source: "mutex_lock_unlock.cpp"
+      source: "mx_basic.cpp"
       description: "Proper mutex usage should prevent race"
 
     - name: "two_independent_locks"
-      source: "mutex_two_locks.cpp"
+      source: "mx_two.cpp"
       description: "Different mutexes on different variables"
 
     - name: "mutex_lock_order"
-      source: "mutex_lock_order.cpp"
+      source: "mx_order.cpp"
       description: "Consistent mutex lock order"
 
     - name: "mutex_multiple_acquire"
-      source: "mutex_multiple_acquire.cpp"
+      source: "mx_multi_acq.cpp"
       description: "Multiple threads acquiring same mutex"
 
     - name: "mutex_read_write_lock"
-      source: "mutex_read_write_lock.cpp"
+      source: "mx_rwlock.cpp"
       description: "Read-write lock synchronization"
 
 #    - name: "atomic_acq_rel"
-#      source: "atomic_acq_rel.cpp"
+#      source: "at_rel_acq.cpp"
 #      description: "Atomic acquire-release operations"
 
 #    - name: "atomic_double_checked_locking"
-#      source: "atomic_double_checked_locking.cpp"
+#      source: "at_dcl_ok.cpp"
 #      description: "Proper double-checked locking pattern"
 
     - name: "atomic_write_write_race"
-      source: "atomic_write_write_race.cpp"
+      source: "at_ww.cpp"
       description: "Atomic write-write race"
 
 #    - name: "atomic_release_acquire"
-#      source: "atomic_release_acquire.cpp"
+#      source: "at_rel_acq.cpp"
 #      description: "Proper atomic acquire-release should prevent race"
 
     - name: "atomic_seq_cst"
-      source: "atomic_seq_cst.cpp"
+      source: "at_seqcst.cpp"
       description: "Sequentially consistent atomic operations"
 
     - name: "atomic_cas_success"
-      source: "atomic_cas_success.cpp"
+      source: "at_cas_ok.cpp"
       description: "Compare-and-swap operations"
 
     - name: "atomic_cas_fail"
-      source: "atomic_cas_fail.cpp"
+      source: "at_cas_fail.cpp"
       description: "Failed CAS operations"
 
 #    - name: "atomic_fetch_add"
-#      source: "atomic_fetch_add.cpp"
+#      source: "at_fetch_add.cpp"
 #      description: "Atomic fetch-add operations"
 
     - name: "atomic_exchange"
-      source: "atomic_exchange.cpp"
+      source: "at_xchg.cpp"
       description: "Atomic exchange operations"
 
     - name: "mutex_atomic_mix"
-      source: "mutex_atomic_mix.cpp"
+      source: "mx_atomic_mix.cpp"
       description: "Proper mixing of mutex and atomic operations"
 
     - name: "parent_write_child_read"
-      source: "t1_parent_write_child_read.cpp"
+      source: "th_spawn_sync.cpp"
       description: "Parent writes, child reads - spawn synchronization"
 
     - name: "child_write_parent_read"
-      source: "t2_child_write_parent_read.cpp"
+      source: "th_join_sync.cpp"
       description: "Child writes, parent reads - join synchronization"
 
     - name: "nested_spawn"
-      source: "t4_nested_spawn.cpp"
+      source: "th_nested_spawn.cpp"
       description: "Nested thread spawning"
 
     - name: "multiple_children"
-      source: "t6_multiple_children.cpp"
+      source: "th_multi_children.cpp"
       description: "Multiple child threads"
 
   # Tests that may or may not detect races (edge cases)
   maybe_have_race:
     - name: "broken_double_check"
-      source: "atomic_broken_double_check.cpp"
+      source: "at_dcl_broken.cpp"
       description: "Broken double-checked locking"
 
 # Build configuration

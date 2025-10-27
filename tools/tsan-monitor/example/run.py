@@ -17,43 +17,29 @@ PRINT_CHANNEL = REPO_ROOT / "tools/tsan-monitor/scripts/print_channel.py"
 
 # Supported examples
 SUPPORTED_EXAMPLE = [
-    "rw", "ww", "struct_race", "shared_counter", "lazy_init", "array_race",
-    "bank_account", "linked_list_race", "producer_consumer",
+    "misc_write",
 
-    "t1_parent_write_child_read",
-    "t2_child_write_parent_read",
-    "t3_no_join_race",
-    "t4_nested_spawn",
-    "t5_nested_join_race",
-    "t6_multiple_children",
-    "t7_partial_join_race",
-    "t8_diamond_fork_join",
+    # Basic races
+    "dr_rw", "dr_ww", "dr_array", "dr_struct", "dr_counter", "dr_bank",
+    "dr_list", "dr_prodcons", "dr_lazy",
 
-    "mutex_lock_unlock",
-    "mutex_race_missing_lock",
-    "mutex_two_locks",
-    "mutex_wrong_lock",
-    "mutex_multiple_acquire",
-    "mutex_lock_order",
-    "mutex_read_write_lock",
+    # Thread lifecycle
+    "th_spawn_sync", "th_join_sync", "th_no_join_race", "th_nested_spawn",
+    "th_nested_join_race", "th_multi_children", "th_partial_join_race",
+    "th_diamond_fork_join",
 
-    "atomic_release_acquire", # Not supported
-    "atomic_relaxed_race",
-    "atomic_seq_cst",
-    "atomic_acq_rel", # Not supported
-    "atomic_cas_success",
-    "atomic_cas_fail",
-    "atomic_fetch_add", # Not supported
-    "atomic_exchange",
-    "atomic_write_write_race",
-    "atomic_double_checked_locking", # Not supported
-    "atomic_broken_double_check",
+    # Mutex
+    "mx_basic", "dr_mx_missing", "mx_two", "dr_mx_wrong", "mx_multi_acq",
+    "mx_order", "mx_rwlock", "mx_atomic_mix",
 
-    "mutex_atomic_mix",
+    # Atomics
+    "at_rel_acq", "at_relaxed_race", "at_seqcst", "at_acq_rel",
+    "at_cas_ok", "at_cas_fail", "at_fetch_add", "at_xchg", "at_ww",
+    "at_dcl_ok", "at_dcl_broken",
 ]
 
 DEFAULT_CONFIG = {
-    "example": "rw",
+    "example": "misc_write",
     "clang": str(REPO_ROOT / "build/bin/clang"),
     "clangxx": str(REPO_ROOT / "build/bin/clang++"),
     "monitor": str(REPO_ROOT / "build/tsan-monitor/tsan-monitor"),

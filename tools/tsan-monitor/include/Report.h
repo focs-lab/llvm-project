@@ -36,9 +36,7 @@ class Report {
   }
 
   // Set Origin process PID for signal sending
-  void SetOriginPid(pid_t pid) {
-    origin_pid_ = pid;
-  }
+  void SetOriginPid(pid_t pid) { origin_pid_ = pid; }
 
  private:
   std::string MakeKey(const RaceEventInfo& info) const;
@@ -59,7 +57,8 @@ class Report {
   std::filesystem::path output_dir_;
   std::mutex mutex_;
   std::unordered_map<std::string, std::size_t> counters_;
-  bool emitted_once_ = false;  // Single-threaded; used only to prevent duplicates
+  bool emitted_once_ =
+      false;  // Single-threaded; used only to prevent duplicates
   std::filesystem::path sentinel_dir_;
   pid_t origin_pid_ = -1;  // Origin process PID for signal sending
 };

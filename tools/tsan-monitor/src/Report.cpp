@@ -1,17 +1,18 @@
 #include "Report.h"
 
+#include <fcntl.h>
+#include <signal.h>
+#include <spdlog/spdlog.h>
+#include <unistd.h>
+
 #include <algorithm>
+#include <cerrno>
 #include <chrono>
+#include <cstdio>
+#include <cstring>
 #include <filesystem>
 #include <format>
 #include <fstream>
-#include <fcntl.h>
-#include <unistd.h>
-#include <signal.h>
-#include <cstdio>
-#include <cerrno>
-#include <cstring>
-#include <spdlog/spdlog.h>
 
 namespace monitor {
 namespace {
@@ -49,7 +50,8 @@ void Report::OnRace(const RaceEventInfo& info) {
     std::lock_guard<std::mutex> lock(mutex_);
     auto& counter = counters_[key];
     ++counter;
-    // Always emit a file per race occurrence to preserve history for offline analysis.
+    // Always emit a file per race occurrence to preserve history for offline
+    // analysis.
     Emit(info, content);
     // On the first race only, also mirror to stderr and create a sentinel file.
     if (!emitted_once_) {
@@ -84,7 +86,8 @@ std::string Report::Format(const RaceEventInfo& info) const {
     return "access";
   };
 
-  // Keep WARNING and SUMMARY lines verbatim for llvm-lit/FileCheck compatibility.
+  // Keep WARNING and SUMMARY lines verbatim for llvm-lit/FileCheck
+  // compatibility.
   return std::format(
       "==================\n"
       "WARNING: ThreadSanitizer: data race\n"
@@ -142,8 +145,9 @@ void Report::SendRaceSignal() {
   if (kill(origin_pid_, SIGUSR1) == 0) {
     SPDLOG_INFO("Race detection signal sent to Origin process {}", origin_pid_);
   } else {
-    SPDLOG_ERROR("Failed to send race detection signal to Origin process {}: {}",
-                 origin_pid_, strerror(errno));
+    SPDLOG_ERROR(
+        "Failed to send race detection signal to Origin process {}: {}",
+        origin_pid_, strerror(errno));
   }
 }
 }  // namespace monitor

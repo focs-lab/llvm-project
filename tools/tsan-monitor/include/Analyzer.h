@@ -2,8 +2,8 @@
 
 #include <atomic>
 #include <cstdint>
-#include <iostream>
 #include <filesystem>
+#include <iostream>
 #include <unordered_map>
 
 #include "Constants.h"
@@ -30,20 +30,17 @@ class Analyzer {
     sync_token_mgr_ = manager;
   }
 
-  // Pass the channels directory (/tmp/tsan.monitor.<pid>) so Report can write the sentinel.
+  // Pass the channels directory (/tmp/tsan.monitor.<pid>) so Report can write
+  // the sentinel.
   void SetSentinelDirectory(const std::filesystem::path& dir) {
     report_.SetSentinelDirectory(dir);
   }
 
   // Set Origin process PID for signal sending
-  void SetOriginPid(pid_t pid) {
-    report_.SetOriginPid(pid);
-  }
+  void SetOriginPid(pid_t pid) { report_.SetOriginPid(pid); }
 
   // Get Report instance for direct access
-  Report& GetReport() {
-    return report_;
-  }
+  Report& GetReport() { return report_; }
 
  private:
   struct ThreadState {
