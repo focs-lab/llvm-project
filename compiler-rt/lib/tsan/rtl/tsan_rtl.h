@@ -60,6 +60,10 @@ extern THREADLOCAL u8 __tsan_sampling;
 extern u32* __tsan_atomic_counters;
 extern u32* __tsan_mutex_counters;
 
+static constexpr u32 kTsanChannelSlots = 262144;
+static constexpr u32 kTsanChannelMask = kTsanChannelSlots - 1;
+static constexpr u32 kTsanChannelShift = 18;
+
 static constexpr u8 kTsanEventMutexLock = 20;
 static constexpr u8 kTsanEventMutexUnlock = 21;
 static constexpr u8 kTsanEventThreadSpawn = 25;
@@ -82,17 +86,17 @@ static inline void __tsan_channel_send_event_with_addr(u8 eid, uptr addr,
     return;
 
   u32 idx = __tsan_channel_idx;
-  u64 lap = (static_cast<u64>(idx) >> 12) & 0xF; // 4-bit lap number
+  u64 lap = (static_cast<u64>(idx) >> kTsanChannelShift) & 0xF; // 4-bit lap number
 
   for (int i = 0; i < nargs; ++i) {
-    u32 slot = (idx + 1 + static_cast<u32>(i)) & 0xFFF; // 4096-slot ring
+    u32 slot = (idx + 1 + static_cast<u32>(i)) & kTsanChannelMask; // 32768-slot ring
     u64 value = args ? args[i] : 0ULL;
     atomic_store_relaxed(&__tsan_channel_ptr[slot], value);
   }
 
   const u64 addr48 = static_cast<u64>(addr) & ((1ULL << 48) - 1);
   u64 header = (static_cast<u64>(eid) << 56) | (lap << 52) | addr48;
-  atomic_store(&__tsan_channel_ptr[idx & 0xFFF], header, memory_order_release);
+  atomic_store(&__tsan_channel_ptr[idx & kTsanChannelMask], header, memory_order_release);
 
   __tsan_channel_idx = idx + 1 + static_cast<u32>(nargs);
 }

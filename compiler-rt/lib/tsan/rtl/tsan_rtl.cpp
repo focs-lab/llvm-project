@@ -765,14 +765,10 @@ void Initialize(ThreadState *thr) {
 #endif
 
 #if !SANITIZER_GO
-  Symbolizer::LateInitialize();
-  if (InitializeMemoryProfiler() || flags()->force_background_thread)
-    MaybeSpawnBackgroundThread();
-#endif
-  ctx->initialized = true;
-
   __tsan_atomic_counters = reinterpret_cast<u32*>(CreateCountersArray());
   __tsan_mutex_counters = reinterpret_cast<u32*>(CreateCountersArray());
+#endif
+
   int monitor_pid = StartMonitor();
   ctx->monitor_pid = monitor_pid;
 
@@ -807,6 +803,13 @@ void Initialize(ThreadState *thr) {
     MDPrintf("[+] No monitor_path options found in TSAN_OPTIONS. Running without monitor.\n");
   }
 
+#if !SANITIZER_GO
+  Symbolizer::LateInitialize();
+  if (InitializeMemoryProfiler() || flags()->force_background_thread)
+    MaybeSpawnBackgroundThread();
+#endif
+  ctx->initialized = true;
+
   if (flags()->stop_on_start) {
     MDPrintf("ThreadSanitizer is suspended at startup (pid %d)."
            " Call __tsan_resume().\n",
@@ -840,7 +843,7 @@ int Finalize(ThreadState *thr) {
 #endif
 
   // Write program ended signal to monitor
-  atomic_store_relaxed(&__tsan_channel_ptr[__tsan_channel_idx & 0xfff], kProgramEnded);
+  atomic_store_relaxed(&__tsan_channel_ptr[__tsan_channel_idx & kTsanChannelMask], kProgramEnded);
 
   // Race detection logic: signal fast path + wait window + sentinel fallback
   {

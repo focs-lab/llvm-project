@@ -38,7 +38,7 @@ std::shared_ptr<Channel> Channel::Open(const std::filesystem::path& path,
     return nullptr;
   }
 
-  // Size must be 0x1000 * 64 (aka. 4096 * 8B = 32KB)
+  // Size must be 0x1000 * 64 (aka. 32768 * 8B = 256KB)
   void* mapping =
       ::mmap(nullptr, st.st_size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
   if (mapping == MAP_FAILED) {
@@ -92,14 +92,24 @@ bool Channel::DecodeHeader(std::uint64_t header, Event& event) const {
     return true;
   }
 
-  auto eid = static_cast<EventId>((header >> 56) & 0xFF);
+  const std::uint8_t raw_eid = static_cast<std::uint8_t>((header >> 56) & 0xFF);
+  if (raw_eid == 0)
+    return false;
+
+  const auto eid = static_cast<EventId>(raw_eid);
   const std::uint8_t lap = static_cast<std::uint8_t>((header >> 52) & kLapMask);
+  if (lap > kLapMask)
+    return false;
+
   const std::uint64_t addr = header & kAddrMask;
+  const std::size_t nargs = EventArgCount(eid);
+  if (nargs > kMaxEventArgs)
+    return false;
 
   event.id = eid;
   event.lap = lap;
   event.address = addr;
-  event.nargs = EventArgCount(eid);
+  event.nargs = nargs;
   return true;
 }
 
@@ -117,14 +127,53 @@ bool Channel::TryRead(Event& event) {
   }
 
   if (!DecodeHeader(header, event)) {
-    // Skip header but keep advancing to avoid stalling.
-    ++next_index_;
     return false;
   }
 
   event.raw_header = header;
   event.index = next_index_;
   event.tid = tid_;
+
+  if (event.id == EventId::kMonitorReady ||
+      event.id == EventId::kProgramEndMarker) {
+    ++next_index_;
+    return true;
+  }
+
+  {
+    const std::uint8_t observed_lap = event.lap;
+    std::uint8_t expected_lap = static_cast<std::uint8_t>((next_index_ / kSlotsPerChannel) & kLapMask);
+
+    SPDLOG_DEBUG("Channel {} inspecting slot {} index {} lap {} expected {}", tid_,
+                 static_cast<unsigned>(slot_index), static_cast<unsigned long long>(next_index_),
+                 static_cast<int>(observed_lap), static_cast<int>(expected_lap));
+
+    if (!aligned_) {
+      const std::size_t slot = static_cast<std::size_t>(next_index_ & kSlotMask);
+      next_index_ = static_cast<std::uint64_t>(observed_lap) * kSlotsPerChannel + slot;
+      aligned_ = true;
+      expected_lap = observed_lap;
+      event.index = next_index_;
+      SPDLOG_DEBUG("Channel {} initial align -> index {} lap {}", tid_,
+                   static_cast<unsigned long long>(next_index_), static_cast<int>(observed_lap));
+    } else {
+      if (observed_lap < expected_lap) {
+        SPDLOG_DEBUG("Channel {} waiting: observed lap {} < expected {}", tid_,
+                     static_cast<int>(observed_lap), static_cast<int>(expected_lap));
+        return false;
+      }
+      if (observed_lap > expected_lap) {
+        SPDLOG_WARN("Channel {} catching up: expected lap {} but saw {}", tid_,
+                    static_cast<int>(expected_lap), static_cast<int>(observed_lap));
+        const std::size_t slot = static_cast<std::size_t>(next_index_ & kSlotMask);
+        next_index_ = static_cast<std::uint64_t>(observed_lap) * kSlotsPerChannel + slot;
+        expected_lap = observed_lap;
+        event.index = next_index_;
+        SPDLOG_DEBUG("Channel {} advanced index -> {} lap {}", tid_,
+                     static_cast<unsigned long long>(next_index_), static_cast<int>(observed_lap));
+      }
+    }
+  }
 
   const std::size_t nargs = event.nargs;
   if (nargs > kMaxEventArgs) {

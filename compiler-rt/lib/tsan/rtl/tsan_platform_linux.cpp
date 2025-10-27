@@ -242,7 +242,7 @@ void KillMonitor(int pid) {
 
 uptr CreateLogFile(Tid tid, uptr* out_fd) {
   // put this somewhere global
-  constexpr int LOGFILE_SIZE = 0x1000 * 64;
+  constexpr uptr LOGFILE_SIZE = kTsanChannelSlots * sizeof(u64);
 
   // Open a new file descriptor, creating the file if it does not exist
   // 0666 = read + write access for user, group and world

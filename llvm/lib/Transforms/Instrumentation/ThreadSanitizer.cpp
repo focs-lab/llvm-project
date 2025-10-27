@@ -772,7 +772,7 @@ void ThreadSanitizer::InsertEventSend(IRBuilder<> &IRB, EventType Eid,
 #endif
     auto *Idx64 = IRB.CreateCast(Instruction::ZExt, Idx, IRB.getInt64Ty());
     auto *LapNumber =
-        IRB.CreateLShr(Idx64, 12); // idx max value is 0xfff - 12 bits
+        IRB.CreateLShr(Idx64, 18); // idx max value is 0x3ffff - 18 bits
     auto *LapNumberTrunc = IRB.CreateAnd(LapNumber, 0xf); // only take 4 bits
     auto *LapNumberShift = IRB.CreateShl(
         LapNumberTrunc, 52); // first 8 bits are for event type, next is this
@@ -812,7 +812,7 @@ void ThreadSanitizer::InsertEventSend(IRBuilder<> &IRB, EventType Eid,
         }
       }
       auto *ArgIdx = IRB.CreateAdd(Idx, IRB.getInt32(1 + static_cast<int>(i)));
-      auto *ArgTrunc = IRB.CreateAnd(ArgIdx, IRB.getInt32(0xfff));
+      auto *ArgTrunc = IRB.CreateAnd(ArgIdx, IRB.getInt32(0x3ffff));
       auto *ArgPtr = IRB.CreateGEP(
           IRB.getInt64Ty(), // The type of elements in the array
           Channel,           // The pointer to the start of the array
@@ -823,7 +823,7 @@ void ThreadSanitizer::InsertEventSend(IRBuilder<> &IRB, EventType Eid,
     // Now store the event
     auto *Trunc = IRB.CreateAnd(
         Idx,
-        IRB.getInt32(0xfff)); // cannot use CreateTrunc because that performs
+        IRB.getInt32(0x3ffff)); // cannot use CreateTrunc because that performs
                                // sign extend
     auto *Ptr = IRB.CreateGEP(
         IRB.getInt64Ty(), // The type of elements in the array

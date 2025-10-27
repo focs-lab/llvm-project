@@ -38,5 +38,6 @@ class Channel {
   int tid_ = -1;
   Slot* slots_ = nullptr;
   std::uint64_t next_index_ = 0;
+  bool aligned_ = false;
 };
 }  // namespace monitor
