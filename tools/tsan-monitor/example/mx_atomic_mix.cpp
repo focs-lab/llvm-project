@@ -25,7 +25,7 @@ void thread1() {
 
 void thread2() {
   while (!ready.load(std::memory_order_acquire)) {
-    std::this_thread::yield();
+    // std::this_thread::yield();
   }
   // Safe: atomic provides HB for data2
   std::cout << "data2: " << data2 << "\n";

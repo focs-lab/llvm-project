@@ -23,7 +23,7 @@ void middle() {
   while (!sync.compare_exchange_strong(expected, 2, std::memory_order_acq_rel,
                                        std::memory_order_acquire)) {
     expected = 1;
-    std::this_thread::yield();
+    // std::this_thread::yield();
   }
   // Acquire: sees data1 from producer
   // Release: makes data2 visible to consumer
@@ -33,7 +33,7 @@ void middle() {
 
 void consumer() {
   while (sync.load(std::memory_order_acquire) != 2) {
-    std::this_thread::yield();
+    // std::this_thread::yield();
   }
   // Acquire: sees both data1 and data2
   std::cout << "Consumer saw data1=" << data1 << ", data2=" << data2 << "\n";

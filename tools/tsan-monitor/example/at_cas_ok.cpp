@@ -24,7 +24,7 @@ void reader() {
   while (!state.compare_exchange_strong(expected, 2, std::memory_order_acquire,
                                         std::memory_order_relaxed)) {
     expected = 1;
-    std::this_thread::yield();
+    // std::this_thread::yield();
   }
   std::cout << "reader saw shared_data=" << shared_data << "\n";
 }

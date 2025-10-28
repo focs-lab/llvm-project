@@ -27,8 +27,8 @@ void consumer() {
 }  // namespace
 
 int main() {
-  std::thread t2(consumer);
   std::thread t1(producer);
+  std::thread t2(consumer);
   printf("&ready = %p\n", (void*)&ready);
   printf("&shared_value = %p\n", (void*)&shared_value);
   printf("&t1 = %p\n", (void*)&t1);

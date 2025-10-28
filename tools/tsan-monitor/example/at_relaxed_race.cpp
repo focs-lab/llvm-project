@@ -19,7 +19,7 @@ void writer() {
 
 void reader() {
   while (flag.load(std::memory_order_relaxed) != 1) {
-    std::this_thread::yield();
+    // std::this_thread::yield();
   }
   // RACE: No happens-before from writer to here
   std::cout << "value=" << shared_data << "\n";

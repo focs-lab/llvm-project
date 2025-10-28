@@ -20,7 +20,7 @@ void thread1() {
 void thread2() {
   int val;
   while ((val = token.exchange(2, std::memory_order_acquire)) == 0) {
-    std::this_thread::yield();
+    // std::this_thread::yield();
   }
   // Safe: exchange with acquire sees release
   std::cout << "Thread 2 saw token=" << val << ", data=" << shared_data << "\n";
