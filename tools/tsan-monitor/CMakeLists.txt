@@ -30,12 +30,22 @@ target_compile_definitions(tsan-monitor PRIVATE SPDLOG_ACTIVE_LEVEL=SPDLOG_LEVEL
 
 target_compile_features(tsan-monitor PRIVATE cxx_std_20)
 
+include(FetchContent)
+
+# Fetch spdlog from GitHub
+FetchContent_Declare(
+  spdlog
+  GIT_REPOSITORY https://github.com/gabime/spdlog.git
+  GIT_TAG v1.14.1
+)
+
+# Make spdlog available
+FetchContent_MakeAvailable(spdlog)
+
 target_include_directories(tsan-monitor
   PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
-
-find_package(spdlog CONFIG REQUIRED)
 
 target_link_libraries(tsan-monitor
   PRIVATE

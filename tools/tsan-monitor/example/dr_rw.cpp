@@ -1,3 +1,7 @@
+// Test: Read-Write race on a shared int
+// Category: Basic Race
+// Expectation: RACE
+// Notes: One thread writes while another reads without synchronization
 #include <pthread.h>
 
 int x = 0;
@@ -22,8 +26,3 @@ int main() {
   pthread_join(t2, nullptr);
   return 0;
 }
-// Test: Read-Write race on a shared int
-// Category: Basic Race
-// Expectation: RACE
-// Notes: One thread writes while another reads without synchronization
-#include <pthread.h>
