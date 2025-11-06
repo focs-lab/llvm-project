@@ -22,8 +22,7 @@ Experiments on the performance overhead introduced by native tsan to the source 
 
 A tool: This is a benchmark tool written by Daniel [GitHub - focs-lab/tsan-benchmarks](https://github.com/focs-lab/tsan-benchmarks), but I never used this
 
-Daniel's note: 
+Daniel's note:
 
 - [Overview - HackMD](https://hackmd.io/@tsaninternals/Hy9L3J8KA/%2FWEn4z1NfQJerl0uVX9tLDg)
 - [docs.google.com/document/d/1TE0nzzpA9-XE5tDVXXbIo74fkqRCJN3VhlvkUZnuExg/edit?tab=t.0#heading=h.vi1gl9x270ub](https://docs.google.com/document/d/1TE0nzzpA9-XE5tDVXXbIo74fkqRCJN3VhlvkUZnuExg/edit?tab=t.0#heading=h.vi1gl9x270ub)
-

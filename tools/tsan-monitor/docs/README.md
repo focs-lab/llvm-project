@@ -1,5 +1,5 @@
 > Base version
-> 
+>
 > - llvm-project: `29ed6000d21e`
 > - V8: `b595bf35aca`
 
@@ -27,18 +27,18 @@ cmake -S llvm \
       -DLLVM_ENABLE_PROJECTS="clang" \
       -DLLVM_ENABLE_RUNTIMES="compiler-rt;openmp;libcxx;libcxxabi;libunwind" \
       -DLIBOMP_OMPT_SUPPORT=ON \
-	  -DBUILD_SHARED_LIBS=OFF \
+   -DBUILD_SHARED_LIBS=OFF \
       -DLLVM_BINUTILS_INCDIR=/usr/include \
       -DCMAKE_C_COMPILER_LAUNCHER=ccache \
       -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
       -DLLVM_TARGETS_TO_BUILD=AArch64 \
-	  -DCOMPILER_RT_INCLUDE_TESTS=ON
+   -DCOMPILER_RT_INCLUDE_TESTS=ON
 ninja -C build -j 8
 
 # Build and compile monitor
 cmake -S tools/tsan-monitor \
-	  -B build/tsan-monitor \
-	  -G Ninja
+   -B build/tsan-monitor \
+   -G Ninja
 cmake --build build/tsan-monitor -- -j 8
 ```
 
@@ -57,18 +57,18 @@ cmake -S llvm \
       -DLLVM_ENABLE_PROJECTS="clang" \
       -DLLVM_ENABLE_RUNTIMES="compiler-rt;openmp;libcxx;libcxxabi;libunwind" \
       -DLIBOMP_OMPT_SUPPORT=ON \
-	  -DBUILD_SHARED_LIBS=OFF \
+   -DBUILD_SHARED_LIBS=OFF \
       -DLLVM_BINUTILS_INCDIR=/usr/include \
       -DCMAKE_C_COMPILER_LAUNCHER=ccache \
       -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
       -DLLVM_TARGETS_TO_BUILD=X86 \
-	  -DCOMPILER_RT_INCLUDE_TESTS=ON
+   -DCOMPILER_RT_INCLUDE_TESTS=ON
 ninja -C build -j 96
 
 # Build and compile monitor
 cmake -S tools/tsan-monitor \
-	  -B build/tsan-monitor \
-	  -G Ninja
+   -B build/tsan-monitor \
+   -G Ninja
 cmake --build build/tsan-monitor -- -j 16
 ```
 
@@ -114,11 +114,11 @@ int main() {
 ```bash
 # Compile using our own clang++
 /work/llvm-project-focs/build/bin/clang++ \
-	-std=c++11 \
-	-pthread \
-	-fsanitize=thread -g \
-	/work/llvm-project-focs/tools/tsan-monitor/example/dr_rw.cpp -o \
-	/work/llvm-project-focs/tools/tsan-monitor/example/dr_rw
+ -std=c++11 \
+ -pthread \
+ -fsanitize=thread -g \
+ /work/llvm-project-focs/tools/tsan-monitor/example/dr_rw.cpp -o \
+ /work/llvm-project-focs/tools/tsan-monitor/example/dr_rw
 # Run with monitor
 TSAN_OPTIONS=monitor_path=/work/llvm-project-focs/build/tsan-monitor/tsan-monitor:exit_on_race=1:atexit_sleep_ms=500:monitor_verbose=1 \
 /work/llvm-project-focs/tools/tsan-monitor/example/dr_rw
@@ -145,28 +145,28 @@ About the env variables to monitor:
 
 monitor_path
 
- - Purpose: Specifies the absolute path to the tsan-monitor executable
- - Default: Empty string (monitoring disabled)
- - Function: Runtime forks a child process to launch the external monitor program
+- Purpose: Specifies the absolute path to the tsan-monitor executable
+- Default: Empty string (monitoring disabled)
+- Function: Runtime forks a child process to launch the external monitor program
 
 exit_on_race
 
- - Purpose: Controls program behavior when race is detected
- - Values: 1 = exit immediately on race detection, 0 = continue execution
- - Function: Enables race-triggered program termination via signal/sentinel file mechanism
+- Purpose: Controls program behavior when race is detected
+- Values: 1 = exit immediately on race detection, 0 = continue execution
+- Function: Enables race-triggered program termination via signal/sentinel file mechanism
 
 atexit_sleep_ms
 
- - Purpose: Wait time in milliseconds before program exit
- - Default: 1000ms
- - Function: Creates a polling window at exit to catch "at-exit" data races; polls every 10ms for race signals
+- Purpose: Wait time in milliseconds before program exit
+- Default: 1000ms
+- Function: Creates a polling window at exit to catch "at-exit" data races; polls every 10ms for race signals
 
 monitor_verbose
 
- - Purpose: Enable verbose logging for monitor-mode runtime communication
- - Default: false
- - Function: Controls debug output (MDPrintf) showing monitor startup, waiting, and communication details
- 
+- Purpose: Enable verbose logging for monitor-mode runtime communication
+- Default: false
+- Function: Controls debug output (MDPrintf) showing monitor startup, waiting, and communication details
+
 ## How to test
 
 ### Functional test (DEBUG)
@@ -635,23 +635,23 @@ cmake -S . -B build -DCMAKE_CXX_STANDARD=17
 cmake --build build -- -j8
 # Build with tsan
 cmake -S . -B build-tsan \
-	-DCMAKE_CXX_STANDARD=17 \
-	-DCMAKE_C_COMPILER=clang \
-	-DCMAKE_CXX_COMPILER=clang++ \
-	-DCMAKE_C_COMPILER_LAUNCHER=ccache \
-	-DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
-	-DCMAKE_CXX_FLAGS="-fsanitize=thread -g" \
-	-DCMAKE_C_FLAGS="-fsanitize=thread -g"
+ -DCMAKE_CXX_STANDARD=17 \
+ -DCMAKE_C_COMPILER=clang \
+ -DCMAKE_CXX_COMPILER=clang++ \
+ -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+ -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+ -DCMAKE_CXX_FLAGS="-fsanitize=thread -g" \
+ -DCMAKE_C_FLAGS="-fsanitize=thread -g"
 cmake --build build-tsan -- -j8
 # Build with tsan and monitor
 cmake -S . -B build-tsan-monitor \
-	-DCMAKE_CXX_STANDARD=17 \
-	-DCMAKE_C_COMPILER=/work/Course/Capstone/tsan/llvm-project-focs/build/bin/clang \
-	-DCMAKE_CXX_COMPILER=/work/Course/Capstone/tsan/llvm-project-focs/build/bin/clang++ \
-	-DCMAKE_C_COMPILER_LAUNCHER=ccache \
-	-DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
-	-DCMAKE_CXX_FLAGS="-fsanitize=thread -g" \
-	-DCMAKE_C_FLAGS="-fsanitize=thread -g"
+ -DCMAKE_CXX_STANDARD=17 \
+ -DCMAKE_C_COMPILER=/work/Course/Capstone/tsan/llvm-project-focs/build/bin/clang \
+ -DCMAKE_CXX_COMPILER=/work/Course/Capstone/tsan/llvm-project-focs/build/bin/clang++ \
+ -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+ -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+ -DCMAKE_CXX_FLAGS="-fsanitize=thread -g" \
+ -DCMAKE_C_FLAGS="-fsanitize=thread -g"
 cmake --build build-tsan-monitor -- -j8
 ```
 
@@ -668,6 +668,7 @@ Comprehensive Workload Simulation:
 - Different data sizes and compression settings
 
 Detailed Performance Metrics:
+
 - Throughput (operations per second)
 - Latency distribution (min, max, percentiles)
 - Database size and file statistics
@@ -748,32 +749,32 @@ Steps to build RocksDB:
 cd /work/code && git clone https://github.com/facebook/rocksdb.git
 # Install dependencies
 sudo apt-get install \
-	libgflags-dev \
-	libsnappy-dev \
-	zlib1g-dev \
-	libbz2-dev \
-	liblz4-dev \
-	libzstd-dev
+ libgflags-dev \
+ libsnappy-dev \
+ zlib1g-dev \
+ libbz2-dev \
+ liblz4-dev \
+ libzstd-dev
 # Build without tsan
 cmake -S . -B build -G Ninja
 cmake --build build -- -j8
 # Build with tsan
 cmake -S . -B build-tsan -G Ninja \
-	-DCMAKE_C_COMPILER=clang \
-	-DCMAKE_CXX_COMPILER=clang++ \
-	-DCMAKE_C_COMPILER_LAUNCHER=ccache \
-	-DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
-	-DCMAKE_CXX_FLAGS="-fsanitize=thread -g" \
-	-DCMAKE_C_FLAGS="-fsanitize=thread -g"
+ -DCMAKE_C_COMPILER=clang \
+ -DCMAKE_CXX_COMPILER=clang++ \
+ -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+ -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+ -DCMAKE_CXX_FLAGS="-fsanitize=thread -g" \
+ -DCMAKE_C_FLAGS="-fsanitize=thread -g"
 cmake --build build-tsan -- -j8
 # Build without tsan and monitor
 cmake -S . -B build-tsan-monitor -G Ninja \
-	-DCMAKE_C_COMPILER=/work/Course/Capstone/tsan/llvm-project-focs/build/bin/clang \
-	-DCMAKE_CXX_COMPILER=/work/Course/Capstone/tsan/llvm-project-focs/build/bin/clang++ \
-	-DCMAKE_C_COMPILER_LAUNCHER=ccache \
-	-DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
-	-DCMAKE_CXX_FLAGS="-fsanitize=thread -g" \
-	-DCMAKE_C_FLAGS="-fsanitize=thread -g"
+ -DCMAKE_C_COMPILER=/work/Course/Capstone/tsan/llvm-project-focs/build/bin/clang \
+ -DCMAKE_CXX_COMPILER=/work/Course/Capstone/tsan/llvm-project-focs/build/bin/clang++ \
+ -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+ -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+ -DCMAKE_CXX_FLAGS="-fsanitize=thread -g" \
+ -DCMAKE_C_FLAGS="-fsanitize=thread -g"
 cmake --build build-tsan-monitor -- -j8
 ```
 
@@ -962,7 +963,7 @@ Steps to use `llvm-lit`:
 
 `llvm-lit` needs a specific version of `libc++.a`, which should be built in `build/runtimes/runtimes-bins/compiler-rt/lib/tsan/libcxx_tsan_x86_64/lib/libc++.a`
 
-Build llvm like [above](#Build), you can find `llvm-lit` in `build/bin/` folder
+Build llvm like [above](#build), you can find `llvm-lit` in `build/bin/` folder
 
 Then build the specific `libc++.a`
 
@@ -994,5 +995,6 @@ Then you can run the case
 
 ## Others
 
-- [Daniel's work](./Daniel's work.md)
-- [Known problems](./Known problems.md)
+- [Daniel's work](./Daniels_work.md)
+- [Known problems](./Known_problems.md)
+

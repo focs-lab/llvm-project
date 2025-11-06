@@ -91,7 +91,7 @@ void producer() {
   
 void consumer() {  
   while (ready.load(std::memory_order_acquire) != 1) {  
-	  ;
+   ;
   }  
 }  
 }  // namespace  
@@ -115,3 +115,4 @@ int main() {
 // NOTE: you can use `example/run.py` to debug and see what
 // happens in monitor, and find the image of each channels.
 ```
+
