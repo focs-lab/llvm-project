@@ -937,7 +937,7 @@ ls -lh build/db_bench build-tsan/db_bench build-tsan-monitor/db_bench
 # Compilation time
 time cmake --build build -- -j8 # real 31.220s
 time cmake --build build-tsan -- -j8 # real 43.622s
-time cmake --build build-tsan-monitor -- -j8 # real 
+time cmake --build build-tsan-monitor -- -j8 # real 7m48.465s
 # Binary/Library Size
 ls -lh build/librocksdb.a build-tsan/librocksdb.a build-tsan-monitor/librocksdb.a
 -rw-r--r-- 1 root root 484M Oct 25 15:15 build-tsan-monitor/librocksdb.a
