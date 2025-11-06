@@ -42,6 +42,8 @@ MonitorApp::~MonitorApp() {
 }
 
 int MonitorApp::Run() {
+  // This is the long-running control loop: wait for channel files to appear,
+  // launch readers for them, and stop once the analyzer drained everything.
   if (directory_.empty()) {
     std::cerr << "monitor directory not specified" << std::endl;
     return EXIT_FAILURE;
@@ -76,6 +78,7 @@ int MonitorApp::Run() {
 }
 
 void MonitorApp::RefreshChannels() {
+  // Walk the directory exported by the runtime and register every new tid.
   for (const auto& entry : std::filesystem::directory_iterator(directory_)) {
     if (!entry.is_regular_file()) {
       continue;
@@ -108,7 +111,7 @@ void MonitorApp::RefreshChannels() {
     }
 
     if (tid == 0 && !handshake_sent_.exchange(true)) {
-      // Thread 0 call only
+      // Let the runtime know the monitor is listening so it can resume.
       channel->SignalReady();
     }
 
@@ -142,6 +145,8 @@ void MonitorApp::StopAllReaders() {
 }
 
 bool MonitorApp::AllChannelsRegistered() const {
+  // When the program terminates we need to ensure every file already has a
+  // reader; otherwise we might race with late threads and drop events.
   for (const auto& entry : std::filesystem::directory_iterator(directory_)) {
     if (!entry.is_regular_file()) {
       continue;

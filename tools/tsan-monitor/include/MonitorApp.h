@@ -12,6 +12,9 @@
 #include "SyncTokenManager.h"
 
 namespace monitor {
+// MonitorOptions describes how the out-of-process monitor should attach to the
+// instrumented program (target pid, where its channel files live, how often to
+// scan for new threads, verbosity, and whether a detected race stops execution).
 struct MonitorOptions {
   pid_t pid = -1;
   std::filesystem::path directory;
@@ -20,6 +23,12 @@ struct MonitorOptions {
   RaceAction race_action = RaceAction::kStop;
 };
 
+// MonitorApp drives the entire monitoring session:
+//   * discovers per-thread channel files emitted by the runtime
+//   * spawns Reader threads that translate ring-buffer slots into Events
+//   * feeds events through the Scheduler/Analyzer pipeline
+//   * emits race reports and propagates stop/continue decisions
+// It exits once the instrumented process terminates and all events are drained.
 class MonitorApp {
  public:
   explicit MonitorApp(MonitorOptions options);

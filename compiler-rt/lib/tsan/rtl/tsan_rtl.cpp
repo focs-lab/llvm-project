@@ -765,10 +765,12 @@ void Initialize(ThreadState *thr) {
 #endif
 
 #if !SANITIZER_GO
+  // Global ticket pools that the compiler pass uses for payload metadata.
   __tsan_atomic_counters = reinterpret_cast<u32*>(CreateCountersArray());
   __tsan_mutex_counters = reinterpret_cast<u32*>(CreateCountersArray());
 #endif
 
+  // Spawn the optional out-of-process monitor and remember its pid.
   int monitor_pid = StartMonitor();
   ctx->monitor_pid = monitor_pid;
 
@@ -789,6 +791,7 @@ void Initialize(ThreadState *thr) {
     __tsan_channel_idx++;
 
     // Install signal handler for race detection (must be after monitor is ready)
+    // so SIGUSR1 can break the main program out immediately on a report.
     struct sigaction sa;
     sa.sa_handler = RaceDetectedSignalHandler;
     sigemptyset(&sa.sa_mask);

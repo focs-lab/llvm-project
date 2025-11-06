@@ -47,6 +47,8 @@ std::string_view Trim(std::string_view s) {
   return s.substr(start, end - start);
 }
 
+// TSAN_OPTIONS feeds both the runtime and the monitor. Here we only extract the
+// monitor-related keys so the CLI remains minimal and CI-friendly.
 EnvOverrides ParseEnvOverrides() {
   EnvOverrides cfg;
   const char* tsan_opts = std::getenv("TSAN_OPTIONS");
@@ -95,6 +97,8 @@ EnvOverrides ParseEnvOverrides() {
   return cfg;
 }
 
+// Entry point: resolve the traced pid, fold in TSAN_OPTIONS overrides, then
+// launch MonitorApp until the target exits.
 int main(int argc, char** argv) {
   if (argc <= 1) {
     PrintUsage();

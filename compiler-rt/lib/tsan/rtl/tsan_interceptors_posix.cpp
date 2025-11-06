@@ -1043,6 +1043,7 @@ extern "C" void *__tsan_thread_start_func(void *arg) {
     Processor *proc = ProcCreate();
     ProcWire(proc, thr);
     ThreadStart(thr, p->tid, GetTid(), ThreadType::Regular);
+    // Send ThreadStart event to monitor for proper HB synchronization
     __tsan_channel_send_thread_start();
     p->started.Post();
   }
@@ -1111,8 +1112,7 @@ TSAN_INTERCEPTOR(int, pthread_create,
     //    before the new thread got a chance to acquire from it in ThreadStart.
     p.created.Post();
     p.started.Wait();
-    // After child has started, send a Spawn event via the channel with the
-    // child's TSan tid so the monitor can propagate HB to the child.
+    // Send Spawn event to monitor with child's TSan tid for HB propagation
     __tsan_channel_send_spawn((u64)p.tid);
   }
   if (attr == &myattr)
@@ -1128,8 +1128,7 @@ TSAN_INTERCEPTOR(int, pthread_join, void *th, void **ret) {
   ThreadIgnoreEnd(thr);
   if (res == 0) {
     ThreadJoin(thr, pc, tid);
-    // Send a Join event via the channel with the child's TSan tid so the
-    // monitor can propagate HB back to the parent.
+    // Send Join event to monitor with child's TSan tid for HB propagation back to parent
     __tsan_channel_send_join((u64)tid);
   }
   return res;

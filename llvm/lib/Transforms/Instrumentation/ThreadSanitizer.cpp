@@ -272,6 +272,7 @@ void ThreadSanitizer::initialize(Module &M, const TargetLibraryInfo &TLI) {
   IntptrTy = DL.getIntPtrType(Ctx);
 
   IRBuilder<> IRB(Ctx);
+  // Per-thread ring buffer that the monitor consumes.
   auto *ChannelPtr = M.getOrInsertGlobal("__tsan_channel_ptr", IRB.getPtrTy(), [&] {
     auto *GV = new GlobalVariable(M, IRB.getPtrTy(), /*isConstant=*/false,
                                   GlobalValue::ExternalLinkage, nullptr,
@@ -281,6 +282,7 @@ void ThreadSanitizer::initialize(Module &M, const TargetLibraryInfo &TLI) {
     return GV;
   });
   TsanChannelPtr = cast<GlobalVariable>(ChannelPtr);
+  // Thread-local write index into the channel slots.
   auto *ChannelIdx = M.getOrInsertGlobal("__tsan_channel_idx", IRB.getInt32Ty(), [&] {
     auto *GV = new GlobalVariable(M, IRB.getInt32Ty(), /*isConstant=*/false,
                                   GlobalValue::ExternalLinkage, nullptr,
@@ -290,6 +292,7 @@ void ThreadSanitizer::initialize(Module &M, const TargetLibraryInfo &TLI) {
     return GV;
   });
   TsanChannelIdx = cast<GlobalVariable>(ChannelIdx);
+  // Global counter array used to throttle atomic payload sizes.
   auto *AtomicCounters =
       M.getOrInsertGlobal("__tsan_atomic_counters", IRB.getPtrTy(), [&] {
         auto *GV = new GlobalVariable(M, IRB.getPtrTy(), /*isConstant=*/false,
@@ -300,6 +303,7 @@ void ThreadSanitizer::initialize(Module &M, const TargetLibraryInfo &TLI) {
       });
   TsanAtomicCounters = cast<GlobalVariable>(AtomicCounters);
 
+  // Global counter array used to disambiguate mutex lock/unlock pairs.
   auto *MutexCounters =
       M.getOrInsertGlobal("__tsan_mutex_counters", IRB.getPtrTy(), [&] {
         auto *GV = new GlobalVariable(M, IRB.getPtrTy(), /*isConstant=*/false,
@@ -708,6 +712,7 @@ Value* ThreadSanitizer::FetchAndUpdateCounter(IRBuilder<> &IRB, Value *Addr,
   return IRB.CreateZExt(Next, IRB.getInt64Ty());
 }
 
+// Encode the event id and pointer into the 64-bit channel header.
 Value* ThreadSanitizer::MakeEvent(IRBuilder<> &IRB, EventType Eid, Value *Addr) {
   auto *Id = IRB.CreateShl(IRB.getInt64(Eid), 56);
   auto *AddrCast = IRB.CreateCast(Instruction::PtrToInt, Addr, IRB.getInt64Ty());
@@ -717,6 +722,7 @@ Value* ThreadSanitizer::MakeEvent(IRBuilder<> &IRB, EventType Eid, Value *Addr) 
   return Event;
 }
 
+// Atomics carry a per-address counter in slot 0 so the monitor can order writes.
 void ThreadSanitizer::InsertAtomicEventSend(IRBuilder<> &IRB, EventType Eid,
                                             Value *Addr,
                                             ArrayRef<Value *> Payload) {
@@ -727,6 +733,7 @@ void ThreadSanitizer::InsertAtomicEventSend(IRBuilder<> &IRB, EventType Eid,
   InsertEventSend(IRB, Eid, Addr, Args);
 }
 
+// Generic helper that writes a header plus optional payload words into the channel.
 void ThreadSanitizer::InsertEventSend(IRBuilder<> &IRB, EventType Eid) {
   SmallVector<Value *, 1> Args;
   InsertEventSend(IRB, Eid, nullptr, Args);

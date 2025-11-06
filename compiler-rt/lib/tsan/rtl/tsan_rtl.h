@@ -82,22 +82,29 @@ static constexpr u8 kTsanEventThreadStart = 28;
 static inline void __tsan_channel_send_event_with_addr(u8 eid, uptr addr,
                                                        const u64 *args,
                                                        int nargs) {
+  // Early exit if monitor mode is not enabled
   if (!__tsan_channel_ptr)
     return;
 
   u32 idx = __tsan_channel_idx;
-  u64 lap = (static_cast<u64>(idx) >> kTsanChannelShift) & 0xF; // 4-bit lap number
+  // Extract 4-bit lap number from logical index (18-bit shift for 262K slots)
+  u64 lap = (static_cast<u64>(idx) >> kTsanChannelShift) & 0xF;
 
+  // Write event arguments first (relaxed ordering - visibility comes from header)
   for (int i = 0; i < nargs; ++i) {
-    u32 slot = (idx + 1 + static_cast<u32>(i)) & kTsanChannelMask; // 32768-slot ring
+    u32 slot = (idx + 1 + static_cast<u32>(i)) & kTsanChannelMask;
     u64 value = args ? args[i] : 0ULL;
     atomic_store_relaxed(&__tsan_channel_ptr[slot], value);
   }
 
+  // Construct 64-bit event header: [EventType:8][Lap:4][Reserved:4][Address:48]
   const u64 addr48 = static_cast<u64>(addr) & ((1ULL << 48) - 1);
   u64 header = (static_cast<u64>(eid) << 56) | (lap << 52) | addr48;
+
+  // Release store of header makes all arguments visible to monitor
   atomic_store(&__tsan_channel_ptr[idx & kTsanChannelMask], header, memory_order_release);
 
+  // Advance logical index by header + arguments
   __tsan_channel_idx = idx + 1 + static_cast<u32>(nargs);
 }
 
@@ -106,20 +113,24 @@ static inline void __tsan_channel_send_event_args(u8 eid, const u64 *args,
   __tsan_channel_send_event_with_addr(eid, 0, args, nargs);
 }
 
+// Send ThreadSpawn event after parent thread creates child
 static inline void __tsan_channel_send_spawn(u64 child_tid) {
   const u64 args[1] = {child_tid};
   __tsan_channel_send_event_args(kTsanEventThreadSpawn, args, 1);
 }
 
+// Send ThreadStart event when child thread begins execution
 static inline void __tsan_channel_send_thread_start() {
   __tsan_channel_send_event_args(kTsanEventThreadStart, nullptr, 0);
 }
 
+// Send ThreadJoin event when parent thread waits for child
 static inline void __tsan_channel_send_join(u64 child_tid) {
   const u64 args[1] = {child_tid};
   __tsan_channel_send_event_args(kTsanEventThreadJoin, args, 1);
 }
 
+// Send ThreadExit event when thread terminates (explicit or implicit)
 static inline void __tsan_channel_send_exit() {
   __tsan_channel_send_event_args(kTsanEventThreadExit, nullptr, 0);
 }

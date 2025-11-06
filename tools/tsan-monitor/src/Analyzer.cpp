@@ -6,6 +6,10 @@
 #include <iostream>
 
 namespace monitor {
+// Process() is the single entry point from the Scheduler: it updates per-thread
+// logical clocks, mirrors synchronization edges, and raises reports once a
+// conflicting access pair is observed. It must be deterministic because the
+// monitor can replay the channel offline when debugging failures.
 AnalyzerResult Analyzer::Process(const Event& event) {
   if (verbose_) {
     // PrintEvent(event);
@@ -93,13 +97,17 @@ AnalyzerResult Analyzer::Process(const Event& event) {
 }
 
 Analyzer::ThreadState& Analyzer::GetThreadState(int tid) {
+  // The map auto-creates entries; Analyzer::ThreadState has sensible defaults.
   return threads_[tid];
 }
 
 AddressState& Analyzer::GetAddressState(std::uint64_t address) {
+  // AddressState keeps ownership of the vector clock snapshots per location.
   return addresses_[address];
 }
 
+// Reads check the last write, then snapshot their own epoch/value into the
+// read-set so a later write can detect cross-thread conflicts.
 bool Analyzer::HandleRead(const Event& event, ThreadState& thread_state,
                           AddressState& address_state,
                           const Epoch& current_epoch) {
@@ -122,6 +130,8 @@ bool Analyzer::HandleRead(const Event& event, ThreadState& thread_state,
   return race_detected;
 }
 
+// Writes compare against the previous writer and every outstanding reader, then
+// become the new "last write" for the address, clearing transient readers.
 bool Analyzer::HandleWrite(const Event& event, ThreadState& thread_state,
                            AddressState& address_state,
                            const Epoch& current_epoch) {
@@ -313,13 +323,24 @@ void Analyzer::HandleAtomicLoad(const Event& event,
 
 void Analyzer::HandleAtomicStore(const Event& event,
                                  Analyzer::ThreadState& thread_state) {
+  //
+  // ATOMIC STORE HANDLING
+  // =====================
+  // Atomic stores with release semantics establish happens-before relationships.
+  // We publish synchronization tokens that later acquire operations can consume.
+  //
   const std::uint64_t count = ExtractCount(event);
   const std::uint32_t mo = ExtractMemoryOrder(event);
+
+  // For release semantics, publish synchronization token
   if (sync_token_mgr_ && IsReleaseOrder(mo)) {
     sync_token_mgr_->PublishAtomic(event.address, count, thread_state.clock,
                                    event.tid, mo);
   }
+
+  // Advance thread's vector clock
   thread_state.clock.Tick(event.tid);
+
   SPDLOG_DEBUG("[Analyzer] AtomicStore: T{} addr=0x{:x} count={} mo={} VC={}",
                event.tid, event.address, count, mo,
                thread_state.clock.ToString());

@@ -21,6 +21,9 @@ void Reader::Stop() {
 }
 
 void Reader::Run() {
+  // Tight polling loop: read channel slots into events and forward them to the
+  // central EventQueue. Sleeping keeps CPU usage in check when the producer is
+  // idle.
   while (!stop_.load(std::memory_order_acquire)) {
     Event event;
     if (!channel_->TryRead(event)) {

@@ -207,6 +207,7 @@ static NOINLINE void MapRodata(char* buffer, uptr size) {
   internal_close(fd);
 }
 
+// Launch the external race monitor so the runtime can stream events to it.
 int StartMonitor() {
   MDPrintf("StartMonitor\n");
   const char* monitor_path = flags()->monitor_path;
@@ -235,11 +236,13 @@ int StartMonitor() {
   return pid;
 }
 
+// Best-effort termination of the helper process.
 void KillMonitor(int pid) {
   if (pid == -1) return;
   kill(pid, SIGKILL);
 }
 
+// Create and mmap the per-thread channel backing file.
 uptr CreateLogFile(Tid tid, uptr* out_fd) {
   // put this somewhere global
   constexpr uptr LOGFILE_SIZE = kTsanChannelSlots * sizeof(u64);
@@ -275,10 +278,12 @@ uptr CreateLogFile(Tid tid, uptr* out_fd) {
   return mem;
 }
 
+// Close the descriptor that backs the mapped channel.
 void CloseLogFile(uptr fd) {
   internal_close(fd);
 }
 
+// Reserve a big zeroed array that atomics/mutexes use for ticket numbers.
 uptr CreateCountersArray() {
   uptr mem = internal_mmap(
 		NULL,

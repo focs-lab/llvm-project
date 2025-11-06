@@ -34,10 +34,10 @@ class Channel {
 
   bool DecodeHeader(std::uint64_t header, Event& event) const;
 
-  std::filesystem::path path_;
-  int tid_ = -1;
-  Slot* slots_ = nullptr;
-  std::uint64_t next_index_ = 0;
-  bool aligned_ = false;
+  std::filesystem::path path_;  // Path to channel file
+  int tid_ = -1;                // Thread ID for this channel
+  Slot* slots_ = nullptr;        // Memory-mapped circular buffer
+  std::uint64_t next_index_ = 0; // Logical index in circular buffer
+  bool aligned_ = false;         // Whether lap alignment has been performed
 };
 }  // namespace monitor

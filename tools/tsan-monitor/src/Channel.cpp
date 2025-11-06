@@ -18,6 +18,9 @@ constexpr std::uint64_t kAddrMask = (1ULL << 48) - 1;
 constexpr std::uint64_t kLapMask = 0xF;
 }  // namespace
 
+// Each Channel instance is backed by the mmapped ring buffer file produced by
+// the runtime for a single TSan tid. Open() wires the mapping and installs a
+// custom deleter so we always unmap/close once the monitor detaches.
 std::shared_ptr<Channel> Channel::Open(const std::filesystem::path& path,
                                        int tid, std::string& error) {
   const int fd = ::open(path.c_str(), O_RDWR);
@@ -118,14 +121,20 @@ bool Channel::TryRead(Event& event) {
     return false;
   }
 
+  // Calculate physical slot index using circular buffer masking
   const std::size_t slot_index =
       static_cast<std::size_t>(next_index_ & kSlotMask);
+
+  // Load event header with acquire semantics to ensure we see complete events
   const std::uint64_t header =
       slots_[slot_index].load(std::memory_order_acquire);
+
+  // Empty slot indicates no event is ready yet
   if (header == 0) {
     return false;
   }
 
+  // Decode header to extract event information (type, lap, address)
   if (!DecodeHeader(header, event)) {
     return false;
   }
@@ -134,6 +143,7 @@ bool Channel::TryRead(Event& event) {
   event.index = next_index_;
   event.tid = tid_;
 
+  // Special handling for sentinel events that don't require lap validation
   if (event.id == EventId::kMonitorReady ||
       event.id == EventId::kProgramEndMarker) {
     ++next_index_;
@@ -141,6 +151,20 @@ bool Channel::TryRead(Event& event) {
   }
 
   {
+    //
+    // INTELLIGENT LAP HANDLING ALGORITHM
+    // ===================================
+    //
+    // Each slot records a 4-bit "lap" (0-15) so the monitor can distinguish stale
+    // data after the producer wraps around the circular buffer. This prevents the
+    // monitor from processing old events multiple times or getting stuck.
+    //
+    // The algorithm handles three key scenarios:
+    // 1. Initial alignment when monitor starts mid-execution
+    // 2. Skipping old lap events that should be discarded
+    // 3. Catching up when producer laps have advanced beyond monitor
+    //
+
     const std::uint8_t observed_lap = event.lap;
     std::uint8_t expected_lap = static_cast<std::uint8_t>((next_index_ / kSlotsPerChannel) & kLapMask);
 
@@ -149,6 +173,13 @@ bool Channel::TryRead(Event& event) {
                  static_cast<int>(observed_lap), static_cast<int>(expected_lap));
 
     if (!aligned_) {
+      //
+      // SCENARIO 1: INITIAL ALIGNMENT
+      // ==============================
+      // When the monitor first starts, next_index_ = 0 but the producer may
+      // already be on lap 5, 9, etc. We need to align to the current lap
+      // without losing the current slot position.
+      //
       const std::size_t slot = static_cast<std::size_t>(next_index_ & kSlotMask);
       next_index_ = static_cast<std::uint64_t>(observed_lap) * kSlotsPerChannel + slot;
       aligned_ = true;
@@ -158,11 +189,24 @@ bool Channel::TryRead(Event& event) {
                    static_cast<unsigned long long>(next_index_), static_cast<int>(observed_lap));
     } else {
       if (observed_lap < expected_lap) {
+        //
+        // SCENARIO 2: OLD LAP EVENT (STALE DATA)
+        // =======================================
+        // The producer has already wrapped and is writing new data in this
+        // slot, but we're seeing old lap data. Wait for it to be overwritten.
+        //
         SPDLOG_DEBUG("Channel {} waiting: observed lap {} < expected {}", tid_,
                      static_cast<int>(observed_lap), static_cast<int>(expected_lap));
         return false;
       }
       if (observed_lap > expected_lap) {
+        //
+        // SCENARIO 3: PRODUCER HAS LAPPED THE MONITOR
+        // =============================================
+        // The producer is writing faster than we can read and has advanced
+        // to a newer lap. We need to "catch up" by jumping to the new lap.
+        // This may lose some events, but prevents deadlock.
+        //
         SPDLOG_WARN("Channel {} catching up: expected lap {} but saw {}", tid_,
                     static_cast<int>(expected_lap), static_cast<int>(observed_lap));
         const std::size_t slot = static_cast<std::size_t>(next_index_ & kSlotMask);
@@ -172,20 +216,40 @@ bool Channel::TryRead(Event& event) {
         SPDLOG_DEBUG("Channel {} advanced index -> {} lap {}", tid_,
                      static_cast<unsigned long long>(next_index_), static_cast<int>(observed_lap));
       }
+      //
+      // NORMAL CASE: observed_lap == expected_lap
+      // ==========================================
+      // Event is from the current lap, proceed with normal processing
+      //
     }
   }
 
+  //
+  // EVENT PAYLOAD EXTRACTION
+  // =========================
+  // After the header slot, the following slots contain event arguments:
+  // - AtomicLoad/Store: (counter, value, memory_order)
+  // - MutexLock/Unlock: (counter)
+  // - ThreadSpawn/Join: (child_tid)
+  // These reconstruct the precise operation for the analyzer.
+  //
+
   const std::size_t nargs = event.nargs;
   if (nargs > kMaxEventArgs) {
+    // Malformed event - skip it to avoid corruption
     ++next_index_;
     return false;
   }
+
+  // Load argument slots with relaxed ordering since the header acquire
+  // already establishes the happens-before relationship
   for (std::size_t i = 0; i < nargs; ++i) {
     const std::size_t arg_slot =
         static_cast<std::size_t>((next_index_ + 1 + i) & kSlotMask);
     event.args[i] = slots_[arg_slot].load(std::memory_order_relaxed);
   }
 
+  // Advance past header + all argument slots to next event
   next_index_ += 1 + nargs;
   return true;
 }

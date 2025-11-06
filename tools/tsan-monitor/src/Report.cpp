@@ -42,6 +42,9 @@ Report::Report(std::filesystem::path output_dir)
   std::filesystem::create_directories(output_dir_, ec);
 }
 
+// OnRace persists every race, but only the first one mirrors to stderr, drops a
+// sentinel file (for the runtime to poll), and delivers SIGUSR1 back to the
+// instrumented process so it can take immediate action.
 void Report::OnRace(const RaceEventInfo& info) {
   const auto key = MakeKey(info);
   std::string content = Format(info);
@@ -128,6 +131,8 @@ void Report::EmitToStderrOnce(const std::string& content) {
 
 void Report::CreateRaceSentinel() {
   if (sentinel_dir_.empty()) return;
+  // The runtime polls for /tmp/tsan.monitor.$pid/race_found; touching the file
+  // allows legacy integrations that cannot receive signals to notice a race.
   std::error_code ec;
   std::filesystem::create_directories(sentinel_dir_, ec);
   const auto p = sentinel_dir_ / "race_found";
@@ -141,6 +146,8 @@ void Report::SendRaceSignal() {
     return;
   }
 
+  // SIGUSR1 wakes the instrumented process immediately; its runtime installs a
+  // handler that flips a flag checked during shutdown.
   // Send SIGUSR1 signal to Origin process
   if (kill(origin_pid_, SIGUSR1) == 0) {
     SPDLOG_INFO("Race detection signal sent to Origin process {}", origin_pid_);
