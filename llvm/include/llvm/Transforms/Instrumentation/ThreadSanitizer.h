@@ -54,18 +54,25 @@ struct ModuleThreadSanitizerPass
 class SyncFreeInfo {
 public:
   explicit SyncFreeInfo(Module &M_, CallGraph &CG_,
-                        AnalysisManager<Function> &AM);
+                        AnalysisManager<Function> &AM_);
   bool invalidate(Module &, const PreservedAnalyses &,
                   ModuleAnalysisManager::Invalidator &) { return false; }
   bool isSyncFree(const Function *F) const {
     const auto It = IsFuncDangerousGlobal.find(F);
     return It != IsFuncDangerousGlobal.end() && !It->second;
   }
+  bool isContainsLoops(const Function *F) const {
+    const auto It = IsFuncContainsLoops.find(F);
+    return It != IsFuncContainsLoops.end() && !It->second;
+  }
 
 private:
+  void findFunsContainsLoops();
   SmallDenseMap<const Function *, bool, 8> IsFuncDangerousGlobal;
+  SmallDenseMap<const Function *, bool, 8> IsFuncContainsLoops;
   const Module &M;
   const CallGraph &CG;
+  AnalysisManager<Function> &AM;
 };
 
 } // namespace llvm

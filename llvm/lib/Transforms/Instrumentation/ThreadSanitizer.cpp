@@ -27,10 +27,11 @@
 #include "llvm/Analysis/CaptureTracking.h"
 #include "llvm/Analysis/EscapeAnalysis.h"
 #include "llvm/Analysis/LockOwnership.h"
+#include "llvm/Analysis/LoopInfo.h"
+#include "llvm/Analysis/PostDominators.h"
 #include "llvm/Analysis/SingleThreaded.h"
 #include "llvm/Analysis/TargetLibraryInfo.h"
 #include "llvm/Analysis/ValueTracking.h"
-#include "llvm/Analysis/PostDominators.h"
 #include "llvm/IR/DataLayout.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/IRBuilder.h"
@@ -135,6 +136,10 @@ static cl::opt<bool> ClUseDominanceAnalysisPostDom(
     "tsan-use-dominance-analysis-postdom", cl::init(false),
     cl::desc("Eliminate duplicating instructions which "
              "post-dominates given instruction"),
+    cl::Hidden);
+static cl::opt<bool> ClPostDomAggressive(
+    "tsan-postdom-aggressive", cl::init(false),
+    cl::desc("Allow post-dominance elimination across loops (unsafe)"),
     cl::Hidden);
 
 STATISTIC(NumInstrumentedReads, "Number of instrumented reads");
@@ -302,7 +307,7 @@ public:
       std::optional<LockOwnershipInfo *> LOI = std::nullopt,
       std::optional<SingleThreadedInfo *> STI = std::nullopt,
       const DominatorTree *DT = nullptr, const PostDominatorTree *PDT = nullptr,
-      AAResults *AA = nullptr);
+      AAResults *AA = nullptr, const LoopInfo *LI = nullptr);
 
   /// Checks if an instruction could potentially change ThreadSanitizer's
   /// synchronization state. This includes atomic operations, memory barriers,
@@ -320,6 +325,7 @@ public:
 
   static bool isInstrDangerous(const Instruction *Inst,
                                const TargetLibraryInfo &TLI,
+                               bool IsPostDom = false,
                                LockOperation *LockOp = nullptr);
 
 private:
@@ -360,13 +366,13 @@ private:
   void eliminateInstrByPrePostDominance(
       SmallVectorImpl<InstructionInfo> &AllInstr,
       const DominatorTreeBase<BasicBlock, IsPostDom> *DTBase, AAResults *AA,
-      const TargetLibraryInfo &TLI);
+      const TargetLibraryInfo &TLI, const LoopInfo *LI);
 
   template <bool IsPostDom>
   bool isPathClear(Instruction *StartInst, Instruction *EndInst,
                    const DominatorTreeBase<BasicBlock, IsPostDom> *DTBase,
                    const TargetLibraryInfo &TLI,
-                   LockOperation *LockOp = nullptr);
+                   LockOperation *LockOp, const LoopInfo *LI);
 
   bool addrPointsToConstantData(Value *Addr);
   int getMemoryAccessFuncIndex(Type *OrigTy, Value *Addr, const DataLayout &DL);
@@ -443,10 +449,12 @@ PreservedAnalyses ThreadSanitizerPass::run(Function &F,
   DominatorTree *DT = nullptr;
   PostDominatorTree *PDT = nullptr;
   AAResults *AA = nullptr;
+  LoopInfo *LI = nullptr;
   if (ClUseDominanceAnalysis) {
     DT = &FAM.getResult<DominatorTreeAnalysis>(F);
     PDT = &FAM.getResult<PostDominatorTreeAnalysis>(F);
     AA = &FAM.getResult<AAManager>(F);
+    LI = &FAM.getResult<LoopAnalysis>(F);
   } else {
     if (ClUseDominanceAnalysisDom) {
       DT = &FAM.getResult<DominatorTreeAnalysis>(F);
@@ -455,11 +463,12 @@ PreservedAnalyses ThreadSanitizerPass::run(Function &F,
     if (ClUseDominanceAnalysisPostDom) {
       PDT = &FAM.getResult<PostDominatorTreeAnalysis>(F);
       AA = &FAM.getResult<AAManager>(F);
+      LI = &FAM.getResult<LoopAnalysis>(F);
     }
   }
 
   if (TSan.sanitizeFunction(F, FAM.getResult<TargetLibraryAnalysis>(F),
-                            std::nullopt, EAGI, LOI, STI, DT, PDT, AA))
+                            std::nullopt, EAGI, LOI, STI, DT, PDT, AA, LI))
     return PreservedAnalyses::none();
 
   return PreservedAnalyses::all();
@@ -907,7 +916,7 @@ template<bool IsPostDom>
 void ThreadSanitizer::eliminateInstrByPrePostDominance(
     SmallVectorImpl<InstructionInfo> &AllInstr,
     const DominatorTreeBase<BasicBlock, IsPostDom> *DTBase, AAResults *AA,
-    const TargetLibraryInfo &TLI) {
+    const TargetLibraryInfo &TLI, const LoopInfo *LI) {
   LLVM_DEBUG(
       dbgs() << "===========================================\n" <<
       "\n=== Starting "
@@ -994,10 +1003,10 @@ void ThreadSanitizer::eliminateInstrByPrePostDominance(
             LockOperation LockOp = LockOperation::NONE;
             if (IsPostDom)
               IsPathClear =
-                  isPathClear(CurrInst, DomInst, DTBase, TLI, &LockOp);
+                  isPathClear(CurrInst, DomInst, DTBase, TLI, &LockOp, LI);
             else
               IsPathClear =
-                  isPathClear(DomInst, CurrInst, DTBase, TLI, &LockOp);
+                  isPathClear(DomInst, CurrInst, DTBase, TLI, &LockOp, LI);
 
             LLVM_DEBUG(dbgs()
                        << "Path is " << (IsPathClear ? "clear" : "not clear")
@@ -1073,16 +1082,22 @@ void ThreadSanitizer::eliminateInstrByPrePostDominance(
 /// @param EndInst The current instruction we may be able to skip
 /// @param DTBase Dominator tree for path traversal
 /// @param TLI Target library info for checking standard functions
+/// @param LI LoopInfo (needed to check soundness of postdom)
 /// @return true if no dangerous instructions exist between DomInst and CurrInst
 template <bool IsPostDom>
 bool ThreadSanitizer::isPathClear(
     Instruction *StartInst, Instruction *EndInst,
     const DominatorTreeBase<BasicBlock, IsPostDom> *DTBase,
-    const TargetLibraryInfo &TLI, LockOperation *LockOp) {
+    const TargetLibraryInfo &TLI, LockOperation *LockOp, const LoopInfo *LI) {
   LLVM_DEBUG(dbgs() << "Checking path from " << *StartInst << " to " << *EndInst
                     << "\n");
   const BasicBlock *StartBB = StartInst->getParent();
   const BasicBlock *EndBB = EndInst->getParent();
+
+  // Check for sound postdom
+  if (IsPostDom && !ClPostDomAggressive && LI->getLoopFor(EndBB))
+    return false;
+
   LLVM_DEBUG(dbgs() << "StartBB: " << StartBB->getName() << "\t"
                     << "EndBB: " << EndBB->getName() << "\n");
 
@@ -1092,7 +1107,7 @@ bool ThreadSanitizer::isPathClear(
     LLVM_DEBUG(dbgs() << "\tisPathClear -- Checking 1: " << *I << "\n");
     if (I == EndInst && StartBB == EndBB)
       return true; // Reached target instruction in the same block
-    if (isInstrDangerous(I, TLI, LockOp))
+    if (isInstrDangerous(I, TLI, IsPostDom, LockOp))
       return false;
   }
 
@@ -1112,10 +1127,14 @@ bool ThreadSanitizer::isPathClear(
 
   while (IDomNode && IDomNode->getBlock() && IDomNode->getBlock() != DomBB) {
     BasicBlock *IntermediateBB = IDomNode->getBlock();
+    // Check for sound postdom
+    if (IsPostDom && !ClPostDomAggressive && LI->getLoopFor(IntermediateBB))
+      return false;
+
     LLVM_DEBUG(dbgs() << "Inter IDom BB " << IntermediateBB->getName() << "\n");
     for (const Instruction &InterI : *IntermediateBB) {
       LLVM_DEBUG(dbgs() << "\tisPathClear -- Checking 2: " << InterI << "\n");
-      if (isInstrDangerous(&InterI, TLI, LockOp))
+      if (isInstrDangerous(&InterI, TLI, IsPostDom, LockOp))
         return false;
     }
     IDomNode = IDomNode->getIDom();
@@ -1141,7 +1160,7 @@ bool ThreadSanitizer::isPathClear(
     LLVM_DEBUG(dbgs() << "\tisPathClear -- Checking 3: " << I << "\n");
     if (&I == EndInst)
       break;
-    if (isInstrDangerous(&I, TLI, LockOp))
+    if (isInstrDangerous(&I, TLI, IsPostDom, LockOp))
       return false;
   }
 
@@ -1162,7 +1181,7 @@ static bool isTsanAtomic(const Instruction *I) {
 /// Returns true if the instruction might change TSan's synchronization state.
 bool ThreadSanitizer::isInstrDangerous(const Instruction *Inst,
                                        const TargetLibraryInfo &TLI,
-                                       LockOperation *LockOp) {
+                                       bool IsPostDom, LockOperation *LockOp) {
   if (LockOp)
     *LockOp = LockOperation::NONE;
 
@@ -1205,6 +1224,11 @@ bool ThreadSanitizer::isInstrDangerous(const Instruction *Inst,
           // || Callee->hasFnAttribute(Attribute::ReadOnly))
         return false;
 
+      // Postdom check for soundness
+      if (IsPostDom && !ClPostDomAggressive && ModuleThreadSanitizerPass::SFI &&
+        ModuleThreadSanitizerPass::SFI->isContainsLoops(Callee))
+        return false;
+
       // Check in sync-free analysis previously done
       if (ModuleThreadSanitizerPass::SFI)
         return !ModuleThreadSanitizerPass::SFI->isSyncFree(Callee);
@@ -1237,7 +1261,7 @@ bool ThreadSanitizer::sanitizeFunction(
     std::optional<EscapeAnalysisGlobalInfo *> EAIGlobal,
     std::optional<LockOwnershipInfo *> LOI,
     std::optional<SingleThreadedInfo *> STI, const DominatorTree *DT,
-    const PostDominatorTree *PDT, AAResults *AA) {
+    const PostDominatorTree *PDT, AAResults *AA, const LoopInfo *LI) {
   LLVM_DEBUG(dbgs() << "\n%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%"
                        "%%%%%%%%%%%%%%%%%\n"
     "%%%%%%%%%%%%%%%%%%%% Func " << F.getName() << "\t%%%%%%%%%%%%%%%%%%%%%%\n"
@@ -1361,13 +1385,13 @@ bool ThreadSanitizer::sanitizeFunction(
 
   if (ClUseDominanceAnalysis) {
     // eliminateDominatingInstr(AllLoadsAndStores, DT, AA, TLI);
-    eliminateInstrByPrePostDominance(AllLoadsAndStores, DT, AA, TLI);
-    eliminateInstrByPrePostDominance(AllLoadsAndStores, PDT, AA, TLI);
+    eliminateInstrByPrePostDominance(AllLoadsAndStores, DT, AA, TLI, LI);
+    eliminateInstrByPrePostDominance(AllLoadsAndStores, PDT, AA, TLI, LI);
   } else {
     if (ClUseDominanceAnalysisDom)
-      eliminateInstrByPrePostDominance(AllLoadsAndStores, DT, AA, TLI);
+      eliminateInstrByPrePostDominance(AllLoadsAndStores, DT, AA, TLI, LI);
     if (ClUseDominanceAnalysisPostDom)
-      eliminateInstrByPrePostDominance(AllLoadsAndStores, PDT, AA, TLI);
+      eliminateInstrByPrePostDominance(AllLoadsAndStores, PDT, AA, TLI, LI);
   }
 
   //////////////////////////////////////////////////////////////////////////////
@@ -1784,10 +1808,10 @@ int ThreadSanitizer::getMemoryAccessFuncIndex(Type *OrigTy, Value *Addr,
 ///
 /// @param M_ The LLVM module to analyze
 /// @param CG_ The call graph for the module
-/// @param TLI_ Target library info for checking standard library functions
 SyncFreeInfo::SyncFreeInfo(Module &M_, CallGraph &CG_,
-                           AnalysisManager<Function> &AM)
-    : M(M_), CG(CG_) {
+                           AnalysisManager<Function> &AM_)
+    : M(M_), CG(CG_), AM(AM_) {
+  findFunsContainsLoops();
   LLVM_DEBUG(dbgs() << "\n-----------------------------------------------\n"
                     << "=== Starting sync-free analysis ===\n"
                     << "Module: " << M.getName() << "\n";);
@@ -1851,7 +1875,7 @@ SyncFreeInfo::SyncFreeInfo(Module &M_, CallGraph &CG_,
         }
 
         if (ThreadSanitizer::isInstrDangerous(
-            &I, AM.getResult<TargetLibraryAnalysis>(*F))) {
+                &I, AM.getResult<TargetLibraryAnalysis>(*F))) {
           AnySCCFuncDangerous = true;
           break;
         }
@@ -1880,4 +1904,84 @@ SyncFreeInfo::SyncFreeInfo(Module &M_, CallGraph &CG_,
                       << "\n";
              dbgs()
              << "-----------------------------------------------\n\n";);
+}
+
+void SyncFreeInfo::findFunsContainsLoops() {
+  // Initialize all functions as not dangerous
+  for (const Function &F : M)
+    IsFuncContainsLoops[&F] = false;
+
+  // Analyze strongly connected components (SCCs) of the call graph in reverse
+  // topological order. This ensures we process callees before their callers:
+  // 1. Start from leaf functions (SCCs with no outgoing edges)
+  // 2. Mark functions as dangerous if they contain sync operations
+  // 3. Propagate results up through caller-callee relationships
+  // 4. Handle recursive calls by processing SCCs as a unit until fixpoint
+  for (auto SCCI = scc_begin(&CG); !SCCI.isAtEnd(); ++SCCI) {
+    const auto &CurrentSCC = *SCCI;
+
+    // Init by non-dangerous
+    for (const CallGraphNode *CGNode : CurrentSCC) {
+      const Function *F = CGNode->getFunction();
+      if (!F || F->isDeclaration())
+        continue;
+      IsFuncContainsLoops[F] = false;
+    }
+
+    // Check if any function in the SCC calls contains an intrinsically
+    // dangerous instruction.
+    // do {
+    // IsFuncDangerousSCCOld = IsFuncDangerousGlobal;
+    bool AnySCCFuncContainsLoop = false;
+    for (const CallGraphNode *CGNode : CurrentSCC) {
+      Function *F = CGNode->getFunction();
+      const LoopInfo &LI = AM.getResult<LoopAnalysis>(*F);
+      if (!F || F->isDeclaration())
+        continue;
+      LLVM_DEBUG(dbgs() << "\nChecking function: " << F->getName() << "\n");
+
+      // If it's not sync-free already, it will never become sync-free
+      if (const auto It = IsFuncContainsLoops.find(F);
+          It != IsFuncContainsLoops.end() && It->second)
+        continue;
+
+      for (const Instruction &I : instructions(F)) {
+        LLVM_DEBUG(dbgs() << "Checking instruction: " << I << "\n");
+        // Check if it's a call, and we already know the status of the callee
+        if (const CallInst *CI = dyn_cast<CallInst>(&I)) {
+          if (const Function *Callee = CI->getCalledFunction()) {
+            // First check in FuncsInSSCMap (current SCC)
+            if (std::any_of(CurrentSCC.begin(), CurrentSCC.end(),
+                            [&Callee](const CallGraphNode *CGN) {
+                              return CGN->getFunction() == Callee;
+                            }))
+              continue;
+
+            // If not in the current SCC, check global IsFuncDangerousMap
+            if (const auto It = IsFuncContainsLoops.find(Callee);
+                It != IsFuncContainsLoops.end() && It->second) {
+              AnySCCFuncContainsLoop = true;
+              break;
+            }
+          }
+        }
+
+        if (LI.getLoopFor(I.getParent()) != nullptr) {
+          AnySCCFuncContainsLoop = true;
+          break;
+        }
+      }
+    }
+
+    // If any function in SCC is dangerous, mark all functions in SCC as
+    // dangerous
+    if (AnySCCFuncContainsLoop) {
+      for (const CallGraphNode *CGNode : CurrentSCC) {
+        const Function *F = CGNode->getFunction();
+        if (!F || F->isDeclaration())
+          continue;
+        IsFuncContainsLoops[F] = true;
+      }
+    }
+  }
 }
