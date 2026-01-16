@@ -199,7 +199,7 @@ public:
     }
   }
 
-#define INSTR_STAT_ENABLED 1
+//#define INSTR_STAT_ENABLED 1
 #ifdef INSTR_STAT_ENABLED
   ~ThreadSanitizer() {
     std::string FullPath;
