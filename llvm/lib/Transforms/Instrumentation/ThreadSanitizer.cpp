@@ -1935,10 +1935,10 @@ void SyncFreeInfo::findFunsContainsLoops() {
     bool AnySCCFuncContainsLoop = false;
     for (const CallGraphNode *CGNode : CurrentSCC) {
       Function *F = CGNode->getFunction();
-      const LoopInfo &LI = AM.getResult<LoopAnalysis>(*F);
       if (!F || F->isDeclaration())
         continue;
       LLVM_DEBUG(dbgs() << "\nChecking function: " << F->getName() << "\n");
+      const LoopInfo &LI = AM.getResult<LoopAnalysis>(*F);
 
       // If it's not sync-free already, it will never become sync-free
       if (const auto It = IsFuncContainsLoops.find(F);
