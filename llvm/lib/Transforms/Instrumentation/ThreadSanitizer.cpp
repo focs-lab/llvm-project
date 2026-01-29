@@ -24,11 +24,13 @@
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/Statistic.h"
 #include "llvm/ADT/StringExtras.h"
+#include "llvm/Analysis/AssumptionCache.h"
 #include "llvm/Analysis/CaptureTracking.h"
 #include "llvm/Analysis/EscapeAnalysis.h"
 #include "llvm/Analysis/LockOwnership.h"
 #include "llvm/Analysis/LoopInfo.h"
 #include "llvm/Analysis/PostDominators.h"
+#include "llvm/Analysis/ScalarEvolution.h"
 #include "llvm/Analysis/SingleThreaded.h"
 #include "llvm/Analysis/TargetLibraryInfo.h"
 #include "llvm/Analysis/ValueTracking.h"
@@ -51,6 +53,9 @@
 #include "llvm/Transforms/Instrumentation.h"
 #include "llvm/Transforms/Utils/EscapeEnumerator.h"
 #include "llvm/Transforms/Utils/Local.h"
+#include "llvm/Transforms/Utils/LoopPeel.h"
+#include "llvm/Transforms/Utils/LoopSimplify.h"
+#include "llvm/Transforms/Utils/LoopUtils.h"
 #include "llvm/Transforms/Utils/ModuleUtils.h"
 
 #include <llvm/ADT/SCCIterator.h>
@@ -59,7 +64,6 @@
 #include <llvm/Support/FileSystem.h>
 #include <llvm/Support/MemoryBuffer.h>
 #include <llvm/Support/Path.h>
-#include <source_location>
 
 using namespace llvm;
 
@@ -140,6 +144,11 @@ static cl::opt<bool> ClUseDominanceAnalysisPostDom(
 static cl::opt<bool> ClPostDomAggressive(
     "tsan-postdom-aggressive", cl::init(false),
     cl::desc("Allow post-dominance elimination across loops (unsafe)"),
+    cl::Hidden);
+static cl::opt<bool> ClUseLoopPeeling(
+    "tsan-use-loop-peeling", cl::init(false),
+    cl::desc(
+        "Try to peel first iteration to help dominance-based optimization"),
     cl::Hidden);
 
 STATISTIC(NumInstrumentedReads, "Number of instrumented reads");
@@ -306,8 +315,9 @@ public:
       std::optional<EscapeAnalysisGlobalInfo *> EAIGlobal = std::nullopt,
       std::optional<LockOwnershipInfo *> LOI = std::nullopt,
       std::optional<SingleThreadedInfo *> STI = std::nullopt,
-      const DominatorTree *DT = nullptr, const PostDominatorTree *PDT = nullptr,
-      AAResults *AA = nullptr, const LoopInfo *LI = nullptr);
+      DominatorTree *DT = nullptr, PostDominatorTree *PDT = nullptr,
+      AAResults *AA = nullptr, LoopInfo *LI = nullptr,
+      AssumptionCache *AC = nullptr);
 
   /// Checks if an instruction could potentially change ThreadSanitizer's
   /// synchronization state. This includes atomic operations, memory barriers,
@@ -421,6 +431,51 @@ void insertModuleCtor(Module &M) {
 }
 }  // namespace
 
+static bool tryPeelLoops(Function &F, LoopInfo *LI, ScalarEvolution *SE,
+                         DominatorTree *DT, AssumptionCache *AC) {
+  if (!LI || !SE || !DT || F.isDeclaration())
+    return false;
+  dbgs() << "Trying to peel loops in function " << F.getName() << "\n";
+  bool Changed = false;
+
+  // Collect all innermost loops
+  SmallVector<Loop *, 8> Worklist;
+  for (Loop *L : LI->getLoopsInPreorder()) {
+    if (L->isInnermost())
+      Worklist.push_back(L);
+  }
+
+  for (Loop *L : Worklist) {
+    // Put the loop into LoopSimplify form if needed.
+    if (!L->isLoopSimplifyForm()) {
+      // `simplifyLoop` returns true if it changed the CFG.
+      // Pass DT/LI/SE/AC so the analyses stay up to date.
+      if (!simplifyLoop(L, DT, LI, SE, AC, nullptr, false)) {
+        dbgs() << "Skipping peeling: cannot simplify loop " << *L << "\n";
+        continue;
+      }
+      Changed = true;
+    }
+
+    // Now that the loop is simplified, check if it can be peeled.
+    if (!canPeel(L)) {
+      dbgs() << "Cannot peel loop " << *L << "\n";
+      continue;
+    }
+
+    if (!L->isRecursivelyLCSSAForm(*DT, *LI))
+      formLCSSARecursively(*L, *DT, LI, SE);
+
+    // Peel one iteration.
+    ValueToValueMapTy LVMap;
+    if (peelLoop(L, /*PeelCount=*/1, LI, SE, *DT, AC, false, LVMap)) {
+      dbgs() << "Loop peeled: " << *L;
+      Changed = true;
+    }
+  }
+  return Changed;
+}
+
 PreservedAnalyses ThreadSanitizerPass::run(Function &F,
                                            FunctionAnalysisManager &FAM) {
   ThreadSanitizer TSan;
@@ -450,25 +505,28 @@ PreservedAnalyses ThreadSanitizerPass::run(Function &F,
   PostDominatorTree *PDT = nullptr;
   AAResults *AA = nullptr;
   LoopInfo *LI = nullptr;
-  if (ClUseDominanceAnalysis) {
+  ScalarEvolution *SE = nullptr;
+  AssumptionCache *AC = nullptr;
+  if (ClUseDominanceAnalysis || ClUseDominanceAnalysisDom ||
+      ClUseDominanceAnalysisPostDom) {
     DT = &FAM.getResult<DominatorTreeAnalysis>(F);
     PDT = &FAM.getResult<PostDominatorTreeAnalysis>(F);
     AA = &FAM.getResult<AAManager>(F);
     LI = &FAM.getResult<LoopAnalysis>(F);
-  } else {
-    if (ClUseDominanceAnalysisDom) {
-      DT = &FAM.getResult<DominatorTreeAnalysis>(F);
-      AA = &FAM.getResult<AAManager>(F);
-    }
-    if (ClUseDominanceAnalysisPostDom) {
-      PDT = &FAM.getResult<PostDominatorTreeAnalysis>(F);
-      AA = &FAM.getResult<AAManager>(F);
-      LI = &FAM.getResult<LoopAnalysis>(F);
-    }
+    SE = &FAM.getResult<ScalarEvolutionAnalysis>(F);
+    AC = &FAM.getResult<AssumptionAnalysis>(F);
   }
 
-  if (TSan.sanitizeFunction(F, FAM.getResult<TargetLibraryAnalysis>(F),
-                            std::nullopt, EAGI, LOI, STI, DT, PDT, AA, LI))
+  bool CodeChanged = false;
+  // Try to peel loops to allow domination-based optimization
+  if (ClUseLoopPeeling &&
+      (ClUseDominanceAnalysis || ClUseDominanceAnalysisDom) && LI && SE && DT)
+    CodeChanged = tryPeelLoops(F, LI, SE, DT, AC);
+
+  const bool Instrumented =
+      TSan.sanitizeFunction(F, FAM.getResult<TargetLibraryAnalysis>(F),
+                            std::nullopt, EAGI, LOI, STI, DT, PDT, AA, LI, AC);
+  if (CodeChanged || Instrumented)
     return PreservedAnalyses::none();
 
   return PreservedAnalyses::all();
@@ -1260,8 +1318,8 @@ bool ThreadSanitizer::sanitizeFunction(
     const std::optional<EscapeAnalysisInfo> &EAI,
     std::optional<EscapeAnalysisGlobalInfo *> EAIGlobal,
     std::optional<LockOwnershipInfo *> LOI,
-    std::optional<SingleThreadedInfo *> STI, const DominatorTree *DT,
-    const PostDominatorTree *PDT, AAResults *AA, const LoopInfo *LI) {
+    std::optional<SingleThreadedInfo *> STI, DominatorTree *DT,
+    PostDominatorTree *PDT, AAResults *AA, LoopInfo *LI, AssumptionCache *AC) {
   LLVM_DEBUG(dbgs() << "\n%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%"
                        "%%%%%%%%%%%%%%%%%\n"
     "%%%%%%%%%%%%%%%%%%%% Func " << F.getName() << "\t%%%%%%%%%%%%%%%%%%%%%%\n"
@@ -1384,7 +1442,6 @@ bool ThreadSanitizer::sanitizeFunction(
   }
 
   if (ClUseDominanceAnalysis) {
-    // eliminateDominatingInstr(AllLoadsAndStores, DT, AA, TLI);
     eliminateInstrByPrePostDominance(AllLoadsAndStores, DT, AA, TLI, LI);
     eliminateInstrByPrePostDominance(AllLoadsAndStores, PDT, AA, TLI, LI);
   } else {
