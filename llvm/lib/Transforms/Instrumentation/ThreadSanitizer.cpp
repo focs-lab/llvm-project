@@ -51,6 +51,7 @@
 #include "llvm/Support/MathExtras.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Transforms/Instrumentation.h"
+#include "llvm/Transforms/Utils/BasicBlockUtils.h"
 #include "llvm/Transforms/Utils/EscapeEnumerator.h"
 #include "llvm/Transforms/Utils/Local.h"
 #include "llvm/Transforms/Utils/LoopPeel.h"
@@ -149,6 +150,13 @@ static cl::opt<bool> ClUseLoopPeeling(
     "tsan-use-loop-peeling", cl::init(false),
     cl::desc(
         "Try to peel first iteration to help dominance-based optimization"),
+    cl::Hidden);
+// Enable/disable the load/store fast-path that skips calling into TSan runtime
+// when the runtime reports only one active thread.
+static cl::opt<bool> ClTsanUseActiveThreadCountFastPath(
+    "tsan-use-active-thread-count", cl::init(false),
+    cl::desc("TSan: guard load/store instrumentation with a runtime check of "
+             "__tsan_active_thread_count > 1"),
     cl::Hidden);
 
 STATISTIC(NumInstrumentedReads, "Number of instrumented reads");
@@ -353,6 +361,7 @@ private:
   };
 
   void initialize(Module &M, const TargetLibraryInfo &TLI);
+  Value *checkActiveThreadCount(IRBuilderBase &IRB, Module &M);
   bool instrumentLoadOrStore(const InstructionInfo &II, const DataLayout &DL);
   bool instrumentAtomic(Instruction *I, const DataLayout &DL);
   void disableInterceptorForInstr(Instruction *I, InstrumentationIRBuilder &IRB);
@@ -1514,6 +1523,27 @@ bool ThreadSanitizer::sanitizeFunction(
   return Res;
 }
 
+Value *ThreadSanitizer::checkActiveThreadCount(IRBuilderBase &IRB, Module &M) {
+  // External global maintained by the TSan runtime.
+  // If it's > 1, we may have multiple threads and should do the expensive check.
+  LLVMContext &Ctx = M.getContext();
+  Type *I32Ty = Type::getInt32Ty(Ctx);
+
+  // Model this as an atomic i32 so the generated load can be marked atomic.
+  // This matches the runtime's use of sanitizer_common atomics.
+  Type *AtomicI32Ty = I32Ty;
+  auto *ThreadCount = cast<GlobalVariable>(
+      M.getOrInsertGlobal("__tsan_active_thread_count", AtomicI32Ty));
+
+  LoadInst *Cnt = IRB.CreateLoad(AtomicI32Ty, ThreadCount,
+                                "tsan.active_thread_count");
+  // Runtime updates this concurrently; use an atomic acquire load to prevent
+  // undesired reordering around the check.
+  Cnt->setAtomic(AtomicOrdering::Acquire);
+
+  return IRB.CreateICmpUGT(Cnt, ConstantInt::get(I32Ty, 1), "tsan.mt");
+}
+
 bool ThreadSanitizer::instrumentLoadOrStore(const InstructionInfo &II,
                                             const DataLayout &DL) {
   InstrumentationIRBuilder IRB(II.Inst);
@@ -1580,7 +1610,18 @@ bool ThreadSanitizer::instrumentLoadOrStore(const InstructionInfo &II,
     else
       OnAccessFunc = IsWrite ? TsanUnalignedWrite[Idx] : TsanUnalignedRead[Idx];
   }
+
+  if (ClTsanUseActiveThreadCountFastPath) {
+    // Fast-path: if there's only one active thread, skip calling into TSan.
+    Value *DoCheck = checkActiveThreadCount(IRB, *II.Inst->getModule());
+    Instruction *InsertPt = II.Inst;
+    Instruction *ThenTerm = nullptr;
+    Instruction *ElseTerm = nullptr;
+    SplitBlockAndInsertIfThenElse(DoCheck, InsertPt, &ThenTerm, &ElseTerm);
+    IRB.SetInsertPoint(ThenTerm);
+  }
   IRB.CreateCall(OnAccessFunc, Addr);
+
   if (IsCompoundRW || IsWrite)
     NumInstrumentedWrites++;
   if (IsCompoundRW || !IsWrite)

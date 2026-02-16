@@ -27,6 +27,7 @@
 
 #include "sanitizer_common/sanitizer_allocator.h"
 #include "sanitizer_common/sanitizer_allocator_internal.h"
+#include "sanitizer_common/sanitizer_atomic.h"
 #include "sanitizer_common/sanitizer_asm.h"
 #include "sanitizer_common/sanitizer_common.h"
 #include "sanitizer_common/sanitizer_deadlock_detector_interface.h"
@@ -50,6 +51,9 @@
 
 // Needed for DenseMap
 #include "sanitizer_common/sanitizer_placement_new.h"
+
+// Variable to track ST/MT context in runtime
+extern "C" volatile __sanitizer::atomic_uint32_t __tsan_active_thread_count;
 
 #if SANITIZER_WORDSIZE != 64
 # error "ThreadSanitizer is supported only on 64-bit platforms"

@@ -114,6 +114,9 @@ struct OnCreatedArgs {
 };
 
 Tid ThreadCreate(ThreadState *thr, uptr pc, uptr uid, bool detached) {
+  Printf("Thread created\n");
+  atomic_fetch_add(&__tsan_active_thread_count, 1, memory_order_seq_cst);
+
   // The main thread and GCD workers don't have a parent thread.
   Tid parent = kInvalidTid;
   OnCreatedArgs arg = {nullptr, 0, kInvalidStackID};
@@ -151,6 +154,8 @@ struct OnStartedArgs {
 
 void ThreadStart(ThreadState *thr, Tid tid, tid_t os_id,
                  ThreadType thread_type) {
+  // NOTE: __tsan_active_thread_count is incremented in ThreadCreate.
+
   ctx->thread_registry.StartThread(tid, os_id, thread_type, thr);
   if (!thr->ignore_sync) {
     SlotAttachAndLock(thr);
@@ -248,6 +253,8 @@ void ThreadFinish(ThreadState *thr) {
   SlotDetach(thr);
   ctx->thread_registry.FinishThread(thr->tid);
   thr->~ThreadState();
+
+  atomic_fetch_sub(&__tsan_active_thread_count, 1, memory_order_seq_cst);
 }
 
 void ThreadContext::OnFinished() {

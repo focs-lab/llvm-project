@@ -32,6 +32,9 @@
 
 volatile int __tsan_resumed = 0;
 
+// Variable to track ST/MT context in runtime
+volatile __sanitizer::atomic_uint32_t __tsan_active_thread_count{0};
+
 extern "C" void __tsan_resume() {
   __tsan_resumed = 1;
 }
@@ -683,6 +686,7 @@ void Initialize(ThreadState *thr) {
   if (is_initialized)
     return;
   is_initialized = true;
+
   // We are not ready to handle interceptors yet.
   ScopedIgnoreInterceptors ignore;
   SanitizerToolName = "ThreadSanitizer";
