@@ -192,12 +192,20 @@ bool LockOwnershipInfo::applyTransferFunc(const BasicBlock *BB,
       // Get a function state if it exists
       const auto FuncStateIt = FuncStates.find(CalledFunc);
       if (FuncStateIt != FuncStates.end()) {
-        // Update the current state with callee's exit state
-        for (const auto &[Lock, State] : FuncStateIt->second.ExitState) {
-          if (State.IsLocked)
-            handleLock(InState, I, Lock);
-          else
+        // Use lock summaries to update the current state:
+        // 1. Remove locks that the callee may unlock
+        for (const Value *Lock : FuncStateIt->second.MayUnlock) {
+          const auto It = InState.find(Lock);
+          if (It != InState.end()) {
+            LLVM_DEBUG(dbgs() << "  Removing lock (MayUnlock): " << *Lock << "\n");
             handleUnlock(InState, I, Lock);
+          }
+        }
+        
+        // 2. Add locks that the callee must lock
+        for (const Value *Lock : FuncStateIt->second.MustLock) {
+          LLVM_DEBUG(dbgs() << "  Adding lock (MustLock): " << *Lock << "\n");
+          handleLock(InState, I, Lock);
         }
       }
       continue;
@@ -288,6 +296,30 @@ void LockOwnershipInfo::buildSummary(const Function *F, bool InstrToLockFlag) {
           ExitState = intersectLockStates(ExitState, OutIt->second);
         }
       }
+    }
+  }
+
+  // 5. Compute lock summaries for interprocedural analysis
+  const LockStateTy &EntryState = InStates[&EntryBB];
+  SmallPtrSet<const Value *, 4> &MayUnlock = FuncStateIt->second.MayUnlock;
+  SmallPtrSet<const Value *, 4> &MustLock = FuncStateIt->second.MustLock;
+  
+  MayUnlock.clear();
+  MustLock.clear();
+  
+  // MayUnlock: Locks that are in entry state but not in exit state
+  for (const auto &[Lock, State] : EntryState) {
+    if (State.IsLocked && ExitState.find(Lock) == ExitState.end()) {
+      MayUnlock.insert(Lock);
+      LLVM_DEBUG(dbgs() << "  MayUnlock: " << *Lock << "\n");
+    }
+  }
+  
+  // MustLock: Locks that are in exit state but not in entry state
+  for (const auto &[Lock, State] : ExitState) {
+    if (State.IsLocked && EntryState.find(Lock) == EntryState.end()) {
+      MustLock.insert(Lock);
+      LLVM_DEBUG(dbgs() << "  MustLock: " << *Lock << "\n");
     }
   }
 

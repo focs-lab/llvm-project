@@ -88,6 +88,11 @@ private:
   struct FuncStateTy {
     BBStateMap InStates, OutStates;
     LockStateTy ExitState;
+    // Lock summary for interprocedural analysis:
+    // Set of locks that may be unlocked and not relocked in this function
+    SmallPtrSet<const Value *, 4> MayUnlock;
+    // Set of locks that are locked but weren't locked at entry
+    SmallPtrSet<const Value *, 4> MustLock;
   };
   SmallDenseMap<const Function *, FuncStateTy> FuncStates;
 
