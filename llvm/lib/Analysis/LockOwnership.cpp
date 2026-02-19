@@ -307,19 +307,27 @@ void LockOwnershipInfo::buildSummary(const Function *F, bool InstrToLockFlag) {
   MayUnlock.clear();
   MustLock.clear();
   
-  // MayUnlock: Locks that are in entry state but not in exit state
+  // MayUnlock: Locks that are locked at entry but not locked at exit
   for (const auto &[Lock, State] : EntryState) {
-    if (State.IsLocked && ExitState.find(Lock) == ExitState.end()) {
-      MayUnlock.insert(Lock);
-      LLVM_DEBUG(dbgs() << "  MayUnlock: " << *Lock << "\n");
+    if (State.IsLocked) {
+      const auto ExitIt = ExitState.find(Lock);
+      // Lock is unlocked if it doesn't exist in exit state or exists but is not locked
+      if (ExitIt == ExitState.end() || !ExitIt->second.IsLocked) {
+        MayUnlock.insert(Lock);
+        LLVM_DEBUG(dbgs() << "  MayUnlock: " << *Lock << "\n");
+      }
     }
   }
   
-  // MustLock: Locks that are in exit state but not in entry state
+  // MustLock: Locks that are locked at exit but were not locked at entry
   for (const auto &[Lock, State] : ExitState) {
-    if (State.IsLocked && EntryState.find(Lock) == EntryState.end()) {
-      MustLock.insert(Lock);
-      LLVM_DEBUG(dbgs() << "  MustLock: " << *Lock << "\n");
+    if (State.IsLocked) {
+      const auto EntryIt = EntryState.find(Lock);
+      // Lock is newly acquired if it doesn't exist in entry state or exists but is not locked
+      if (EntryIt == EntryState.end() || !EntryIt->second.IsLocked) {
+        MustLock.insert(Lock);
+        LLVM_DEBUG(dbgs() << "  MustLock: " << *Lock << "\n");
+      }
     }
   }
 
