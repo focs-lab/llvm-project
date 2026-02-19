@@ -307,7 +307,7 @@ void LockOwnershipInfo::buildSummary(const Function *F, bool InstrToLockFlag) {
   MayUnlock.clear();
   MustLock.clear();
 
-  // MayUnlock: Locks that are locked at entry but not locked at exit
+  // MayUnlock: Locks that are locked at entry but either not locked or absent at exit
   for (const auto &[Lock, State] : EntryState) {
     if (State.IsLocked) {
       const auto ExitIt = ExitState.find(Lock);
@@ -319,7 +319,7 @@ void LockOwnershipInfo::buildSummary(const Function *F, bool InstrToLockFlag) {
     }
   }
 
-  // MustLock: Locks that are locked at exit but were not locked at entry
+  // MustLock: Locks that are locked at exit but were either not locked or absent at entry
   for (const auto &[Lock, State] : ExitState) {
     if (State.IsLocked) {
       const auto EntryIt = EntryState.find(Lock);
