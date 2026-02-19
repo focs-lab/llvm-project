@@ -201,7 +201,7 @@ bool LockOwnershipInfo::applyTransferFunc(const BasicBlock *BB,
             handleUnlock(InState, I, Lock);
           }
         }
-        
+
         // 2. Add locks that the callee must lock
         for (const Value *Lock : FuncStateIt->second.MustLock) {
           LLVM_DEBUG(dbgs() << "  Adding lock (MustLock): " << *Lock << "\n");
@@ -303,10 +303,10 @@ void LockOwnershipInfo::buildSummary(const Function *F, bool InstrToLockFlag) {
   const LockStateTy &EntryState = InStates[&EntryBB];
   SmallPtrSet<const Value *, 4> &MayUnlock = FuncStateIt->second.MayUnlock;
   SmallPtrSet<const Value *, 4> &MustLock = FuncStateIt->second.MustLock;
-  
+
   MayUnlock.clear();
   MustLock.clear();
-  
+
   // MayUnlock: Locks that are locked at entry but not locked at exit
   for (const auto &[Lock, State] : EntryState) {
     if (State.IsLocked) {
@@ -318,7 +318,7 @@ void LockOwnershipInfo::buildSummary(const Function *F, bool InstrToLockFlag) {
       }
     }
   }
-  
+
   // MustLock: Locks that are locked at exit but were not locked at entry
   for (const auto &[Lock, State] : ExitState) {
     if (State.IsLocked) {
