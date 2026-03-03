@@ -53,7 +53,8 @@
 #include "sanitizer_common/sanitizer_placement_new.h"
 
 // Variable to track ST/MT context in runtime
-extern "C" volatile __sanitizer::atomic_uint32_t __tsan_active_thread_count;
+extern "C" SANITIZER_INTERFACE_ATTRIBUTE volatile __sanitizer::atomic_uint32_t
+    __tsan_active_thread_count;
 
 #if SANITIZER_WORDSIZE != 64
 # error "ThreadSanitizer is supported only on 64-bit platforms"

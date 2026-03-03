@@ -33,7 +33,8 @@
 volatile int __tsan_resumed = 0;
 
 // Variable to track ST/MT context in runtime
-volatile __sanitizer::atomic_uint32_t __tsan_active_thread_count{0};
+extern "C" SANITIZER_INTERFACE_ATTRIBUTE volatile __sanitizer::atomic_uint32_t
+    __tsan_active_thread_count{0};
 
 extern "C" void __tsan_resume() {
   __tsan_resumed = 1;
