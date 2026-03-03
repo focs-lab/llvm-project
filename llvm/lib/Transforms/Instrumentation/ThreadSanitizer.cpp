@@ -1539,7 +1539,8 @@ Value *ThreadSanitizer::checkActiveThreadCount(IRBuilderBase &IRB, Module &M) {
                                 "tsan.active_thread_count");
   // Runtime updates this concurrently; use an atomic acquire load to prevent
   // undesired reordering around the check.
-  Cnt->setAtomic(AtomicOrdering::Acquire);
+  Cnt->setAtomic(AtomicOrdering::Monotonic);
+  // Cnt->setAtomic(AtomicOrdering::Acquire);
 
   return IRB.CreateICmpUGT(Cnt, ConstantInt::get(I32Ty, 1), "tsan.mt");
 }

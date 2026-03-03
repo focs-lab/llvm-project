@@ -47,6 +47,8 @@ void __tsan_write2(void *addr) {
 }
 
 void __tsan_write4(void *addr) {
+  // int val = atomic_load(&__tsan_active_thread_count, memory_order_seq_cst);
+  // Printf("TSan RTL: __tsan_write4 addr=%p active_threads=%d\n", addr, val);
   MemoryAccess(cur_thread(), CALLERPC, (uptr)addr, 4, kAccessWrite);
 }
 
