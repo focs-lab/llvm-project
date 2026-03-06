@@ -444,7 +444,8 @@ static bool tryPeelLoops(Function &F, LoopInfo *LI, ScalarEvolution *SE,
                          DominatorTree *DT, AssumptionCache *AC) {
   if (!LI || !SE || !DT || F.isDeclaration())
     return false;
-  dbgs() << "Trying to peel loops in function " << F.getName() << "\n";
+  LLVM_DEBUG(dbgs() << "Trying to peel loops in function " << F.getName()
+                    << "\n");
   bool Changed = false;
 
   // Collect all innermost loops
@@ -460,7 +461,8 @@ static bool tryPeelLoops(Function &F, LoopInfo *LI, ScalarEvolution *SE,
       // `simplifyLoop` returns true if it changed the CFG.
       // Pass DT/LI/SE/AC so the analyses stay up to date.
       if (!simplifyLoop(L, DT, LI, SE, AC, nullptr, false)) {
-        dbgs() << "Skipping peeling: cannot simplify loop " << *L << "\n";
+        LLVM_DEBUG(dbgs() << "Skipping peeling: cannot simplify loop " << *L
+                          << "\n");
         continue;
       }
       Changed = true;
@@ -468,7 +470,7 @@ static bool tryPeelLoops(Function &F, LoopInfo *LI, ScalarEvolution *SE,
 
     // Now that the loop is simplified, check if it can be peeled.
     if (!canPeel(L)) {
-      dbgs() << "Cannot peel loop " << *L << "\n";
+      LLVM_DEBUG(dbgs() << "Cannot peel loop " << *L << "\n");
       continue;
     }
 
@@ -478,7 +480,7 @@ static bool tryPeelLoops(Function &F, LoopInfo *LI, ScalarEvolution *SE,
     // Peel one iteration.
     ValueToValueMapTy LVMap;
     if (peelLoop(L, /*PeelCount=*/1, LI, SE, *DT, AC, false, LVMap)) {
-      dbgs() << "Loop peeled: " << *L;
+      LLVM_DEBUG(dbgs() << "Loop peeled: " << *L);
       Changed = true;
     }
   }
@@ -514,7 +516,6 @@ PreservedAnalyses ThreadSanitizerPass::run(Function &F,
   PostDominatorTree *PDT = nullptr;
   AAResults *AA = nullptr;
   LoopInfo *LI = nullptr;
-  ScalarEvolution *SE = nullptr;
   AssumptionCache *AC = nullptr;
   if (ClUseDominanceAnalysis || ClUseDominanceAnalysisDom ||
       ClUseDominanceAnalysisPostDom) {
@@ -522,20 +523,13 @@ PreservedAnalyses ThreadSanitizerPass::run(Function &F,
     PDT = &FAM.getResult<PostDominatorTreeAnalysis>(F);
     AA = &FAM.getResult<AAManager>(F);
     LI = &FAM.getResult<LoopAnalysis>(F);
-    SE = &FAM.getResult<ScalarEvolutionAnalysis>(F);
     AC = &FAM.getResult<AssumptionAnalysis>(F);
   }
-
-  bool CodeChanged = false;
-  // Try to peel loops to allow domination-based optimization
-  if (ClUseLoopPeeling &&
-      (ClUseDominanceAnalysis || ClUseDominanceAnalysisDom) && LI && SE && DT)
-    CodeChanged = tryPeelLoops(F, LI, SE, DT, AC);
 
   const bool Instrumented =
       TSan.sanitizeFunction(F, FAM.getResult<TargetLibraryAnalysis>(F),
                             std::nullopt, EAGI, LOI, STI, DT, PDT, AA, LI, AC);
-  if (CodeChanged || Instrumented)
+  if (Instrumented)
     return PreservedAnalyses::none();
 
   return PreservedAnalyses::all();
@@ -545,6 +539,37 @@ std::unique_ptr<SyncFreeInfo> ModuleThreadSanitizerPass::SFI;
 
 PreservedAnalyses ModuleThreadSanitizerPass::run(Module &M,
                                                  ModuleAnalysisManager &MAM) {
+  ////
+  // First try to peel loops (before any analysis)
+  // Try to peel loops to allow domination-based optimization
+  if (ClUseLoopPeeling &&
+      (ClUseDominanceAnalysis || ClUseDominanceAnalysisDom)) {
+    FunctionAnalysisManager &FAM =
+        MAM.getResult<FunctionAnalysisManagerModuleProxy>(M).getManager();
+    DominatorTree *DT = nullptr;
+    LoopInfo *LI = nullptr;
+    AssumptionCache *AC = nullptr;
+    ScalarEvolution *SE = nullptr;
+    bool ModuleCodeChange = false;
+
+    for (auto &F: M) {
+      if (F.isDeclaration())
+        continue;
+      DT = &FAM.getResult<DominatorTreeAnalysis>(F);
+      LI = &FAM.getResult<LoopAnalysis>(F);
+      SE = &FAM.getResult<ScalarEvolutionAnalysis>(F);
+      AC = &FAM.getResult<AssumptionAnalysis>(F);
+
+      bool CodeChange = tryPeelLoops(F, LI, SE, DT, AC);
+      if (CodeChange)
+        FAM.invalidate(F, PreservedAnalyses::none());
+      ModuleCodeChange |= CodeChange;
+    }
+    if (ModuleCodeChange)
+      MAM.invalidate(M, PreservedAnalyses::none());
+  }
+  ////
+
   if (ClUseEscapeAnalysis)
     dbgs() << "-- Using Escape Analysis for Module " << M.getName() << " --\n";
   else if (ClUseEscapeAnalysisGlobal)
@@ -1478,6 +1503,14 @@ bool ThreadSanitizer::sanitizeFunction(
   // FIXME: many of these accesses do not need to be checked for races
   // (e.g. variables that do not escape, etc).
 
+  if (ClInstrumentMemIntrinsics && SanitizeFunction)
+    for (auto *Inst : MemIntrinCalls) {
+      Res |= instrumentMemIntrinsic(Inst, TLI, EAIGlobal);
+    }
+
+  for (CallInst *CI: InterceptedCalls)
+    Res |= instrumentInterceptedCalls(CI, TLI, EAIGlobal);
+
   // Instrument memory accesses only if we want to report bugs in the function.
   if (ClInstrumentMemoryAccesses && SanitizeFunction)
     for (const auto &II : AllLoadsAndStores) {
@@ -1490,14 +1523,6 @@ bool ThreadSanitizer::sanitizeFunction(
     for (auto *Inst : AtomicAccesses) {
       Res |= instrumentAtomic(Inst, DL);
     }
-
-  if (ClInstrumentMemIntrinsics && SanitizeFunction)
-    for (auto *Inst : MemIntrinCalls) {
-      Res |= instrumentMemIntrinsic(Inst, TLI, EAIGlobal);
-    }
-
-  for (CallInst *CI: InterceptedCalls)
-    Res |= instrumentInterceptedCalls(CI, TLI, EAIGlobal);
 
   if (F.hasFnAttribute("sanitize_thread_no_checking_at_run_time")) {
     assert(!F.hasFnAttribute(Attribute::SanitizeThread));
