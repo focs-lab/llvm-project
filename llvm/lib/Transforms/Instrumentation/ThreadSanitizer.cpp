@@ -1207,44 +1207,64 @@ bool ThreadSanitizer::isPathClear(
   if (StartBB == EndBB)
     return true;
 
-  // 2. Check blocks on the dominance path between DomBB and CurrBB (excluding
-  // DomBB, excluding CurrBB) Traverse up from CurrBB along the immediate
-  // dominator tree until DomBB is reached
-  const BasicBlock *CurBB = !IsPostDom ? EndBB : StartBB;
-  const BasicBlock *DomBB = !IsPostDom ? StartBB : EndBB;
-  const DomTreeNode *CurrNode = DTBase->getNode(CurBB);
-  assert(CurrNode && "DomNode not found");
+  // BFS/DFS over CFG successors (dom case) or predecessors
+  // (postdom case) starting from StartBB, stopping at EndBB.  Since EndBB
+  // (post-)dominates all paths, every execution path from StartBB reaches
+  // EndBB without escaping it, so the BFS is guaranteed to terminate.
+  //   StartBB
+  //    /    \
+  //  BB_A  BB_B  ← mutex_lock()
+  //    \    /
+  //    EndBB
+  //
+  // idom(EndBB) == StartBB, so the while-loop exited immediately without
+  // checking BB_A or BB_B at all.
+  //
 
-  DomTreeNode *IDomNode = CurrNode->getIDom();
+  // FwdSrc --CFG--> ... --CFG--> FwdDst
+  const BasicBlock *FwdSrc = !IsPostDom ? StartBB : EndBB;
+  const BasicBlock *FwdDst = !IsPostDom ? EndBB   : StartBB;
 
-  while (IDomNode && IDomNode->getBlock() && IDomNode->getBlock() != DomBB) {
-    BasicBlock *IntermediateBB = IDomNode->getBlock();
-    // Check for sound postdom
-    if (IsPostDom && !ClPostDomAggressive && LI->getLoopFor(IntermediateBB))
+  // Sanity-check: FwdSrc must (post-)dominate FwdDst in the tree.
+  if (!DTBase->dominates(DTBase->getNode(FwdSrc), DTBase->getNode(FwdDst))) {
+    LLVM_DEBUG(dbgs() << "TSAN: FwdSrc does not dominate FwdDst — bailing.\n");
+    return false;
+  }
+
+  SmallVector<const BasicBlock *, 16> Worklist;
+  SmallPtrSet<const BasicBlock *, 16> Visited;
+
+  // Enqueue the CFG neighbors of BB (successors for dom, predecessors for
+  // postdom), skipping FwdDst (its instructions are handled in step 3).
+  auto enqueueNeighbors = [&](const BasicBlock *BB) {
+    if (!IsPostDom) {
+      for (const BasicBlock *Succ : successors(BB))
+        if (Succ != FwdDst && Visited.insert(Succ).second)
+          Worklist.push_back(Succ);
+    } else {
+      for (const BasicBlock *Pred : predecessors(BB))
+        if (Pred != FwdDst && Visited.insert(Pred).second)
+          Worklist.push_back(Pred);
+    }
+  };
+
+  enqueueNeighbors(FwdSrc);
+
+  while (!Worklist.empty()) {
+    const BasicBlock *BB = Worklist.pop_back_val();
+
+    // Check for sound postdom: a loop block makes postdom unsound.
+    if (IsPostDom && !ClPostDomAggressive && LI->getLoopFor(BB))
       return false;
 
-    LLVM_DEBUG(dbgs() << "Inter IDom BB " << IntermediateBB->getName() << "\n");
-    for (const Instruction &InterI : *IntermediateBB) {
+    LLVM_DEBUG(dbgs() << "Inter CFG BB " << BB->getName() << "\n");
+    for (const Instruction &InterI : *BB) {
       LLVM_DEBUG(dbgs() << "\tisPathClear -- Checking 2: " << InterI << "\n");
       if (isInstrDangerous(&InterI, TLI, IsPostDom, LockOp))
         return false;
     }
-    IDomNode = IDomNode->getIDom();
-  }
 
-  assert(IDomNode && IDomNode->getBlock() && "DomNode not found");
-
-  // If IDomNode->getBlock() became DomBB, then DomBB indeed dominates CurrBB
-  // and we've checked all intermediate blocks on the dominator path.
-  if (!IDomNode || !IDomNode->getBlock() || IDomNode->getBlock() != DomBB) {
-    // This shouldn't happen if DomInst dominates CurrInst.
-    // Perhaps DomInst doesn't strictly dominate CurrInst, or there's a logic
-    // error. Conservatively return false.
-    LLVM_DEBUG(dbgs() << "TSAN: Path integrity issue or DomInst not strictly "
-                         "dominating CurrInst.\n"
-                      << "StartInst: " << *StartInst << "\nEndInst: " << *EndInst
-                      << "\n");
-    return false;
+    enqueueNeighbors(BB);
   }
 
   // 3. Check instructions in CurrBB before CurrInst
