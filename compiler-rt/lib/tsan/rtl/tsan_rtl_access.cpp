@@ -495,10 +495,12 @@ NOINLINE void TraceRestartMemoryAccess(ThreadState* thr, uptr pc, uptr addr,
 
 ALWAYS_INLINE USED void MemoryAccess(ThreadState* thr, uptr pc, uptr addr,
                                      uptr size, AccessType typ) {
+#ifdef _REX_FILTER_ENABLED
   // First, try to filter-out the memory access
   if (g_filter && ((typ == kAccessRead) || (typ == kAccessWrite)) &&
       g_filter->CheckRedundancy(pc, addr, typ == kAccessWrite, thr))
     return;
+#endif
 
   LogMemoryAccess(addr, size, typ, thr->tid);
 
@@ -673,9 +675,11 @@ void MemoryResetRange(ThreadState* thr, uptr pc, uptr addr, uptr size) {
 void MemoryRangeFreed(ThreadState* thr, uptr pc, uptr addr, uptr size) {
   VPrintf(1, "#%d: MEM_FREE at addr=%p size=%zu\n", thr->tid, (void*)addr,
           size);
+#ifdef _REX_FILTER_ENABLED
   // Remove all address entries from the filter to consider memory reuse
   if (g_filter)
     g_filter->OnMemoryFreed(addr, size);
+#endif
 
   // Callers must lock the slot to ensure synchronization with the reset.
   // The problem with "freed" memory is that it's not "monotonic"
