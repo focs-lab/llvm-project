@@ -114,7 +114,6 @@ struct OnCreatedArgs {
 };
 
 Tid ThreadCreate(ThreadState *thr, uptr pc, uptr uid, bool detached) {
-  Printf("Thread created\n");
   atomic_fetch_add(&__tsan_active_thread_count, 1, memory_order_seq_cst);
 
   // The main thread and GCD workers don't have a parent thread.
