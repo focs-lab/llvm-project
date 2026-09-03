@@ -481,7 +481,16 @@ public:
       SingleThreadedInfo *STI = nullptr,
       DominatorTree *DT = nullptr, PostDominatorTree *PDT = nullptr,
       AAResults *AA = nullptr, LoopInfo *LI = nullptr,
-      AssumptionCache *AC = nullptr, ScalarEvolution *SE = nullptr);
+      AssumptionCache *AC = nullptr, ScalarEvolution *SE = nullptr,
+      const SyncFreeInfo *SyncFree = nullptr);
+
+  /// Interprocedural sync-freedom for the module being instrumented, or
+  /// null when the module pass did not run: then every call into the
+  /// program is treated as synchronizing.
+  const SyncFreeInfo *SFI = nullptr;
+  /// Lock ownership for the function being instrumented (may be null); the
+  /// interceptor toggles need it for the release-like escape test.
+  LockOwnershipInfo *CurLOI = nullptr;
 
   /// Checks if an instruction could potentially change ThreadSanitizer's
   /// synchronization state. This includes atomic operations, memory barriers,
@@ -518,12 +527,14 @@ public:
 
   /// Classify what \p Inst may do to ThreadSanitizer's happens-before state.
   static unsigned classifySyncEffect(const Instruction *Inst,
-                                     const TargetLibraryInfo &TLI);
+                                     const TargetLibraryInfo &TLI,
+                                     const SyncFreeInfo *SFI);
 
   /// True if \p Inst may affect synchronization state at all. Used by the
   /// interprocedural sync-free analysis, which has no notion of direction.
   static bool isInstrDangerous(const Instruction *Inst,
-                               const TargetLibraryInfo &TLI);
+                               const TargetLibraryInfo &TLI,
+                               const SyncFreeInfo *SFI);
 
 private:
   // Internal Instruction wrapper that contains more information about the
@@ -743,6 +754,10 @@ PreservedAnalyses ThreadSanitizerPass::run(Function &F,
     STI = MAMProxy.getCachedResult<SingleThreaded>(*F.getParent());
   if (ClUseLockOwnershipAnalysis || ClUseLockOwnershipAnalysisUpperbound)
     LOI = MAMProxy.getCachedResult<LockOwnership>(*F.getParent());
+  const SyncFreeInfo *SFI = nullptr;
+  if (ClUseDominanceAnalysis || ClUseDominanceAnalysisDom ||
+      ClUseDominanceAnalysisPostDom)
+    SFI = MAMProxy.getCachedResult<SyncFreeAnalysis>(*F.getParent());
 
   DominatorTree *DT = nullptr;
   PostDominatorTree *PDT = nullptr;
@@ -765,14 +780,20 @@ PreservedAnalyses ThreadSanitizerPass::run(Function &F,
   const bool Instrumented =
       TSan.sanitizeFunction(F, FAM.getResult<TargetLibraryAnalysis>(F),
                             std::nullopt, EAGI, LOI, STI, DT, PDT, AA, LI, AC,
-                            SE);
+                            SE, SFI);
   if (Instrumented)
     return PreservedAnalyses::none();
 
   return PreservedAnalyses::all();
 }
 
-std::unique_ptr<SyncFreeInfo> ModuleThreadSanitizerPass::SFI;
+AnalysisKey SyncFreeAnalysis::Key;
+
+SyncFreeInfo SyncFreeAnalysis::run(Module &M, ModuleAnalysisManager &MAM) {
+  return SyncFreeInfo(
+      M, MAM.getResult<CallGraphAnalysis>(M),
+      MAM.getResult<FunctionAnalysisManagerModuleProxy>(M).getManager());
+}
 
 PreservedAnalyses ModuleThreadSanitizerPass::run(Module &M,
                                                  ModuleAnalysisManager &MAM) {
@@ -829,9 +850,7 @@ PreservedAnalyses ModuleThreadSanitizerPass::run(Module &M,
 
   if (ClUseDominanceAnalysis || ClUseDominanceAnalysisDom ||
       ClUseDominanceAnalysisPostDom) {
-    SFI = std::make_unique<SyncFreeInfo>(
-        M, MAM.getResult<CallGraphAnalysis>(M),
-        MAM.getResult<FunctionAnalysisManagerModuleProxy>(M).getManager());
+    MAM.getResult<SyncFreeAnalysis>(M);
   }
 
   if (ClUseLockOwnershipAnalysis && ClUseLockOwnershipAnalysisUpperbound)
@@ -1590,7 +1609,8 @@ static bool isTsanAtomic(const Instruction *I) {
 }
 
 unsigned ThreadSanitizer::classifySyncEffect(const Instruction *Inst,
-                                             const TargetLibraryInfo &TLI) {
+                                             const TargetLibraryInfo &TLI,
+                                             const SyncFreeInfo *SFI) {
   if (!Inst)
     return SYNC_NONE;
 
@@ -1619,27 +1639,32 @@ unsigned ThreadSanitizer::classifySyncEffect(const Instruction *Inst,
   if (TargetLibraryInfo::isLockReleaseFunction(*Callee))
     return SYNC_RELEASE;
 
-  // Library and intrinsic calls we recognise: their synchronization behaviour
-  // is tabulated and they return.
-  LibFunc Func;
-  if (TLI.getLibFunc(*Callee, Func))
-    return TLI.isSyncFree(Func) ? SYNC_NONE : SYNC_UNKNOWN;
-
-  if (Callee->isIntrinsic())
-    return Intrinsic::isIntrinsicSyncFree(*Callee)
-               ? SYNC_NONE
-               : SYNC_UNKNOWN;
-
-  // What is left is a call into code of this program. Whether it synchronizes
-  // and whether it terminates are separate questions, and only the second one
-  // needs the termination bit -- a callee that may synchronize is already
-  // blocking both directions.
+  // Whether a call synchronizes and whether it returns are separate
+  // questions. Post-dominance relies on the covering access actually being
+  // reached, so a call that may block or spin forever blocks it: a call is
+  // known to return if it or its callee is willreturn, or the callee is
+  // defined here and free of loops. Library functions and intrinsics get no
+  // exemption -- read(2) blocks, and so can any function we have no body
+  // for; the attribute inference passes mark the ones that provably return.
   const bool MayNotReturn =
       !CB->hasFnAttr(Attribute::WillReturn) &&
       !Callee->hasFnAttribute(Attribute::WillReturn) &&
-      !(ModuleThreadSanitizerPass::SFI &&
-        ModuleThreadSanitizerPass::SFI->isLoopFree(Callee));
+      !(SFI && SFI->isLoopFree(Callee));
   const unsigned Termination = MayNotReturn ? SYNC_MAY_NOT_RETURN : SYNC_NONE;
+
+  // Library and intrinsic calls we recognise: their synchronization behaviour
+  // is tabulated.
+  LibFunc Func;
+  if (TLI.getLibFunc(*Callee, Func))
+    return Termination | (TLI.isSyncFree(Func) ? SYNC_NONE : SYNC_UNKNOWN);
+
+  if (Callee->isIntrinsic())
+    return Termination | (Intrinsic::isIntrinsicSyncFree(*Callee)
+                              ? SYNC_NONE
+                              : SYNC_UNKNOWN);
+
+  // What is left is a call into code of this program; a callee that may
+  // synchronize is already blocking both directions.
 
   if (Callee->hasFnAttribute(Attribute::NoSync) ||
       Callee->hasFnAttribute(Attribute::ReadNone))
@@ -1649,16 +1674,16 @@ unsigned ThreadSanitizer::classifySyncEffect(const Instruction *Inst,
   // attribute alone can prove, and it accounts for a large share of the
   // elimination on real code. SFI answers false for anything it has no body
   // for, so an opaque external call still lands on SYNC_UNKNOWN below.
-  if (ModuleThreadSanitizerPass::SFI &&
-      ModuleThreadSanitizerPass::SFI->isSyncFree(Callee))
+  if (SFI && SFI->isSyncFree(Callee))
     return Termination;
 
   return Termination | SYNC_UNKNOWN;
 }
 
 bool ThreadSanitizer::isInstrDangerous(const Instruction *Inst,
-                                       const TargetLibraryInfo &TLI) {
-  return (classifySyncEffect(Inst, TLI) &
+                                       const TargetLibraryInfo &TLI,
+                                       const SyncFreeInfo *SFI) {
+  return (classifySyncEffect(Inst, TLI, SFI) &
           (SYNC_ACQUIRE | SYNC_RELEASE | SYNC_UNKNOWN)) != SYNC_NONE;
 }
 
@@ -1700,13 +1725,13 @@ unsigned ThreadSanitizer::scanPaths(Instruction *FirstInst,
 
   auto scanRange = [&](BasicBlock::iterator B, BasicBlock::iterator E) {
     for (auto It = B; It != E; ++It)
-      Effect |= classifySyncEffect(&*It, TLI);
+      Effect |= classifySyncEffect(&*It, TLI, SFI);
   };
 
   auto scanWholeBlock = [&](const BasicBlock *BB) {
     noteTermination(BB);
     for (const Instruction &I : *BB)
-      Effect |= classifySyncEffect(&I, TLI);
+      Effect |= classifySyncEffect(&I, TLI, SFI);
   };
 
   // Walk forward from Seeds, staying inside Bound and never re-entering Stop,
@@ -1765,7 +1790,7 @@ unsigned ThreadSanitizer::scanPaths(Instruction *FirstInst,
     noteTermination(RemovedBB);
     for (const Instruction &I : *RemovedBB)
       if (&I != RemovedInst)
-        Effect |= classifySyncEffect(&I, TLI);
+        Effect |= classifySyncEffect(&I, TLI, SFI);
     scanCone(RemovedBB, RemovedBB, ReachesRemoved);
   }
 
@@ -1877,6 +1902,19 @@ void ThreadSanitizer::eliminateInstrByPrePostDominance(
                       /*NeedTermination=*/IsPostDom);
         if (Effect & (IsPostDom ? SYNC_BLOCKS_POSTDOM : SYNC_BLOCKS_DOM))
           continue;
+        // If the cover was itself removed, the access that will actually
+        // stay is the root of its chain. Location, width, kind and the
+        // (post-)dominance relation compose transitively; the path
+        // condition is re-checked against the root so that nothing rests
+        // on the composition of two clean segments alone.
+        if (const size_t Root = findRoot(DomIndex); Root != DomIndex) {
+          Instruction *RootInst = AllInstr[Root].Inst;
+          const unsigned RootEffect = scanPaths(
+              IsPostDom ? CurrInst : RootInst, IsPostDom ? RootInst : CurrInst,
+              CurrInst, TLI, LI, SE, /*NeedTermination=*/IsPostDom);
+          if (RootEffect & (IsPostDom ? SYNC_BLOCKS_POSTDOM : SYNC_BLOCKS_DOM))
+            continue;
+        }
 
         LLVM_DEBUG(dbgs() << "TSAN: Omitting instrumentation for " << *CurrInst
                           << " (covered by " << *DomInst << ")\n");
@@ -1933,12 +1971,14 @@ bool ThreadSanitizer::sanitizeFunction(
     LockOwnershipInfo *LOI,
     SingleThreadedInfo *STI, DominatorTree *DT,
     PostDominatorTree *PDT, AAResults *AA, LoopInfo *LI, AssumptionCache *AC,
-    ScalarEvolution *SE) {
+    ScalarEvolution *SE, const SyncFreeInfo *SyncFree) {
   LLVM_DEBUG(dbgs() << "\n%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%"
                        "%%%%%%%%%%%%%%%%%\n"
     "%%%%%%%%%%%%%%%%%%%% Func " << F.getName() << "\t%%%%%%%%%%%%%%%%%%%%%%\n"
     "%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%\n");
   M = F.getParent();
+  SFI = SyncFree;
+  CurLOI = LOI;
   Func = &F;
   RevReachCache.clear();
   MTCondLeader.clear();
@@ -2324,15 +2364,30 @@ void ThreadSanitizer::disableInterceptorForInstr(
   IRB.CreateStore(Saved, InterceptorEnabled);
 }
 
+/// Whether the interceptor for a memory or string call on \p Ptr must stay
+/// on. The same rule as for an ordinary access under the sound
+/// flow-sensitive escape analysis: the object may not have escaped on any
+/// path to here, and every escape reachable afterwards must be release-like
+/// (thread creation, a store to a lock-protected global, an acquire-only
+/// atomic publication) -- a memcpy into a local that is later handed to an
+/// opaque call is exactly the case the runtime must see.
 static bool
 isPointerEscaped(Value *Ptr, Instruction *I, const TargetLibraryInfo &TLI,
-                 EscapeAnalysisGlobalInfo *EAIGlobal) {
-  if ((EAIGlobal != nullptr)) {
-    EscReasonTy EscReason;
-    return EAIGlobal->isEscapedUndrlObjOrPointee(
-        Ptr, TLI, I->getParent(), EscReason);
-  }
-  return true;
+                 EscapeAnalysisGlobalInfo *EAIGlobal, LockOwnershipInfo *LOI) {
+  if (!EAIGlobal)
+    return true;
+  EscReasonTy EscReason;
+  if (EAIGlobal->isEscapedUndrlObjOrPointee(Ptr, TLI, I->getParent(),
+                                            EscReason))
+    return true;
+  EscReasonTy AnywhereReason;
+  if (!EAIGlobal->isEscapedUndrlObjOrPointeeAnywhere(Ptr, TLI, I->getFunction(),
+                                                     AnywhereReason))
+    return false;
+  const LaterEscapes LE = collectLaterEscapes(I, Ptr, TLI, LOI);
+  const bool Volatile =
+      (AnywhereReason & EscReasonTy(EscapeAnalysisInfo::VOLATILE)).any();
+  return LE.ArgObject || Volatile || !LE.allReleaseLike();
 }
 
 bool ThreadSanitizer::instrumentInterceptedCalls(
@@ -2342,16 +2397,23 @@ bool ThreadSanitizer::instrumentInterceptedCalls(
   // LLVM_DEBUG(dbgs() << "Check " << *CI << "\n");
 
   Function *Callee = CI->getCalledFunction();
+  // The toggle clears InterceptorEnabled before the call and restores it in
+  // the instruction after. A call that unwinds never reaches that
+  // instruction and leaves the thread's interceptors off for good, losing
+  // every later intercepted access; only a call that cannot unwind may be
+  // guarded.
+  if (!CI->doesNotThrow())
+    return true;
   bool ArePointersEscaped = true;
 
   // Check if pointers passed to the function escape
   if (Callee->getName() == "strcmp" || Callee->getName() == "memchr") {
-    if (!isPointerEscaped(CI->getArgOperand(0), CI, TLI, EAIGlobal) &&
-        !isPointerEscaped(CI->getArgOperand(1), CI, TLI, EAIGlobal)) {
+    if (!isPointerEscaped(CI->getArgOperand(0), CI, TLI, EAIGlobal, CurLOI) &&
+        !isPointerEscaped(CI->getArgOperand(1), CI, TLI, EAIGlobal, CurLOI)) {
       ArePointersEscaped = false;
     }
   } else if (Callee->getName() == "strlen") {
-    if (!isPointerEscaped(CI->getArgOperand(0), CI, TLI, EAIGlobal))
+    if (!isPointerEscaped(CI->getArgOperand(0), CI, TLI, EAIGlobal, CurLOI))
       ArePointersEscaped = false;
   }
 
@@ -2361,7 +2423,7 @@ bool ThreadSanitizer::instrumentInterceptedCalls(
     InstrumentationIRBuilder IRB(CI);
     disableInterceptorForInstr(CI, IRB);
     NumMemIntrinsicsInterceptorSkipped++;
-    return false;
+    return true;
   }
   return true;
 }
@@ -2385,11 +2447,12 @@ bool ThreadSanitizer::instrumentMemIntrinsic(
     Value *Cast2 = IRB.CreateIntCast(M->getArgOperand(2), IntptrTy, false);
 
     // Check if pointer is not escape
-    if (!isPointerEscaped(M->getArgOperand(0), I, TLI, EAIGlobal)) {
+    if (!isPointerEscaped(M->getArgOperand(0), I, TLI, EAIGlobal, CurLOI)) {
       LLVM_DEBUG(dbgs() << "MemIntrinsic does not escape any pointers\n");
       disableInterceptorForInstr(I, IRB);
       NumMemIntrinsicsInterceptorSkipped++;
-      return false;
+      // The toggle is IR the pass added; report it as such.
+      return true;
     }
     LLVM_DEBUG(dbgs() << "MemIntrinsic escapes pointers\n");
 
@@ -2406,32 +2469,14 @@ bool ThreadSanitizer::instrumentMemIntrinsic(
     // report raised inside the interceptor.
     return true;
   } else if (MemTransferInst *M = dyn_cast<MemTransferInst>(I)) {
-    // Workaround, not a soundness measure, and its root cause is not
-    // understood. When the destination of a memory-transfer intrinsic does not
-    // escape, the branch below leaves the llvm.memcpy/memmove intrinsic in
-    // place with the interceptor disabled instead of lowering it to a
-    // __tsan_memcpy call. For a stack timeval later handed to select() that
-    // breaks signal delivery in signal_thread_sigctx_race.cpp -- the program
-    // functionally misbehaves ("Failed to receive signal"), which is why this
-    // is keyed on struct.timeval by name. Removing it regresses that test; the
-    // mechanism (why leaving the intrinsic vs. replacing it changes select's
-    // behaviour) still needs investigation. It is narrow: any other
-    // non-escaping struct copied into a syscall with a timeout could hit the
-    // same wall and would not be caught here.
-    bool TimevalCaseFlag = false;
-    if (const auto *Alloca = dyn_cast<AllocaInst>(M->getArgOperand(0)))
-      if (Alloca->getAllocatedType()->isStructTy())
-        if (const auto *Struct = cast<StructType>(Alloca->getAllocatedType());
-            Struct->hasName() && Struct->getName() == "struct.timeval")
-          TimevalCaseFlag = true;
-
+ 
     // Check if pointers are not escape
-    if (!TimevalCaseFlag &&
-        !isPointerEscaped(M->getArgOperand(0), I, TLI, EAIGlobal) &&
-        !isPointerEscaped(M->getArgOperand(1), I, TLI, EAIGlobal)) {
+    if (!isPointerEscaped(M->getArgOperand(0), I, TLI, EAIGlobal, CurLOI) &&
+        !isPointerEscaped(M->getArgOperand(1), I, TLI, EAIGlobal, CurLOI)) {
       disableInterceptorForInstr(I, IRB);
       NumMemIntrinsicsInterceptorSkipped++;
-      return false;
+      // The toggle is IR the pass added; report it as such.
+      return true;
     }
 
     IRB.CreateCall(
@@ -2590,8 +2635,12 @@ SyncFreeInfo::SyncFreeInfo(Module &M_, CallGraph &CG_,
   // so it stays dangerous. Initializing declarations to false made every call
   // to an invisible external function look synchronization-free, which let
   // dominance elimination remove instrumentation across it.
+  // Pessimistic until an SCC is proven: a lookup of a function whose SCC has
+  // not been processed reads as "synchronizes". Bottom-up SCC order means
+  // callees are settled before callers, so only a cycle sees the optimistic
+  // per-SCC reset below, which is the standard SCC fixpoint.
   for (const Function &F : M)
-    IsFuncDangerousGlobal[&F] = F.isDeclaration();
+    IsFuncDangerousGlobal[&F] = true;
 
   // Analyze strongly connected components (SCCs) of the call graph in reverse
   // topological order. This ensures we process callees before their callers:
@@ -2629,8 +2678,8 @@ SyncFreeInfo::SyncFreeInfo(Module &M_, CallGraph &CG_,
       for (const Instruction &I : instructions(F)) {
         LLVM_DEBUG(dbgs() << "Checking instruction: " << I << "\n");
         // Check if it's a call, and we already know the status of the callee
-        if (const CallInst *CI = dyn_cast<CallInst>(&I)) {
-          if (const Function *Callee = CI->getCalledFunction()) {
+        if (const auto *CB = dyn_cast<CallBase>(&I)) {
+          if (const Function *Callee = CB->getCalledFunction()) {
             // First check in FuncsInSSCMap (current SCC)
             if (std::any_of(CurrentSCC.begin(), CurrentSCC.end(),
                             [&Callee](const CallGraphNode *CGN) {
@@ -2648,7 +2697,7 @@ SyncFreeInfo::SyncFreeInfo(Module &M_, CallGraph &CG_,
         }
 
         if (ThreadSanitizer::isInstrDangerous(
-                &I, AM.getResult<TargetLibraryAnalysis>(*F))) {
+                &I, AM.getResult<TargetLibraryAnalysis>(*F), this)) {
           AnySCCFuncDangerous = true;
           break;
         }
@@ -2683,7 +2732,7 @@ void SyncFreeInfo::findFunsContainsLoops() {
   // As above: without a body we cannot claim the function terminates, so treat
   // a declaration as if it looped.
   for (const Function &F : M)
-    IsFuncContainsLoops[&F] = F.isDeclaration();
+    IsFuncContainsLoops[&F] = true;
 
   // Analyze strongly connected components (SCCs) of the call graph in reverse
   // topological order. This ensures we process callees before their callers:
@@ -2722,8 +2771,8 @@ void SyncFreeInfo::findFunsContainsLoops() {
       for (const Instruction &I : instructions(F)) {
         LLVM_DEBUG(dbgs() << "Checking instruction: " << I << "\n");
         // Check if it's a call, and we already know the status of the callee
-        if (const CallInst *CI = dyn_cast<CallInst>(&I)) {
-          if (const Function *Callee = CI->getCalledFunction()) {
+        if (const auto *CB = dyn_cast<CallBase>(&I)) {
+          if (const Function *Callee = CB->getCalledFunction()) {
             // First check in FuncsInSSCMap (current SCC)
             if (std::any_of(CurrentSCC.begin(), CurrentSCC.end(),
                             [&Callee](const CallGraphNode *CGN) {

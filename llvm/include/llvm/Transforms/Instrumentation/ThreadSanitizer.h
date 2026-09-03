@@ -41,13 +41,6 @@ struct ModuleThreadSanitizerPass
   : public PassInfoMixin<ModuleThreadSanitizerPass> {
   PreservedAnalyses run(Module &M, ModuleAnalysisManager &AM);
   static bool isRequired() { return true; }
-  /// Built by the module pass for the module it most recently ran on, and
-  /// read by the function pass for that module's functions, keyed by
-  /// Function*. That pairing holds in the ordinary pipeline, where the
-  /// module pass and the function passes for one module run together. A
-  /// driver that interleaves modules would read one module's answers while
-  /// instrumenting another; nothing here guards against that.
-  static std::unique_ptr<SyncFreeInfo> SFI;
 };
 
 //===----------------------------------------------------------------------===//
@@ -91,6 +84,20 @@ private:
   const Module &M;
   const CallGraph &CG;
   AnalysisManager<Function> &AM;
+};
+
+/// Module analysis wrapping SyncFreeInfo. The module pass computes it and
+/// the function pass reads the cached result for its own module, so two
+/// modules in one process can never see each other's answers; a function
+/// pass run without the module pass finds no result and treats every call
+/// into the program as synchronizing.
+class SyncFreeAnalysis : public AnalysisInfoMixin<SyncFreeAnalysis> {
+  friend AnalysisInfoMixin<SyncFreeAnalysis>;
+  static AnalysisKey Key;
+
+public:
+  using Result = SyncFreeInfo;
+  Result run(Module &M, ModuleAnalysisManager &AM);
 };
 
 } // namespace llvm

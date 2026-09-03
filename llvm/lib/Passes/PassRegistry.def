@@ -32,6 +32,7 @@ MODULE_ANALYSIS("verify", VerifierAnalysis())
 MODULE_ANALYSIS("escape-analysis-global", EscapeAnalysisGlobal())
 MODULE_ANALYSIS("lock-ownership", LockOwnership())
 MODULE_ANALYSIS("single-threaded", SingleThreaded())
+MODULE_ANALYSIS("sync-free", SyncFreeAnalysis())
 
 #ifndef MODULE_ALIAS_ANALYSIS
 #define MODULE_ALIAS_ANALYSIS(NAME, CREATE_PASS)                               \

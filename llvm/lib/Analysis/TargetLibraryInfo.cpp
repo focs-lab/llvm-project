@@ -2027,6 +2027,21 @@ bool TargetLibraryInfo::isSyncFree(LibFunc F) const {
   case LibFunc_getlogin_r: // System call to get information
   case LibFunc_getpwnam:   // Access to system database (e.g., /etc/passwd)
 
+  // File-descriptor I/O. ThreadSanitizer models these as synchronization --
+  // write/send release the descriptor, read/recv acquire it -- so a race with
+  // the other end of a pipe or socket is ordered through them. Dominance
+  // elimination must not treat an access on one side as covering an access on
+  // the far side. They were missing from this list and fell to the sync-free
+  // default, which let dominance cross write(2) and post-dominance cross
+  // read(2) (elim-by-dominance-across-fd-io.ll).
+  case LibFunc_read:
+  case LibFunc_pread:
+  case LibFunc_write:
+  case LibFunc_pwrite:
+  case LibFunc_open:
+  case LibFunc_open64:
+  // (close is not in the LibFunc table.)
+
     return false; // These functions are NOT sync-free.
 
   default:
