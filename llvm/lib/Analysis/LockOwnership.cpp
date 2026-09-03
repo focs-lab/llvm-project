@@ -385,7 +385,8 @@ LockOwnershipInfo::LockOwnershipInfo(CallGraph &CG_, Module &MM_,
   doIPALockOwnershipAnalysis(true);
 
   findProtectedGlobalVariables(STI);
-  writeSummary();
+  if (TsanUseAnalysisSummaries)
+    writeSummary();
 }
 
 bool LockOwnershipInfo::isTryLockFunc(const Function *F) {

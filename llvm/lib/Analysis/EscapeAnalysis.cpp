@@ -1602,7 +1602,8 @@ EscapeAnalysisGlobalInfo::EscapeAnalysisGlobalInfo(CallGraph &CG, Module &M_,
 
   LLVM_DEBUG(printArgEscStatus(););
 
-  writeIPASummary();
+  if (TsanUseAnalysisSummaries)
+    writeIPASummary();
 
   DEBUG_WITH_TYPE(PRINT_ESCAPING_CALLEES,
       if (EscFuncsFile.is_open()) { EscFuncsFile.close(); });

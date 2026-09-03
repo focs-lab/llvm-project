@@ -301,7 +301,10 @@ SingleThreadedInfo::SingleThreadedInfo(CallGraph &CG_, Module &MM_)
   // Run SWMR analysis
   findSWMRGlobals();
 
-  writeSummary();
+  // Only write a summary if something may read one. Writing unconditionally
+  // created a tsan-logs/ directory in whatever tree the compiler ran in.
+  if (TsanUseAnalysisSummaries)
+    writeSummary();
 }
 
 //===----------------------------------------------------------------------===//
