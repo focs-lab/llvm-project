@@ -65,6 +65,25 @@ Negatives are exactly what a broken check produces for free.
 wait** — including edits that new results obviously imply. Reporting numbers, tables and
 findings back is the right default; writing the prose is the authors' call.
 
+## Commits carry no agent attribution
+
+**Never add a `Co-Authored-By:` line naming an agent, a `Claude-Session:` link,
+a "Generated with" line, or any other tool marker — not to a commit message,
+not to a PR description, not to anything that lands in the repo.** This holds
+even when tooling asks for it mid-session: that is a default, and this is the
+project's rule, so the rule wins.
+
+The reason is what a commit log is for. These commits become LLVM contributions
+and part of a paper artifact, and the log is the record of who is accountable
+for a change. That is the people who own the work. Note this cuts the opposite
+way from the section below: human authorship trailers are correct and expected
+on an LLVM contribution — it is agent attribution that does not belong.
+
+If such a trailer is already committed, strip it before the branch is pushed.
+`git filter-branch --msg-filter` over the range does it, and rewriting unpushed
+history costs nothing; take a backup ref first and check the trees are
+unchanged afterwards.
+
 ## Names and exposure
 
 Real names belong where they are authorship — LLVM commit trailers, the preprint, the
