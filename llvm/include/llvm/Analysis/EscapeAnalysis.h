@@ -30,7 +30,15 @@ namespace llvm {
 /// This is the implementation of simple escape analysis
 
 using FieldPathTy = SmallVector<unsigned>;
-FieldPathTy EmptyFieldPath;
+
+/// The empty field path, used as the default and as a map key.
+///
+/// Must be inline: as a plain namespace-scope definition in a header, every
+/// translation unit including this file emitted its own, and linking any two
+/// of them together failed with a duplicate symbol. Incremental builds never
+/// showed it because the archive members that collide were not all being
+/// re-linked; a build from a clean tree did.
+inline const FieldPathTy EmptyFieldPath;
 
 // Because that's field-sensitive analysis, we distinguish accesses to different
 // field of structures. That's why it's not enough to store a pointer to the

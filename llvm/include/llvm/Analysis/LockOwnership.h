@@ -92,6 +92,10 @@ private:
   /// look protected.
   static bool isTryLockFunc(const Function *F);
 
+  /// True for the __tsan_mutex_* annotation family, whose effect depends on
+  /// flag arguments rather than on which function was called.
+  static bool isAnnotationFunc(const Function *F);
+
   bool isUnLockFunc(const Function *F) const { return UnlockFuncs.contains(F); }
 
   enum class LockCallType { NONE, LOCK, UNLOCK };

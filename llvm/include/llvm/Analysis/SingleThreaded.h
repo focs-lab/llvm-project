@@ -43,8 +43,14 @@ const std::string SummaryHeaderSWMR =
 
 // Add names of known thread creation functions here
 const SmallDenseSet<StringRef, 8> KnownThreadCreators = {
-    "pthread_create", "__pthread_create_2_1", "thrd_create", "__kmpc_fork_call",
-    "__kmpc_fork_teams"};
+    "pthread_create",      "__pthread_create_2_1",
+    "thrd_create",         "__kmpc_fork_call",
+    "__kmpc_fork_teams",
+    // A fiber is a second logical thread of control in the same OS thread.
+    // TSan models one as a thread, and so must we: without this, a program
+    // whose concurrency is entirely fiber-based looked single-threaded
+    // throughout (compiler-rt/test/tsan/fiber_race.cpp).
+    "__tsan_create_fiber"};
 
 /// Mangled-name prefixes of functions that start a thread. C++, C11 and OpenMP
 /// thread creation only reaches pthread_create inside the runtime library, so

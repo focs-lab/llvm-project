@@ -2055,8 +2055,8 @@ bool llvm::NullPointerIsDefined(const Function *F, unsigned AS) {
   return false;
 }
 
-bool Intrinsic::isIntrinsicSyncFree(Intrinsic::ID ID) {
-  switch (ID) {
+bool Intrinsic::isIntrinsicSyncFree(const Function &F) {
+  switch (F.getIntrinsicID()) {
     // --- Intrinsics that are NOT sync-free ---
 
     // Atomics & Element-wise Atomics
@@ -2249,10 +2249,34 @@ bool Intrinsic::isIntrinsicSyncFree(Intrinsic::ID ID) {
     */
 
     default:
-      // If an intrinsic is not in the list above, we assume it is sync-free.
-      // This is a common strategy: define the exceptions.
-      // For perfect accuracy, especially with new or target-specific intrinsics,
-      // this list would need continuous maintenance or intrinsic metadata.
-      return true;
+      break;
   }
+
+  // Not named above. Rather than assume the list is complete -- it is not, and
+  // could not be kept so across every target's intrinsics -- ask what the
+  // intrinsic declares about itself, and treat silence as "may synchronize".
+  //
+  // Assuming sync-free here was wrong in ways nothing tested:
+  // llvm.x86.sse2.mfence and llvm.nvvm.barrier0 are both declared with an empty
+  // property list and appear on no blocklist, so a memory fence and a thread
+  // barrier were both reported sync-free, and dominance elimination would
+  // remove an access across either.
+  //
+  // nosync alone is far too narrow to use on its own -- only a score of
+  // intrinsics carry it, memcpy and memset among those that do not -- so the
+  // memory effects carry most of the weight:
+  //   - touching no memory at all leaves nothing to synchronize through, which
+  //     covers the arithmetic and bit intrinsics;
+  //   - touching only the memory passed in as arguments cannot establish
+  //     happens-before either, which covers memcpy, memmove and memset. The
+  //     element-wise atomic forms are arg-memory-only too, and are blocklisted
+  //     above for exactly that reason.
+  if (F.hasFnAttribute(Attribute::NoSync))
+    return true;
+  if (F.doesNotAccessMemory())
+    return true;
+  if (F.onlyAccessesArgMemory())
+    return true;
+
+  return false;
 }

@@ -372,9 +372,36 @@ void LockOwnershipInfo::writeSummary() const {
   Summary.close();
 }
 
+/// True if the module asks TSan to stop tracking synchronization anywhere.
+///
+/// Inside such a region a mutex still excludes, but it no longer establishes
+/// happens-before, so two threads holding the same lock genuinely race and
+/// TSan is expected to say so (compiler-rt/test/tsan/ignore_sync.cpp). No
+/// amount of static lockset reasoning can see that, and concluding a global is
+/// protected would suppress exactly the report the annotation exists to
+/// produce. So in a module that uses it, we conclude nothing.
+static bool moduleIgnoresSync(const Module &M) {
+  // Every match, not just the first: returning on the first candidate answered
+  // "no" whenever that one happened to be unused and a later one was not.
+  for (const Function &F : M.functions()) {
+    const StringRef Name = F.getName();
+    if ((Name.contains("AnnotateIgnoreSyncBegin") ||
+         Name.contains("__tsan_ignore_thread_sync_begin")) &&
+        !F.use_empty())
+      return true;
+  }
+  return false;
+}
+
 LockOwnershipInfo::LockOwnershipInfo(CallGraph &CG_, Module &MM_,
                                      SingleThreadedInfo &STI)
     : M(MM_), CG(&CG_) {
+  if (moduleIgnoresSync(M)) {
+    LLVM_DEBUG(dbgs() << "Module ignores synchronization; lock ownership "
+                         "concludes nothing\n");
+    return;
+  }
+
   if (!findLockUnlockFunctions())
     return;
 
@@ -387,6 +414,17 @@ LockOwnershipInfo::LockOwnershipInfo(CallGraph &CG_, Module &MM_,
   findProtectedGlobalVariables(STI);
   if (TsanUseAnalysisSummaries)
     writeSummary();
+}
+
+bool LockOwnershipInfo::isAnnotationFunc(const Function *F) {
+  // The __tsan_mutex_* family are annotations, not operations: whether
+  // __tsan_mutex_pre_lock acquires anything depends on flags passed alongside
+  // it (__tsan_mutex_try_lock, __tsan_mutex_read_lock, and
+  // __tsan_mutex_try_lock_failed on the post_lock call). Their names contain
+  // "lock", so pattern matching took every one of them for an acquisition --
+  // including the pre_unlock ones, and including a try-lock that failed.
+  // Modelling the flags properly is possible; until then they hold nothing.
+  return F && F->getName().starts_with("__tsan_mutex_");
 }
 
 bool LockOwnershipInfo::isTryLockFunc(const Function *F) {
@@ -402,8 +440,11 @@ bool LockOwnershipInfo::isSharedLockFunc(const Function *F) {
   if (!F)
     return false;
   const StringRef Name = F->getName();
-  static constexpr StringRef SharedPatterns[] = {
-      "rdlock", "lock_shared", "shared_lock", "read_lock", "rlock"};
+  // No bare "rlock": pthread_rwlock_w[rlock] contains it, so every rwlock
+  // *writer* acquisition matched and was recorded as holding nothing, which
+  // switched this analysis off for rwlock-based code entirely.
+  static constexpr StringRef SharedPatterns[] = {"rdlock", "lock_shared",
+                                                 "shared_lock", "read_lock"};
   for (const StringRef Pattern : SharedPatterns)
     if (Name.contains(Pattern))
       return true;
@@ -449,16 +490,27 @@ bool LockOwnershipInfo::findLockUnlockFunctions() {
     }
   };
 
-  // Find all functions that match lock/unlock patterns
+  // Find all functions that match lock/unlock patterns.
+  //
+  // Unlocks are classified first, and a function recognised as one is never
+  // also treated as an acquisition. The lock patterns include the bare
+  // substring "lock", and every unlock name contains it -- "pthread_mutex_
+  // unlock" quite literally has "lock" in it -- so with both sets filled
+  // independently and getLockCallInfo testing the lock set first, releases
+  // were read as acquisitions and the lock was never let go.
   for (const Function &F : M.functions()) {
-    // Fill lock and unlock functions
-    matchPatterns(F, F.getName(), LockNames, LockFuncs);
+    if (isAnnotationFunc(&F))
+      continue;
     matchPatterns(F, F.getName(), UnlockNames, UnlockFuncs);
+    if (!UnlockFuncs.contains(&F))
+      matchPatterns(F, F.getName(), LockNames, LockFuncs);
   }
 
   if (LockFuncs.empty() || UnlockFuncs.empty()) {
-    errs() << "Warning: No lock/unlock functions found in module "
-           << M.getName() << "\n";
+    // Not a warning: most translation units simply do not lock anything, and
+    // this printed to stderr on every one of them.
+    LLVM_DEBUG(dbgs() << "No lock/unlock functions in module " << M.getName()
+                      << "; lock ownership concludes nothing\n");
     return false;
   }
   return true;

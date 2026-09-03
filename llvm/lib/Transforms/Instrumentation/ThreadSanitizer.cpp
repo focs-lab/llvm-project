@@ -119,10 +119,41 @@ static cl::opt<bool> ClUseLockOwnershipAnalysisUpperbound(
              "-- upper bound estimation (not code inside critical sections "
              "instrumented)"),
     cl::Hidden);
+// Note what this trades away. The analysis reasons about data races, and an
+// access that runs before any thread exists cannot be in one -- but TSan's
+// use-after-free detection rides on the same instrumentation, and it does not
+// need a second thread. In a program that never creates one, every access is
+// elided and heap-use-after-free is no longer reported at all
+// (compiler-rt/test/tsan/free_race2.c). Races are preserved; that capability
+// is not.
 static cl::opt<bool> ClUseSingleThreadedAnalysis(
     "tsan-use-single-threaded", cl::init(false),
     cl::desc("Use single-threaded/multiple-threaded analysis to eliminate "
-             "extra instrumentation"),
+             "extra instrumentation. Note: also disables use-after-free "
+             "detection for accesses proven single-threaded; see "
+             "-tsan-stc-preserve-uaf"),
+    cl::Hidden);
+
+// Buys back the use-after-free detection the note above gives up, by keeping
+// the instrumentation on any single-threaded access that might be to the heap.
+// An alloca or a global is never freed, so those can still be dropped; a
+// pointer we cannot resolve might be a malloc'd block, and dropping its check
+// is what makes the free invisible.
+//
+// Off by default: the analysis is there to remove instrumentation, and this
+// keeps a good deal of it. Turn it on when use-after-free reporting in the
+// single-threaded phase matters more than the accesses saved.
+// Note it cannot help against -tsan-use-active-thread-count, which elides the
+// same calls at run time: while one thread is live the guard is false and the
+// call does not happen, whatever was emitted. The dynamic variant forfeits
+// use-after-free reporting for as long as the program is single-threaded, and
+// that is not confined to startup.
+static cl::opt<bool> ClStcPreserveUaf(
+    "tsan-stc-preserve-uaf", cl::init(false),
+    cl::desc("With -tsan-use-single-threaded, keep instrumenting accesses that "
+             "may be to heap memory so use-after-free is still reported. Has "
+             "no effect against -tsan-use-active-thread-count, which elides "
+             "them at run time"),
     cl::Hidden);
 static cl::opt<bool> ClUseSWMRAnalysis(
     "tsan-use-swmr", cl::init(false),
@@ -438,6 +469,12 @@ private:
   DenseMap<const BasicBlock *, SmallPtrSet<const BasicBlock *, 32>>
       RevReachCache;
 
+  /// For the dynamic single-threaded check: the access that computes the
+  /// "more than one thread" condition on behalf of each instrumented access,
+  /// and the condition once computed.
+  DenseMap<const Instruction *, Instruction *> MTCondLeader;
+  DenseMap<const Instruction *, Value *> MTCondValue;
+
   bool addrPointsToConstantData(Value *Addr);
   int getMemoryAccessFuncIndex(Type *OrigTy, Value *Addr, const DataLayout &DL);
   void InsertRuntimeIgnores(Function &F);
@@ -493,10 +530,37 @@ static bool tryPeelLoops(Function &F, LoopInfo *LI, ScalarEvolution *SE,
                     << "\n");
   bool Changed = false;
 
-  // Collect all innermost loops
+  // Peeling exists here for one reason: to expose an access in the first
+  // iteration that dominates the same access in the rest of the loop. That can
+  // only happen when some access in the loop is to a fixed address, so peeling
+  // a loop without one duplicates code for nothing -- paying compile time and
+  // size, and splitting what used to be a single stack into two, which changes
+  // how TSan groups the reports raised from it (thread_leak5.c and
+  // suppress_same_stacks.cpp both count reports and noticed).
+  //
+  // Volatile accesses do not count: they are instrumented whatever dominates
+  // them.
+  auto mayGainFromPeeling = [](const Loop *L) {
+    for (const BasicBlock *BB : L->blocks()) {
+      for (const Instruction &I : *BB) {
+        const Value *Ptr = getLoadStorePointerOperand(&I);
+        if (!Ptr)
+          continue;
+        if (const auto *LI = dyn_cast<LoadInst>(&I); LI && LI->isVolatile())
+          continue;
+        if (const auto *SI = dyn_cast<StoreInst>(&I); SI && SI->isVolatile())
+          continue;
+        if (L->isLoopInvariant(Ptr))
+          return true;
+      }
+    }
+    return false;
+  };
+
+  // Collect the innermost loops worth peeling
   SmallVector<Loop *, 8> Worklist;
   for (Loop *L : LI->getLoopsInPreorder()) {
-    if (L->isInnermost())
+    if (L->isInnermost() && mayGainFromPeeling(L))
       Worklist.push_back(L);
   }
 
@@ -1026,8 +1090,19 @@ void ThreadSanitizer::chooseInstructionsToInstrument(
     // not, so it can only be classified one access at a time.
     if (ClUseSingleThreadedAnalysis && STI.has_value() &&
         STI.value()->isSingleThreaded(I)) {
-      LLVM_DEBUG(dbgs() << "Instruction omitted: single-threaded context\n");
-      continue;
+      // An access can be dropped here on the strength of no thread existing.
+      // That is a statement about races; TSan's use-after-free reporting also
+      // rides on this instrumentation and does not need a second thread, so
+      // under -tsan-stc-preserve-uaf only accesses to memory that cannot be
+      // freed are dropped.
+      const Value *Obj = ClStcPreserveUaf ? getUnderlyingObject(Addr) : nullptr;
+      if (!ClStcPreserveUaf || isa<AllocaInst>(Obj) ||
+          isa<GlobalVariable>(Obj) || isa<Constant>(Obj)) {
+        LLVM_DEBUG(dbgs() << "Instruction omitted: single-threaded context\n");
+        continue;
+      }
+      LLVM_DEBUG(dbgs() << "Single-threaded, but may be heap: kept for "
+                           "use-after-free reporting\n");
     }
 
     // 4. Skip instrumentation if SWMR (Single-Writer/Multiple-Reader) analysis is
@@ -1173,7 +1248,7 @@ unsigned ThreadSanitizer::classifySyncEffect(const Instruction *Inst,
     return TLI.isSyncFree(Func) ? SYNC_NONE : SYNC_UNKNOWN;
 
   if (Callee->isIntrinsic())
-    return Intrinsic::isIntrinsicSyncFree(Callee->getIntrinsicID())
+    return Intrinsic::isIntrinsicSyncFree(*Callee)
                ? SYNC_NONE
                : SYNC_UNKNOWN;
 
@@ -1488,6 +1563,8 @@ bool ThreadSanitizer::sanitizeFunction(
   M = F.getParent();
   Func = &F;
   RevReachCache.clear();
+  MTCondLeader.clear();
+  MTCondValue.clear();
 
   // This is required to prevent instrumenting call to __tsan_init from within
   // the module constructor.
@@ -1504,16 +1581,17 @@ bool ThreadSanitizer::sanitizeFunction(
   if (F.hasFnAttribute(Attribute::DisableSanitizerInstrumentation))
     return false;
 
-  // 0. Skip instrumentation for functions that are proven to be single-threaded
-  if (ClUseSingleThreadedAnalysis) {
-    assert(STI.has_value());
-    if (STI.value()->isSingleThreaded(&F)) {
-      LLVM_DEBUG(
-          dbgs() << "Function is single-threaded, skipping instrumentation: "
-                 << F.getName() << "\n");
-      return false;
-    }
-  }
+  // Single-threaded functions are handled per access in
+  // chooseInstructionsToInstrument, which suppresses exactly the memory-access
+  // instrumentation and nothing else.
+  //
+  // Returning here instead, as this used to, also suppressed
+  // __tsan_func_entry/__tsan_func_exit, the atomics and the intercepted calls.
+  // Losing the shadow-stack calls truncates the stack of every report that
+  // passes through such a function -- including reports raised by the
+  // interceptors, which have nothing to do with what the analysis proved.
+  // longjmp3, longjmp4 and suppressions_mutex all still produced their
+  // "destroy of a locked mutex" warning and failed on the frames underneath it.
 
   initialize(*F.getParent(), TLI);
   SmallVector<InstructionInfo, 8> AllLoadsAndStores;
@@ -1638,6 +1716,40 @@ bool ThreadSanitizer::sanitizeFunction(
 
   for (CallInst *CI: InterceptedCalls)
     Res |= instrumentInterceptedCalls(CI, TLI, EAIGlobal);
+
+  if (ClInstrumentMemoryAccesses && SanitizeFunction &&
+      ClTsanUseActiveThreadCountFastPath) {
+    // Program order, so each run's leader is instrumented first, and the
+    // grouping itself: a run ends at a call and at a block boundary.
+    DenseMap<const Instruction *, unsigned> ProgIdx;
+    unsigned Idx = 0;
+    for (const BasicBlock &BB : F)
+      for (const Instruction &I : BB)
+        ProgIdx[&I] = Idx++;
+    llvm::stable_sort(AllLoadsAndStores,
+                      [&ProgIdx](const InstructionInfo &A,
+                                 const InstructionInfo &B) {
+                        return ProgIdx.lookup(A.Inst) < ProgIdx.lookup(B.Inst);
+                      });
+
+    SmallPtrSet<const Instruction *, 16> Instrumented;
+    for (const auto &II : AllLoadsAndStores)
+      Instrumented.insert(II.Inst);
+    for (BasicBlock &BB : F) {
+      Instruction *Leader = nullptr;
+      for (Instruction &I : BB) {
+        if (isa<CallBase>(&I)) {
+          Leader = nullptr; // a call may create or join a thread
+          continue;
+        }
+        if (!Instrumented.contains(&I))
+          continue;
+        if (!Leader)
+          Leader = &I;
+        MTCondLeader[&I] = Leader;
+      }
+    }
+  }
 
   // Instrument memory accesses only if we want to report bugs in the function.
   if (ClInstrumentMemoryAccesses && SanitizeFunction)
@@ -1766,12 +1878,30 @@ bool ThreadSanitizer::instrumentLoadOrStore(const InstructionInfo &II,
   }
 
   if (ClTsanUseActiveThreadCountFastPath) {
-    // Fast-path: if there's only one active thread, skip calling into TSan.
-    Value *DoCheck = checkActiveThreadCount(IRB, *II.Inst->getModule());
-    Instruction *InsertPt = II.Inst;
+    // Fast path: skip the call into TSan while the program has one thread.
+    //
+    // The counter is one global word shared by every thread, so loading it
+    // before every access puts every thread on the same cache line for the
+    // whole run. The load is therefore shared across a run of accesses that
+    // cannot observe the count change: only a call can create or join a
+    // thread, so within a call-free run the value is fixed. Runs are computed
+    // before any splitting, and the leader's condition dominates the rest of
+    // its run because a split leaves the tail dominated by the block the
+    // condition was computed in.
+    const auto LeaderIt = MTCondLeader.find(II.Inst);
+    Instruction *Leader = LeaderIt != MTCondLeader.end() ? LeaderIt->second
+                                                         : II.Inst;
+    Value *DoCheck = nullptr;
+    if (const auto It = MTCondValue.find(Leader); It != MTCondValue.end())
+      DoCheck = It->second;
+    else {
+      DoCheck = checkActiveThreadCount(IRB, *II.Inst->getModule());
+      MTCondValue[Leader] = DoCheck;
+    }
+
     Instruction *ThenTerm = nullptr;
     Instruction *ElseTerm = nullptr;
-    SplitBlockAndInsertIfThenElse(DoCheck, InsertPt, &ThenTerm, &ElseTerm);
+    SplitBlockAndInsertIfThenElse(DoCheck, II.Inst, &ThenTerm, &ElseTerm);
     IRB.SetInsertPoint(ThenTerm);
   }
   IRB.CreateCall(OnAccessFunc, Addr);

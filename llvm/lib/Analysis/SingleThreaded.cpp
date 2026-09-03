@@ -388,8 +388,11 @@ void SingleThreadedInfo::print(raw_ostream &OS) const {
   OS << "\n============================================\n"
      << "           Single-Threaded Functions          \n"
      << "============================================\n\n";
+  // main is deliberately absent: it is classified per basic block, and
+  // isSingleThreaded() answers false for it, so listing it here as
+  // single-threaded described something the analysis does not believe.
   for (const auto &[Func, Context] : FuncType)
-    if (!Func->isDeclaration() && Func->hasName() &&
+    if (!Func->isDeclaration() && Func->hasName() && Func != MainFunc &&
         Context == FuncContext::SingleThreaded)
       OS << "  " << Func->getName() << "\n";
 
