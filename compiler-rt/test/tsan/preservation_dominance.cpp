@@ -15,7 +15,7 @@
 // llvm/test/Instrumentation/ThreadSanitizerNew/elim-by-dominance-paths.ll.
 
 // RUN: %clangxx_tsan -O1 %s -o %t -mllvm -tsan-use-dominance-analysis && %deflake %run %t 2>&1 | FileCheck %s
-// RUN: %clangxx_tsan -O1 %s -o %t && %deflake %run %t 2>&1 | FileCheck %s
+// RUN: %clangxx_tsan_stock -O1 %s -o %t && %deflake %run %t 2>&1 | FileCheck %s
 #include "test.h"
 
 int Arr[8];

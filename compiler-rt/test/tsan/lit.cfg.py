@@ -100,6 +100,15 @@ def build_invocation(compile_flags):
 
 config.substitutions.append(("%clang_tsan ", build_invocation(clang_tsan_cflags)))
 config.substitutions.append(("%clangxx_tsan ", build_invocation(clang_tsan_cxxflags)))
+# Stock TSan for a test's control line: the same flags without the
+# analyses, whatever TSAN_MLLVM_FLAGS says. A control that merely omitted
+# -mllvm flags still inherited the harness default.
+config.substitutions.append(
+    ("%clang_tsan_stock ", build_invocation(
+        [f for f in clang_tsan_cflags if f not in tsan_analysis_flags])))
+config.substitutions.append(
+    ("%clangxx_tsan_stock ", build_invocation(
+        [f for f in clang_tsan_cxxflags if f not in tsan_analysis_flags])))
 
 # Define CHECK-%os to check for OS-dependent output.
 config.substitutions.append(("CHECK-%os", ("CHECK-" + config.host_os)))

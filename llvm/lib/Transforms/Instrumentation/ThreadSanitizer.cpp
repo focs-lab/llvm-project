@@ -319,6 +319,19 @@ STATISTIC(NumEscVolatile, "Number of escapes due to volatile");
 STATISTIC(NumEscOther, "Number of escapes due to other reasons");
 STATISTIC(NumEscInvalid, "Number of escapes due to invalid reasons");
 STATISTIC(NumEscCall, "Number of escapes due to escaped calls");
+STATISTIC(NumOmittedByLockOwnership,
+          "Number of accesses omitted: global consistently lock-protected");
+STATISTIC(NumOmittedByLockOwnershipUpperbound,
+          "Number of accesses omitted: inside any critical section (UNSOUND)");
+STATISTIC(NumOmittedBySingleThreaded,
+          "Number of accesses omitted: single-threaded context");
+STATISTIC(NumOmittedBySWMR,
+          "Number of accesses omitted: global never written in MT context");
+STATISTIC(NumGuardedByThreadCount,
+          "Number of accesses guarded by the active-thread-count check");
+STATISTIC(NumMemIntrinsicsInterceptorSkipped,
+          "Number of memory intrinsics / string calls whose interceptor is "
+          "disabled because their operands are local");
 STATISTIC(NumOmittedByDominance, "Number of accesses ignored due to dominance");
 STATISTIC(NumOmittedByPostDominance,
           "Number of accesses ignored due to post-dominance");
@@ -1392,6 +1405,7 @@ void ThreadSanitizer::chooseInstructionsToInstrument(
           if (const Value *V = getUnderlyingObject(Addr);
               isa<GlobalVariable>(V)) {
             LLVM_DEBUG(dbgs() << "Instruction omitted due to lock ownership\n");
+            NumOmittedByLockOwnershipUpperbound++;
             continue;
           }
         }
@@ -1402,6 +1416,7 @@ void ThreadSanitizer::chooseInstructionsToInstrument(
             if (LOI.value()->isProtectedGV(GV)) {
               LLVM_DEBUG(dbgs()
                          << "Instruction omitted due to lock ownership\n");
+              NumOmittedByLockOwnership++;
               continue;
             }
       }
@@ -1422,6 +1437,7 @@ void ThreadSanitizer::chooseInstructionsToInstrument(
       if (!ClStcPreserveUaf || isa<AllocaInst>(Obj) ||
           isa<GlobalVariable>(Obj) || isa<Constant>(Obj)) {
         LLVM_DEBUG(dbgs() << "Instruction omitted: single-threaded context\n");
+        NumOmittedBySingleThreaded++;
         continue;
       }
       LLVM_DEBUG(dbgs() << "Single-threaded, but may be heap: kept for "
@@ -1437,6 +1453,7 @@ void ThreadSanitizer::chooseInstructionsToInstrument(
           if (STI.value()->isSWMRGlobal(GV)) {
             LLVM_DEBUG(dbgs() << "Global variable " << GV->getName()
                               << " is read-only\n");
+            NumOmittedBySWMR++;
             continue;
           }
         }
@@ -2229,6 +2246,7 @@ bool ThreadSanitizer::instrumentLoadOrStore(const InstructionInfo &II,
     Instruction *ElseTerm = nullptr;
     SplitBlockAndInsertIfThenElse(DoCheck, II.Inst, &ThenTerm, &ElseTerm);
     IRB.SetInsertPoint(ThenTerm);
+    NumGuardedByThreadCount++;
   }
   IRB.CreateCall(OnAccessFunc, Addr);
 
@@ -2304,6 +2322,7 @@ bool ThreadSanitizer::instrumentInterceptedCalls(
     LLVM_DEBUG(dbgs() << "Call does not escape any pointers\n");
     InstrumentationIRBuilder IRB(CI);
     disableInterceptorForInstr(CI, IRB);
+    NumMemIntrinsicsInterceptorSkipped++;
     return false;
   }
   return true;
@@ -2331,6 +2350,7 @@ bool ThreadSanitizer::instrumentMemIntrinsic(
     if (!isPointerEscaped(M->getArgOperand(0), I, TLI, EAIGlobal)) {
       LLVM_DEBUG(dbgs() << "MemIntrinsic does not escape any pointers\n");
       disableInterceptorForInstr(I, IRB);
+      NumMemIntrinsicsInterceptorSkipped++;
       return false;
     }
     LLVM_DEBUG(dbgs() << "MemIntrinsic escapes pointers\n");
@@ -2372,6 +2392,7 @@ bool ThreadSanitizer::instrumentMemIntrinsic(
         !isPointerEscaped(M->getArgOperand(0), I, TLI, EAIGlobal) &&
         !isPointerEscaped(M->getArgOperand(1), I, TLI, EAIGlobal)) {
       disableInterceptorForInstr(I, IRB);
+      NumMemIntrinsicsInterceptorSkipped++;
       return false;
     }
 
