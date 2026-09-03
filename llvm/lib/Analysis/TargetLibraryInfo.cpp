@@ -1449,6 +1449,13 @@ bool TargetLibraryInfo::doesArgEscape(LibFunc F, unsigned ArgNo) {
   // Pointers are used for local reading/writing only and are not stored.
   // ===================================================================
 
+  // Copy or inspect contents only; nothing is retained. These were the seven
+  // LibFuncs absent from this table when its default was flipped to "escapes".
+  case LibFunc_cabs: case LibFunc_cabsf: case LibFunc_cabsl:
+  case LibFunc_memccpy: case LibFunc_strlcat: case LibFunc_strlcpy:
+  case LibFunc_strxfrm:
+    return false;
+
   // --- Math functions (without out-parameters) ---
   // Most math functions either don't take pointers or (like copysign)
   // do not cause them to escape.
@@ -1705,7 +1712,11 @@ bool TargetLibraryInfo::doesArgEscape(LibFunc F, unsigned ArgNo) {
     return ArgNo != 0;
 
   default:
-    return false;
+    // A library function this table does not know is assumed to retain its
+    // pointer arguments. The previous default assumed the opposite, which
+    // made every LibFunc added to LLVM after this table was written silently
+    // non-escaping; the table is now explicit about the ones that are not.
+    return true;
   }
 }
 

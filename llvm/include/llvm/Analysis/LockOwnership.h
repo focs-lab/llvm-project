@@ -63,6 +63,10 @@ public:
   bool isProtectedGV(const GlobalVariable *GV) const {
     return ProtectedGVs.contains(GV);
   }
+  /// True if some lock is known to be held at \p I.
+  bool isUnderAnyLock(const Instruction *I) const {
+    return !getLocksProtecting(I).empty();
+  }
 
 private:
   Module &M;

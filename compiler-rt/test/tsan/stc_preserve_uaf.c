@@ -6,8 +6,10 @@
 // instrumentation on accesses that may be to the heap.
 //
 // This is the positive control for the flag: the report must survive the
-// analysis. Its negative counterpart is free_race2.c, which is the same shape
-// without the flag and is expected to lose the report under STC.
+// analysis. free_race2.c is the same shape and opts into the same two flags
+// for the same reason; the negative case -- that the report is lost without
+// them -- is documented rather than tested, because a test that must fail
+// under one configuration is a permanent red row in the matrix.
 //
 // Only one RUN line, and it names every option it depends on, including the
 // one it must switch off. A line compiled with a bare %clang_tsan would not be

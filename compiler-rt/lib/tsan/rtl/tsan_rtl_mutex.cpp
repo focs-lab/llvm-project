@@ -214,8 +214,12 @@ void MutexPostLock(ThreadState *thr, uptr pc, uptr addr, u32 flagz, int rec) {
     ReportDeadlock(thr, pc, ctx->dd->GetReport(&cb));
   }
 
-  // Redundancy 'ReX' filter
-  thr->filter_ctx.process_lock(addr);
+  // Redundancy 'ReX' filter. Guarded like every unlock path: without the
+  // guard this was a DenseMap insert on every acquisition in every
+  // configuration -- the baseline included -- and, since the unlocks *were*
+  // guarded and g_filter is null by default, the per-thread map only grew.
+  if (g_filter)
+    thr->filter_ctx.process_lock(addr);
 }
 
 int MutexUnlock(ThreadState *thr, uptr pc, uptr addr, u32 flagz) {
@@ -331,8 +335,12 @@ void MutexPostReadLock(ThreadState *thr, uptr pc, uptr addr, u32 flagz) {
     ReportDeadlock(thr, pc, ctx->dd->GetReport(&cb));
   }
 
-  // Redundancy 'ReX' filter
-  thr->filter_ctx.process_lock(addr);
+  // Redundancy 'ReX' filter. Guarded like every unlock path: without the
+  // guard this was a DenseMap insert on every acquisition in every
+  // configuration -- the baseline included -- and, since the unlocks *were*
+  // guarded and g_filter is null by default, the per-thread map only grew.
+  if (g_filter)
+    thr->filter_ctx.process_lock(addr);
 }
 
 void MutexReadUnlock(ThreadState *thr, uptr pc, uptr addr) {

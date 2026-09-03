@@ -41,6 +41,12 @@ struct ModuleThreadSanitizerPass
   : public PassInfoMixin<ModuleThreadSanitizerPass> {
   PreservedAnalyses run(Module &M, ModuleAnalysisManager &AM);
   static bool isRequired() { return true; }
+  /// Built by the module pass for the module it most recently ran on, and
+  /// read by the function pass for that module's functions, keyed by
+  /// Function*. That pairing holds in the ordinary pipeline, where the
+  /// module pass and the function passes for one module run together. A
+  /// driver that interleaves modules would read one module's answers while
+  /// instrumenting another; nothing here guards against that.
   static std::unique_ptr<SyncFreeInfo> SFI;
 };
 

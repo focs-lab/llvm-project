@@ -67,6 +67,8 @@
 #include <llvm/Support/FileSystem.h>
 #include <llvm/Support/MemoryBuffer.h>
 #include <llvm/Support/Path.h>
+#include "llvm/Analysis/CFG.h"
+#include <bitset>
 
 using namespace llvm;
 
@@ -103,10 +105,59 @@ static cl::opt<bool> ClUseEscapeAnalysis(
     "tsan-use-escape-analysis", cl::init(false),
     cl::desc("Use better escape analysis to eliminate extra instrumentation"),
     cl::Hidden);
+// What this preserves, precisely. The analysis is flow-sensitive at basic-block
+// granularity: an access in a block from which the object has not escaped on
+// any path to that block is elided, even if a later block publishes the
+// address. (Within one block the block's escape state is used, so a write in
+// the same block as the publication is conservatively kept; the elision shows
+// up across blocks.) So for
+//
+//   entry: x.a = 1;          <- elided: x has not escaped on the way into entry
+//   later: shared = &x;      <- x escapes here
+//   T2:    p = shared; r = p->a;
+//
+// stock TSan reports two races (on `shared` and on `x.a`); this build reports
+// only the first. The guarantee is therefore "at least one race per racy
+// execution", not "the same races": if the publication of &x is ordered before
+// the remote load of &x by any happens-before edge, the elided write, earlier
+// in program order than the publication, is ordered before the remote read of x
+// by transitivity and there was no race on x to lose; if it is not ordered, the
+// publication store and the remote load are both to escaped memory, both
+// instrumented, and concurrent, and TSan reports that. The argument covers
+// cross-thread publication through memory; it does not cover a signal handler
+// reaching the object on the same thread.
+// Statistics only. For each access the per-point escape check elides and the
+// per-object check would keep, classify the escape sites of its object that
+// are reachable after the access. That is the split needed to decide between
+// the two notions: thread-creation arguments (release-like, soundly elidable)
+// versus plain publication (not).
+// The per-point escape check elides an access to an object that has not
+// escaped on any path to it. That is sound only if no later escape can hand
+// the object to a thread that then races with the elided access. It cannot if
+// every escape site reachable after the access is release-like: a thread
+// creation (the child starts after the access), a store to a global that lock
+// ownership finds consistently protected (the reader takes the same lock), or
+// an atomic release store to a global read only by acquire loads. A plain
+// store, a call, a return, or a use the walk does not follow keeps the access.
+// Off selects the bare per-point elision, which loses the report on the object
+// when it is published by a plain store after the access.
+static cl::opt<bool> ClEASoundFlowSensitive(
+    "tsan-ea-sound-flow-sensitive", cl::init(true), cl::Hidden,
+    cl::desc("Elide an access to a not-yet-escaped object only if every escape "
+             "reachable after it is a release-like publication"));
+
+static cl::opt<bool> ClAttributeFlowSensitivity(
+    "tsan-attribute-flow-sensitivity", cl::init(false), cl::Hidden,
+    cl::desc("Count, by the kind of escape site reachable after them, the "
+             "accesses that per-point escape analysis elides and per-object "
+             "would keep (statistics only)"));
+
 static cl::opt<bool> ClUseEscapeAnalysisGlobal(
     "tsan-use-escape-analysis-global", cl::init(false),
-    cl::desc(
-        "Use global (IPA) escape analysis to eliminate extra instrumentation"),
+    cl::desc("Use global (IPA) escape analysis to eliminate extra "
+             "instrumentation. Preserves at least one race per racy execution, "
+             "not the identical set: an access made before the object's "
+             "address is published is elided"),
     cl::Hidden);
 static cl::opt<bool> ClUseLockOwnershipAnalysis(
     "tsan-use-lock-ownership", cl::init(false),
@@ -115,9 +166,10 @@ static cl::opt<bool> ClUseLockOwnershipAnalysis(
     cl::Hidden);
 static cl::opt<bool> ClUseLockOwnershipAnalysisUpperbound(
     "tsan-use-lock-ownership-upperbound", cl::init(false),
-    cl::desc("Use lock ownership analysis to eliminate extra instrumentation "
-             "-- upper bound estimation (not code inside critical sections "
-             "instrumented)"),
+    cl::desc("UNSOUND, for estimating an upper bound only: skip every access "
+             "to a global made inside any critical section, whether or not "
+             "the lock is the one that protects it. Never use for race "
+             "detection"),
     cl::Hidden);
 // Note what this trades away. The analysis reasons about data races, and an
 // access that runs before any thread exists cannot be in one -- but TSan's
@@ -148,6 +200,19 @@ static cl::opt<bool> ClUseSingleThreadedAnalysis(
 // call does not happen, whatever was emitted. The dynamic variant forfeits
 // use-after-free reporting for as long as the program is single-threaded, and
 // that is not confined to startup.
+// Restores the behaviour the paper's STC figures were measured with: a
+// function the analysis marks wholly single-threaded gets no
+// __tsan_func_entry/__tsan_func_exit either. The shadow stack then lacks that
+// frame, so any report whose stack passes through such a function -- including
+// reports the interceptors raise, which have nothing to do with the analysis
+// -- comes out truncated. That is why it is off; it exists so the cost of
+// correct stacks can be measured rather than guessed.
+static cl::opt<bool> ClStcSkipFuncEntryExit(
+    "tsan-stc-skip-func-entry-exit", cl::init(false),
+    cl::desc("With -tsan-use-single-threaded, also omit __tsan_func_entry/exit "
+             "in wholly single-threaded functions. Truncates report stacks"),
+    cl::Hidden);
+
 static cl::opt<bool> ClStcPreserveUaf(
     "tsan-stc-preserve-uaf", cl::init(false),
     cl::desc("With -tsan-use-single-threaded, keep instrumenting accesses that "
@@ -203,6 +268,44 @@ STATISTIC(NumOmittedReadsFromConstantGlobals,
           "Number of reads from constant globals");
 STATISTIC(NumOmittedReadsFromVtable, "Number of vtable reads");
 STATISTIC(NumOmittedNonCaptured, "Number of accesses ignored due to capturing");
+STATISTIC(NumEAKeptByLaterEscape,
+          "Accesses to a not-yet-escaped object kept because a later escape "
+          "is not release-like");
+STATISTIC(NumEAElidedReleaseLike,
+          "Accesses to a not-yet-escaped object elided: every later escape "
+          "is release-like");
+STATISTIC(NumEAElidedNoReachableEscape,
+          "Accesses to a not-yet-escaped object elided: no escape site is "
+          "reachable from the access");
+STATISTIC(NumFSOnlyElided, "Accesses per-point escape analysis elides that the "
+                           "per-object notion would keep");
+STATISTIC(NumFSOnlyThreadCreate, "  ...every reachable escape: thread-creation "
+                                 "argument");
+STATISTIC(NumFSOnlyStoreToProtectedGlobal,
+          "  ...every reachable escape: store to a lock-protected global");
+STATISTIC(NumFSOnlyAtomicPublishAcquired,
+          "  ...every reachable escape: atomic release store to a global read "
+          "only by acquire loads");
+STATISTIC(NumFSOnlyStoreUnderLockOther,
+          "  ...every reachable escape: store under a lock, destination not "
+          "consistently protected");
+STATISTIC(NumFSOnlyAtomicReleaseOther,
+          "  ...every reachable escape: atomic release store with an "
+          "unordered reader possible");
+STATISTIC(NumFSOnlyPlainStore, "  ...every reachable escape: plain store to "
+                               "global or heap memory");
+STATISTIC(NumFSOnlyUnknownCall, "  ...every reachable escape: argument to a "
+                                "function without a body");
+STATISTIC(NumFSOnlyInternalCall, "  ...every reachable escape: argument to a "
+                                 "function with a body");
+STATISTIC(NumFSOnlyReturn, "  ...every reachable escape: return of the pointer");
+STATISTIC(NumFSOnlyOtherUse, "  ...every reachable escape: a use the walk does "
+                             "not follow (stored into a local, ptrtoint, ...)");
+STATISTIC(NumFSOnlyMixed, "  ...reachable escapes of more than one kind");
+STATISTIC(NumFSOnlyNoReachableSite, "  ...no escape site reachable from the "
+                                    "access");
+STATISTIC(NumFSOnlyArgObject, "  ...the object is a function argument (its "
+                              "escape is in a caller)");
 STATISTIC(NumOmittedNonEscaped,
           "Number of accesses ignored due to non-escaping");
 
@@ -979,6 +1082,194 @@ static void updateEscapeStatistics(EscReasonTy Reason) {
 //
 // 'Local' is a vector of insns within the same BB (no calls between).
 // 'All' is a vector of insns that will be instrumented.
+static bool isThreadCreatorName(StringRef N) {
+  return N == "pthread_create" || N == "__pthread_create_2_1" ||
+         N == "thrd_create" || N == "__kmpc_fork_call" ||
+         N == "__tsan_create_fiber" || N.starts_with("_ZNSt6thread");
+}
+
+// Every load of \p G is an atomic acquire or stronger and G's address goes
+// nowhere else. A pointer published into G by a release store is then
+// received under acquire, and TSan orders the publisher's earlier accesses
+// before the reader's.
+static bool allLoadsAcquire(const GlobalVariable *G) {
+  for (const User *U : G->users()) {
+    if (const auto *LI = dyn_cast<LoadInst>(U)) {
+      if (!LI->isAtomic() ||
+          !isAtLeastOrStrongerThan(LI->getOrdering(), AtomicOrdering::Acquire))
+        return false;
+      continue;
+    }
+    if (const auto *SI = dyn_cast<StoreInst>(U); SI && SI->getPointerOperand() == G)
+      continue;
+    return false; // address taken, GEP, call: readers we cannot see
+  }
+  return true;
+}
+
+// The escape sites of an access's object that lie on paths after the access,
+// by kind. Walks the object's uses the way capture tracking does. Only sites
+// reachable from the access count: an escape on a path the access is not on
+// cannot hand the object to another thread in an execution containing the
+// access. A pointer stored into another local is not followed (that is
+// points-to analysis), and any use the walk does not recognise is recorded as
+// one it cannot vouch for; both keep the access.
+namespace {
+enum LaterEscapeKind {
+  ThreadCreate,
+  StoreToProtectedGlobal,
+  AtomicPublishAcquired,
+  StoreUnderLockOther,
+  AtomicReleaseOther,
+  PlainStore,
+  UnknownCall,
+  InternalCall,
+  Return,
+  OtherUse,
+  NumLaterEscapeKinds
+};
+struct LaterEscapes {
+  std::bitset<NumLaterEscapeKinds> Seen;
+  bool ArgObject = false;
+  /// True when nothing reachable is a publication another thread could
+  /// receive unordered -- including when nothing is reachable at all.
+  bool allReleaseLike() const {
+    auto Rest = Seen;
+    Rest.reset(ThreadCreate);
+    Rest.reset(StoreToProtectedGlobal);
+    Rest.reset(AtomicPublishAcquired);
+    return Rest.none();
+  }
+};
+} // namespace
+
+static LaterEscapes
+collectLaterEscapes(Instruction *Access, Value *Addr,
+                    std::optional<LockOwnershipInfo *> LOI) {
+  LaterEscapes LE;
+  const Value *Obj = getUnderlyingObject(Addr);
+  if (isa<Argument>(Obj)) {
+    LE.ArgObject = true;
+    return LE;
+  }
+  auto &Seen = LE.Seen;
+  const auto Reachable = [&](const Instruction *Site) {
+    return Site->getFunction() == Access->getFunction() &&
+           isPotentiallyReachable(Access, Site);
+  };
+  const auto ClassifyStoreTo = [&](const Value *Dest, const Instruction *Site,
+                                   bool Atomic, AtomicOrdering Ord) {
+    const Value *DObj = getUnderlyingObject(Dest);
+    if (isa<AllocaInst>(DObj)) { // into a local container: not followed
+      Seen.set(OtherUse);
+      return;
+    }
+    if (!Reachable(Site))
+      return;
+    const auto *G = dyn_cast<GlobalVariable>(DObj);
+    if (Atomic && isAtLeastOrStrongerThan(Ord, AtomicOrdering::Release)) {
+      Seen.set(G && allLoadsAcquire(G) ? AtomicPublishAcquired
+                                       : AtomicReleaseOther);
+      return;
+    }
+    if (LOI && *LOI && (*LOI)->isUnderAnyLock(Site)) {
+      Seen.set(G && (*LOI)->isProtectedGV(G) ? StoreToProtectedGlobal
+                                              : StoreUnderLockOther);
+      return;
+    }
+    Seen.set(PlainStore);
+  };
+  SmallVector<const Value *, 16> Work{Obj};
+  SmallPtrSet<const Value *, 32> Visited;
+  while (!Work.empty()) {
+    const Value *V = Work.pop_back_val();
+    if (!Visited.insert(V).second)
+      continue;
+    for (const Use &U : V->uses()) {
+      const auto *User = dyn_cast<Instruction>(U.getUser());
+      if (!User) {
+        Seen.set(OtherUse);
+        continue;
+      }
+      if (isa<GetElementPtrInst>(User) || isa<BitCastInst>(User) ||
+          isa<AddrSpaceCastInst>(User) || isa<PHINode>(User) ||
+          isa<SelectInst>(User)) {
+        Work.push_back(User);
+        continue;
+      }
+      if (const auto *SI = dyn_cast<StoreInst>(User)) {
+        if (SI->getValueOperand() == V) // the pointer itself is stored
+          ClassifyStoreTo(SI->getPointerOperand(), SI, SI->isAtomic(),
+                          SI->getOrdering());
+        continue; // a store into the object is not an escape
+      }
+      if (isa<LoadInst>(User) || isa<ICmpInst>(User) || isa<MemIntrinsic>(User))
+        continue; // reading, writing or copying the object's bytes
+      if (const auto *CB = dyn_cast<CallBase>(User)) {
+        if (!CB->isArgOperand(&U)) {
+          Seen.set(OtherUse);
+          continue;
+        }
+        const unsigned ArgNo = CB->getArgOperandNo(&U);
+        if (CB->doesNotCapture(ArgNo) || !Reachable(CB))
+          continue;
+        const Function *Callee = CB->getCalledFunction();
+        if (Callee && isThreadCreatorName(Callee->getName()))
+          Seen.set(ThreadCreate);
+        else if (!Callee || Callee->isDeclaration())
+          Seen.set(UnknownCall);
+        else
+          Seen.set(InternalCall);
+        continue;
+      }
+      if (isa<ReturnInst>(User)) {
+        if (Reachable(User))
+          Seen.set(Return);
+        continue;
+      }
+      Seen.set(OtherUse); // ptrtoint, insertvalue, ...
+    }
+  }
+  return LE;
+}
+
+static void attributeFlowSensitiveElision(const LaterEscapes &LE) {
+  NumFSOnlyElided++;
+  if (LE.ArgObject) {
+    NumFSOnlyArgObject++;
+    return;
+  }
+  const auto &Seen = LE.Seen;
+  if (Seen.none()) {
+    NumFSOnlyNoReachableSite++;
+    return;
+  }
+  if (Seen.count() > 1) {
+    NumFSOnlyMixed++;
+    return;
+  }
+  if (Seen[ThreadCreate])
+    NumFSOnlyThreadCreate++;
+  else if (Seen[StoreToProtectedGlobal])
+    NumFSOnlyStoreToProtectedGlobal++;
+  else if (Seen[AtomicPublishAcquired])
+    NumFSOnlyAtomicPublishAcquired++;
+  else if (Seen[StoreUnderLockOther])
+    NumFSOnlyStoreUnderLockOther++;
+  else if (Seen[AtomicReleaseOther])
+    NumFSOnlyAtomicReleaseOther++;
+  else if (Seen[PlainStore])
+    NumFSOnlyPlainStore++;
+  else if (Seen[UnknownCall])
+    NumFSOnlyUnknownCall++;
+  else if (Seen[InternalCall])
+    NumFSOnlyInternalCall++;
+  else if (Seen[Return])
+    NumFSOnlyReturn++;
+  else
+    NumFSOnlyOtherUse++;
+}
+
 void ThreadSanitizer::chooseInstructionsToInstrument(
     SmallVectorImpl<Instruction *> &Local,
     SmallVectorImpl<InstructionInfo> &All, const TargetLibraryInfo &TLI,
@@ -1052,13 +1343,45 @@ void ThreadSanitizer::chooseInstructionsToInstrument(
       }
     } else if (EAIGlobal.has_value()) {
       EscReasonTy EscReason;
+      // Flow-sensitive: "escaped on some path from entry to this block". An
+      // access before the object's address is published is elided even if the
+      // object escapes later; see the note on ClUseEscapeAnalysisGlobal for
+      // what that does and does not preserve.
       if (!EAIGlobal.value()->isEscapedUndrlObjOrPointee(
               Addr, TLI, I->getParent(), EscReason)) {
-        LLVM_DEBUG(dbgs() << "Instruction omitted due to escape analysis\n");
-        NumOmittedNonEscaped++;
-        continue;
+        // Not escaped on any path to here. Whether that is enough depends on
+        // what happens after; see ClEASoundFlowSensitive.
+        bool Elide = true;
+        if (ClEASoundFlowSensitive || ClAttributeFlowSensitivity) {
+          EscReasonTy AnywhereReason;
+          if (EAIGlobal.value()->isEscapedUndrlObjOrPointeeAnywhere(
+                  Addr, TLI, I->getFunction(), AnywhereReason)) {
+            const LaterEscapes LE = collectLaterEscapes(I, Addr, LOI);
+            if (ClAttributeFlowSensitivity)
+              attributeFlowSensitiveElision(LE);
+            if (ClEASoundFlowSensitive) {
+              // A volatile access is an escape the walk does not model.
+              const bool Volatile =
+                  (AnywhereReason &
+                   EscReasonTy(EscapeAnalysisInfo::VOLATILE)).any();
+              Elide = !LE.ArgObject && !Volatile && LE.allReleaseLike();
+              if (!Elide)
+                NumEAKeptByLaterEscape++;
+              else if (LE.Seen.any())
+                NumEAElidedReleaseLike++;
+              else
+                NumEAElidedNoReachableEscape++;
+            }
+          }
+        }
+        if (Elide) {
+          LLVM_DEBUG(dbgs() << "Instruction omitted due to escape analysis\n");
+          NumOmittedNonEscaped++;
+          continue;
+        }
+      } else {
+        updateEscapeStatistics(EscReason);
       }
-      updateEscapeStatistics(EscReason);
     }
 
     // 3. If lock ownership analysis is available
@@ -1771,7 +2094,10 @@ bool ThreadSanitizer::sanitizeFunction(
   }
 
   // Instrument function entry/exit points if there were instrumented accesses.
-  if ((Res || HasCalls) && ClInstrumentFuncEntryExit) {
+  const bool SkipEntryExit =
+      ClStcSkipFuncEntryExit && ClUseSingleThreadedAnalysis &&
+      STI.has_value() && STI.value()->isSingleThreaded(&F);
+  if ((Res || HasCalls) && ClInstrumentFuncEntryExit && !SkipEntryExit) {
     InstrumentationIRBuilder IRB(F.getEntryBlock().getFirstNonPHI());
     Value *ReturnAddress = IRB.CreateCall(
         Intrinsic::getDeclaration(F.getParent(), Intrinsic::returnaddress),
@@ -2022,34 +2348,25 @@ bool ThreadSanitizer::instrumentMemIntrinsic(
     // report raised inside the interceptor.
     return true;
   } else if (MemTransferInst *M = dyn_cast<MemTransferInst>(I)) {
-    // Not clear why, but the test signal_thread_sigctx_race.cpp fails if
-    // we don't instrument memcpy. So this version works:
-    // define internal noundef i32 @_ZL9do_selectv()
-    //   ...
-    //   %tvs = alloca %struct.timeval, align 8
-    //   ...
-    //   %1 = call ptr @__tsan_memcpy(ptr %tvs,
-    //                                ptr @__const._ZL9do_selectv.tvs, i64 16)
-    //
-    // but this one doesn't work
-    // call void @llvm.memcpy.p0.p0.i64(ptr align 8 %tvs,
-    //                                  ptr align 8 @__const._ZL9do_selectv.tvs,
-    //                                  i64 16, i1 false)
-
-    // Check if the first argument of M is '%tvs = alloca %struct.timeval'
+    // Workaround, not a soundness measure, and its root cause is not
+    // understood. When the destination of a memory-transfer intrinsic does not
+    // escape, the branch below leaves the llvm.memcpy/memmove intrinsic in
+    // place with the interceptor disabled instead of lowering it to a
+    // __tsan_memcpy call. For a stack timeval later handed to select() that
+    // breaks signal delivery in signal_thread_sigctx_race.cpp -- the program
+    // functionally misbehaves ("Failed to receive signal"), which is why this
+    // is keyed on struct.timeval by name. Removing it regresses that test; the
+    // mechanism (why leaving the intrinsic vs. replacing it changes select's
+    // behaviour) still needs investigation. It is narrow: any other
+    // non-escaping struct copied into a syscall with a timeout could hit the
+    // same wall and would not be caught here.
     bool TimevalCaseFlag = false;
-    if (const auto *Alloca = dyn_cast<AllocaInst>(M->getArgOperand(0))) {
-      if (Alloca->getAllocatedType()->isStructTy()) {
+    if (const auto *Alloca = dyn_cast<AllocaInst>(M->getArgOperand(0)))
+      if (Alloca->getAllocatedType()->isStructTy())
         if (const auto *Struct = cast<StructType>(Alloca->getAllocatedType());
-            Struct->hasName() && (Struct->getName() == "struct.timeval")) {
-          LLVM_DEBUG(dbgs()
-                     << "First argument is an allocation of struct.timeval\n");
+            Struct->hasName() && Struct->getName() == "struct.timeval")
           TimevalCaseFlag = true;
-        }
-      }
-    }
 
-    //
     // Check if pointers are not escape
     if (!TimevalCaseFlag &&
         !isPointerEscaped(M->getArgOperand(0), I, TLI, EAIGlobal) &&

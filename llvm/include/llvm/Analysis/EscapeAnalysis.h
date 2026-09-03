@@ -141,6 +141,16 @@ public:
   EscReasonTy findObjInBBEscState(const BasicBlock *BB,
                                   const ObjAndPath &OAP) const;
 
+  /// The escape reason for \p OAP anywhere in \p F: the union of every
+
+  /// block's state. Serves -tsan-ea-flow-insensitive. Built once per
+
+  /// function on first use.
+
+  EscReasonTy findObjInFuncEscState(const Function *F,
+
+              const ObjAndPath &OAP) const;
+
   /// Return escape reason for V in BB
   EscReasonTy getFullEscReasonForBB(const BasicBlock *BB,
                                     const ObjAndPath &OAP) const;
@@ -152,6 +162,10 @@ public:
                       EscReasonTy *EscReason = nullptr) const;
   bool isEscapedForBBIPA(const BasicBlock *BB, const ObjAndPath &OAP,
                          EscReasonTy *EscReason = nullptr) const;
+  /// Like isEscapedForBBIPA, but for the whole function: true if \p OAP is
+  /// escaped in any block of \p F. The per-object notion of escape.
+  bool isEscapedInFuncIPA(const Function *F, const ObjAndPath &OAP,
+                          EscReasonTy *EscReason = nullptr) const;
 
   /// Make action for each pointee, if given object points to something
   void
@@ -181,6 +195,9 @@ private:
 
   /// Map of basic blocks to their escape analysis states.
   DenseMap<const BasicBlock *, EscapeState> BBEscapeStates;
+  /// Per-function union of BBEscapeStates, filled lazily; see
+  /// findObjInFuncEscState.
+  mutable DenseMap<const Function *, EscapeState> FuncEscapeStates;
 
   /// List of functions whose arguments don't escape
   std::shared_ptr<NonEscapingFuncsMap> NonEscapingFuncs;
@@ -321,7 +338,9 @@ private:
   static bool isDereferenceableOrNull(const Value *O, const DataLayout &DL);
 
   /// Check whether type contains pointers
-  static bool structContainsPointerType(const Type *Ty);
+  /// True if \p Ty is a pointer or an aggregate (struct, array or vector)
+  /// that transitively contains one.
+  static bool typeContainsPointerType(const Type *Ty);
 
   /// Find in ArgsEscapes given argument and return escape status
   EscReasonTy getArgEscBottomTopIPA(unsigned ArgNo, const Function *Func) const;
@@ -415,6 +434,12 @@ public:
                                   const TargetLibraryInfo &TLI,
                                   const BasicBlock *BB,
                                   EscapeAnalysisInfo::EscReasonTy &EscReason);
+  /// isEscapedUndrlObjOrPointee with the per-object notion: does the object
+  /// (or, if \p Addr was loaded, anything it may point to) escape anywhere in
+  /// \p F. Used to attribute what the per-point notion elides beyond it.
+  bool isEscapedUndrlObjOrPointeeAnywhere(
+      const Value *Addr, const TargetLibraryInfo &TLI, const Function *F,
+      EscapeAnalysisInfo::EscReasonTy &EscReason);
 
   /// Is Value V is escaping in some path from Entry to BB in the function F
   bool isEscapedForBBTSan(const Function *F, const BasicBlock *BB,

@@ -11,6 +11,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/Analysis/EscapeAnalysis.h"
+#include "llvm/Support/CommandLine.h"
 #include "llvm/Analysis/SingleThreaded.h"
 
 #include "llvm/ADT/PostOrderIterator.h"
@@ -34,6 +35,23 @@
 #include <sstream>
 
 using namespace llvm;
+
+
+// Which notion of "escaped" an access is judged by.
+//
+// The default is per program point: an access is elided if the object has not
+// escaped on any path from the function entry to the access's block. That
+// elides a write made before the object's address is published in a later
+// block, and with it the report stock TSan would give on that object (the
+// publication itself is still reported). The paper's escape proposition is
+// stated per object -- an access is exempt only if no location it touches is
+// marked escaping -- which is the flow-insensitive notion this flag selects:
+// an object that escapes anywhere in the function is escaped everywhere in it.
+static cl::opt<bool> ClEAFlowInsensitive(
+    "tsan-ea-flow-insensitive", cl::init(false), cl::Hidden,
+    cl::desc("Treat an object that escapes anywhere in a function as escaped "
+             "at every point of it (the per-object notion), instead of only "
+             "from the point of escape on"));
 
 #define DEBUG_TYPE "ea"
 #define PRINT_ESCAPING_CALLEES "ea-escaping-callees"
@@ -584,6 +602,7 @@ EscapeAnalysisInfo::EscapeAnalysisInfo(
 
   // Traverse CFG in reverse post-order
   ReversePostOrderTraversal<const Function *> RPOT(&AnalyzedFunc);
+  FuncEscapeStates.clear(); // the union summarises these; rebuilt on demand
   for (const BasicBlock *BB : RPOT) {
     WorkList.push_back(BB);
     BBEscapeStates[BB] = EscapeState();
@@ -609,6 +628,10 @@ EscapeAnalysisInfo::EscapeAnalysisInfo(
         WorkList.push_back(SuccBB);
       }
       BBEscapeStates[BB] = NewES;
+      // The per-function union is stale the moment a block state changes;
+      // the analysis itself asks isEscapedForBBIPA mid-fixpoint, and under
+      // -tsan-ea-flow-insensitive that answer comes from the union.
+      FuncEscapeStates.clear();
     } else {
       LLVM_DEBUG(dbgs() << "Not Changed!\n\n");
     }
@@ -753,14 +776,16 @@ EscapeAnalysisInfo::mergePredEscapeStates(const BasicBlock *BB) {
 //===----------------------------------------------------------------------===//
 
 /// Check whether type contains pointers
-bool EscapeAnalysisInfo::structContainsPointerType(const Type *Ty) {
+bool EscapeAnalysisInfo::typeContainsPointerType(const Type *Ty) {
   if (Ty->isPointerTy())
     return true;
-  if (!Ty->isStructTy())
+  // Recurse into every aggregate, not only structs: an array or vector of
+  // pointers carries them just as a struct field does.
+  if (!Ty->isStructTy() && !Ty->isArrayTy() && !Ty->isVectorTy())
     return false;
 
   for (const Type *EltTy : Ty->subtypes())
-    if (structContainsPointerType(EltTy))
+    if (typeContainsPointerType(EltTy))
       return true;
   return false;
 }
@@ -805,12 +830,18 @@ EscapeAnalysisInfo::getEscInfoCall(const Use &U, const Instruction *I) const {
     const auto *Src = MI->getArgOperand(1);
     const auto *Dst = MI->getArgOperand(0);
 
-    // Considering llvm.memcpy intrinsic
-    if ((MI->getIntrinsicID() == Intrinsic::memcpy) && (Src == U.get()))
-      // Check whether the source argument is a struct containing pointers
+    // A transfer copies the source's bytes into the destination. If those
+    // bytes include a pointer into a local, that pointer now also lives at the
+    // destination, so the local escapes with it. This covers memmove as well
+    // as memcpy (both are MemTransferInst), and any type that contains a
+    // pointer -- an array of pointers as much as a struct. Previously only
+    // memcpy of a struct was modelled, so a pointer copied by memmove, or one
+    // living in a pointer array, slipped through and its target was reported
+    // local.
+    if (isa<MemTransferInst>(MI) && (Src == U.get()))
       if (const auto *Alloca = dyn_cast<AllocaInst>(U.get()))
-        if (const Type *StructTy = Alloca->getAllocatedType();
-            StructTy && structContainsPointerType(StructTy))
+        if (const Type *SrcTy = Alloca->getAllocatedType();
+            SrcTy && typeContainsPointerType(SrcTy))
           return {EscKindTy::MAY_ALIASING, getUnderlyingMayEscObjs(Dst, TLI)};
   }
 
@@ -1036,6 +1067,24 @@ EscapeAnalysisInfo::findObjInBBEscState(const BasicBlock *BB,
   return It->second.getEscReason(OAP);
 }
 
+EscapeAnalysisInfo::EscReasonTy
+EscapeAnalysisInfo::findObjInFuncEscState(const Function *F,
+                                          const ObjAndPath &OAP) const {
+  auto It = FuncEscapeStates.find(F);
+  if (It == FuncEscapeStates.end()) {
+    EscapeState Union;
+    for (const BasicBlock &BB : *F) {
+      const auto BIt = BBEscapeStates.find(&BB);
+      if (BIt == BBEscapeStates.end())
+        continue;
+      for (const auto &[Obj, Reason] : BIt->second.getEscObjs())
+        Union.addEscObjOrReason(Obj, Reason, nullptr);
+    }
+    It = FuncEscapeStates.try_emplace(F, std::move(Union)).first;
+  }
+  return It->second.getEscReason(OAP);
+}
+
 bool EscapeAnalysisInfo::isEscapedForBBImpl(const BasicBlock *BB,
                                             const ObjAndPath &OAP,
                                             EscReasonTy *EscReason,
@@ -1049,7 +1098,9 @@ bool EscapeAnalysisInfo::isEscapedForBBImpl(const BasicBlock *BB,
     return true;
   }
 
-  const auto FoundStatus = findObjInBBEscState(BB, OAP);
+  const auto FoundStatus = ClEAFlowInsensitive
+                               ? findObjInFuncEscState(BB->getParent(), OAP)
+                               : findObjInBBEscState(BB, OAP);
   if (FoundStatus.any()) {
     if (EscReason)
       *EscReason = FoundStatus;
@@ -1073,6 +1124,26 @@ bool EscapeAnalysisInfo::isEscapedForBBIPA(const BasicBlock *BB,
                                            const ObjAndPath &OAP,
                                            EscReasonTy *EscReason) const {
   return isEscapedForBBImpl(BB, OAP, EscReason, true);
+}
+
+bool EscapeAnalysisInfo::isEscapedInFuncIPA(const Function *F,
+                                            const ObjAndPath &OAP,
+                                            EscReasonTy *EscReason) const {
+  const auto ExtStatus = getExtObjStatusIPA(OAP.Obj);
+  if (ExtStatus.any()) {
+    if (EscReason)
+      *EscReason = ExtStatus;
+    return true;
+  }
+  const auto FoundStatus = findObjInFuncEscState(F, OAP);
+  if (FoundStatus.any()) {
+    if (EscReason)
+      *EscReason = FoundStatus;
+    return true;
+  }
+  if (EscReason)
+    *EscReason = 0;
+  return false;
 }
 
 /// Make action for each pointee, if given object points to something
@@ -1664,6 +1735,41 @@ bool EscapeAnalysisGlobalInfo::isEscapedForBBTSan(
     });
   }
   return EscReason.any();
+}
+
+bool EscapeAnalysisGlobalInfo::isEscapedUndrlObjOrPointeeAnywhere(
+    const Value *Addr, const TargetLibraryInfo &TLI, const Function *F,
+    EscapeAnalysisInfo::EscReasonTy &EscReason) {
+  bool IsComplete = true;
+  const SmallVector<UnderlObjTy> UnderlObjs =
+      EscapeAnalysisInfo::getUnderlyingMayEscObjs(
+          Addr, TLI, EscapeAnalysisInfo::MaxUnderlObjLookup, nullptr,
+          &IsComplete);
+  if (!IsComplete) {
+    EscReason = EscapeAnalysisInfo::OTHER;
+    return true;
+  }
+  const auto FEIIt = FuncEscapeInfo.find(F);
+  if (FEIIt == FuncEscapeInfo.end())
+    return true;
+  for (const UnderlObjTy &UnderlObj : UnderlObjs) {
+    if (EscapeAnalysisInfo::isNonConstGV(UnderlObj.Obj))
+      return true;
+    FEIIt->second.isEscapedInFuncIPA(F, UnderlObj, &EscReason);
+    if (EscReason == EscapeAnalysisInfo::PASSING_TO_CALL)
+      return true;
+    if (UnderlObj.Loaded) {
+      // Pointees are per block; take every block's.
+      for (const BasicBlock &BB : *F)
+        FEIIt->second.forEachPointeeDo(
+            UnderlObj, &BB, [&](const ObjAndPath &OAP) {
+              FEIIt->second.isEscapedInFuncIPA(F, OAP, &EscReason);
+            });
+    }
+    if (EscReason.any())
+      return true;
+  }
+  return false;
 }
 
 void EscapeAnalysisGlobalInfo::print(Module &M, raw_ostream &O) const {

@@ -16,6 +16,8 @@
 #include "llvm/ADT/PostOrderIterator.h"
 #include "llvm/ADT/SCCIterator.h"
 #include "llvm/Analysis/ValueTracking.h"
+#include "llvm/IR/Constants.h"
+#include "llvm/IR/DataLayout.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/PassManager.h"
 
@@ -53,10 +55,15 @@ LockOwnershipInfo::intersectLockStates(LockStateTy MeetState,
         // of control flows
         LLVM_DEBUG(dbgs() << "WARNING: Lock point is unambiguous: " << *Lock
                           << "\n");
-        LLVM_DEBUG(dbgs() << "  Pred lock instr: " << *PredIt->second.LockInstr
-                          << "\n");
-        LLVM_DEBUG(dbgs() << "  Current lock instr: " << *State.LockInstr
-                          << "\n");
+        LLVM_DEBUG({
+          dbgs() << "  Pred lock instr: ";
+          if (PredIt->second.LockInstr)
+            dbgs() << *PredIt->second.LockInstr;
+          dbgs() << "\n  Current lock instr: ";
+          if (State.LockInstr)
+            dbgs() << *State.LockInstr;
+          dbgs() << "\n";
+        });
 
         // NextMeetState[Lock] = {State.IsLocked, nullptr};
         // NextMeetState.erase(Lock);
@@ -102,6 +109,47 @@ LockStateTy LockOwnershipInfo::computeMeet(const BasicBlock *BB,
   return MeetState;
 }
 
+/// The identity of the mutex a lock call names, or null if it cannot be
+/// known.
+///
+/// A mutex is a specific object, not the allocation it sits in. Identifying a
+/// lock by getUnderlyingObject() collapsed every mutex reachable from one base
+/// into a single lock -- the two fields of one struct, the elements of a
+/// striped array -- and accepted a pointer argument or a loaded pointer as an
+/// identity although it names a different mutex on every call. Each of those
+/// let the analysis conclude that two accesses were under the same lock when
+/// they were not, and drop the instrumentation that would have caught the
+/// race (tsan-experiments/tools/tmp-checks/lo-soundness: three lost races).
+///
+/// So a lock is known only when it is a global, or a constant offset into a
+/// global. That is canonicalised to (global, byte offset) and rebuilt as a
+/// uniqued constant GEP, so the same mutex reached through different
+/// instructions in different functions compares equal. Anything else -- an
+/// argument, a load, a variable-index GEP, a local -- is unknown, and an
+/// unknown mutex protects nothing. That forgoes protection through a mutex
+/// handed in by pointer even when every caller passes the same global; that is
+/// the cost of not guessing.
+static const Value *canonicalLockIdentity(const Value *Ptr,
+                                          const DataLayout &DL) {
+  // Lock functions are recognised by name, and some of what that matches
+  // takes an integer first argument (clock_gettime's clockid_t,
+  // __tsan_java_mutex_lock's jptr). An integer names no mutex we can track.
+  if (!Ptr->getType()->isPointerTy())
+    return nullptr;
+  APInt Offset(DL.getIndexTypeSizeInBits(Ptr->getType()), 0);
+  const Value *Base = Ptr->stripAndAccumulateConstantOffsets(
+      DL, Offset, /*AllowNonInbounds=*/true);
+  const auto *GV = dyn_cast<GlobalVariable>(Base);
+  if (!GV)
+    return nullptr;
+  if (Offset.isZero())
+    return GV;
+  LLVMContext &Ctx = GV->getContext();
+  Value *Idx = ConstantInt::get(Ctx, Offset);
+  return ConstantExpr::getGetElementPtr(Type::getInt8Ty(Ctx),
+                                        const_cast<GlobalVariable *>(GV), Idx);
+}
+
 std::pair<LockOwnershipInfo::LockCallType, const Value *>
 LockOwnershipInfo::getLockCallInfo(const Instruction *I) const {
   if (!I)
@@ -117,11 +165,15 @@ LockOwnershipInfo::getLockCallInfo(const Instruction *I) const {
     // A shared acquisition provides no exclusion, so it is not recorded as
     // holding anything. A global reached only under reader locks therefore
     // ends up with an empty lockset and stays instrumented.
+    // The Value is null when the mutex cannot be identified; the caller
+    // decides what an unknown acquisition or release means.
     if (isLockFunc(CalledFunc) && !isSharedLockFunc(CalledFunc) &&
         !isTryLockFunc(CalledFunc))
-      return {LockCallType::LOCK, getUnderlyingObject(CB->getArgOperand(0))};
+      return {LockCallType::LOCK, canonicalLockIdentity(CB->getArgOperand(0),
+                                                        M.getDataLayout())};
     if (isUnLockFunc(CalledFunc))
-      return {LockCallType::UNLOCK, getUnderlyingObject(CB->getArgOperand(0))};
+      return {LockCallType::UNLOCK, canonicalLockIdentity(
+                                        CB->getArgOperand(0), M.getDataLayout())};
   }
   return {LockCallType::NONE, nullptr};
 }
@@ -131,11 +183,13 @@ void LockOwnershipInfo::handleLock(LockStateTy &CurrState,
                                    const Value *Lock) {
   LLVM_DEBUG(dbgs() << "\nLOCK Instr: " << Instr << "\n");
   const auto It = CurrState.find(Lock);
-  if (It != CurrState.end()) {
+  if (It != CurrState.end() && It->second.IsLocked && It->second.LockInstr) {
     // Already locked! Potential double lock.
     LLVM_DEBUG(dbgs() << "WARNING: Double lock on mutex: " << *Lock << "\n");
     // Keep tracking the *first* lock instruction for this path
-    // It->second.LockInstr = &Instr;
+  } else if (It != CurrState.end()) {
+    // An entry without a live acquisition is stale; this is a fresh one.
+    It->second = {true, &Instr};
   } else {
     // Not locked or not present, mark as locked
     LLVM_DEBUG(dbgs() << "Lock: " << *Lock << "\n");
@@ -150,19 +204,24 @@ void LockOwnershipInfo::handleUnlock(LockStateTy &CurrState,
 
   const auto It = CurrState.find(Lock);
   if (It != CurrState.end()) {
-    // Was locked, now unlocked. Record the pair.
+    // Was locked, now unlocked. Record the pair only when there is an
+    // acquisition to pair it with; a release with none recorded (the lock was
+    // taken by a caller, or the state was merged away) is not a region. This
+    // used to assert, and memcached's extstore.c and MySQL's thr_mutex.cc
+    // both reach it.
     LLVM_DEBUG(dbgs() << "Lock: " << *Lock << "\n");
-    assert(It->second.LockInstr && "LockInstr should be set");
-    LLVM_DEBUG(dbgs() << "Lock Instr: " << *It->second.LockInstr << "\n\n");
-
-    LockUnlockPairs.insert({It->second.LockInstr, &Instr});
-    // Remove locks, for which we found pairs
+    if (It->second.LockInstr) {
+      LLVM_DEBUG(dbgs() << "Lock Instr: " << *It->second.LockInstr << "\n\n");
+      LockUnlockPairs.insert({It->second.LockInstr, &Instr});
+    }
+    // Released either way.
     CurrState.erase(It);
   } else {
-    // Unlocking a mutex that wasn't locked (or state diverged earlier)
+    // Unlocking a mutex that wasn't locked here: nothing was held, nothing to
+    // record. (A marker entry used to be inserted; it only served to trip the
+    // assertion above on the next acquisition.)
     LLVM_DEBUG(dbgs() << "WARNING: Unlocking a mutex that wasn't locked: "
                       << *Lock << "\n");
-    CurrState[Lock] = {false, nullptr};
   }
 }
 
@@ -177,13 +236,27 @@ bool LockOwnershipInfo::applyTransferFunc(const BasicBlock *BB,
     const auto [CallType, Lock] = getLockCallInfo(&I);
 
     // 1. Process lock acquire and release
-    if (CallType == LockCallType::LOCK && Lock) {
-      handleLock(InState, I, Lock);
+    if (CallType == LockCallType::LOCK) {
+      // Acquiring a mutex we cannot identify adds nothing we can rely on.
+      if (Lock)
+        handleLock(InState, I, Lock);
       continue;
     }
 
-    if (CallType == LockCallType::UNLOCK && Lock) {
-      handleUnlock(InState, I, Lock);
+    if (CallType == LockCallType::UNLOCK) {
+      if (Lock) {
+        handleUnlock(InState, I, Lock);
+      } else {
+        // A release of a mutex we cannot identify may be the release of any
+        // mutex we believe held -- a loaded or passed-in pointer can name the
+        // same global. Nothing is known to be held after it. (A call into a
+        // function without a body is still assumed not to release anything;
+        // that is the pre-existing assumption for external calls and is left
+        // as it was.)
+        LLVM_DEBUG(dbgs() << "Unlock of unidentifiable mutex; clearing state: "
+                          << I << "\n");
+        InState.clear();
+      }
       continue;
     }
 
