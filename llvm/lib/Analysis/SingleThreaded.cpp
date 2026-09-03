@@ -30,16 +30,52 @@ cl::opt<bool> llvm::TsanUseAnalysisSummaries(
              "earlier modules. Only sound in a build that analyses every "
              "module before instrumenting any of them."));
 
-// Reproduction switch, unsound. With it, a function this unit never calls and
-// never takes the address of is assumed unreachable from any other unit's
-// threads and may be single-threaded on linkage grounds -- the whole-program
-// assumption the paper's figures were measured under. Off (the default) a
-// function another unit can name runs multi-threaded.
-static cl::opt<bool> ClStcAssumeWholeProgram(
-    "tsan-stc-assume-whole-program", cl::init(false), cl::Hidden,
-    cl::desc("Assume the whole program is visible in this module: external "
-             "linkage does not by itself make a function multi-threaded "
-             "(UNSOUND for per-translation-unit compilation)"));
+cl::opt<bool> llvm::TsanWholeProgram(
+    "tsan-whole-program", cl::init(false), cl::Hidden,
+    cl::desc("The module is the whole program: external linkage does not by "
+             "itself make a function multi-threaded, a variable writable "
+             "elsewhere, or a mutex releasable elsewhere. For the linked IR "
+             "the summaries are produced from; unsound for a per-unit "
+             "compile."));
+
+cl::opt<std::string> llvm::TsanSummaryId(
+    "tsan-summary-id", cl::init(""), cl::Hidden,
+    cl::desc("Provenance stamp written into summaries and required to match "
+             "when reading them"));
+
+static cl::opt<std::string> ClSummaryDir(
+    "tsan-summary-dir", cl::init("tsan-logs"), cl::Hidden,
+    cl::desc("Directory the analysis summaries are written to and read from"));
+
+std::string llvm::tsanSummaryDir() { return ClSummaryDir; }
+
+std::string llvm::summaryHeader() {
+  return SummaryIdPrefix + TsanSummaryId + "\n" + SummaryFlagsPrefix +
+         "whole-program=" + (TsanWholeProgram ? "1" : "0") + "\n";
+}
+
+bool llvm::openSummary(std::ifstream &In, const std::string &FileName) {
+  In.open(tsanSummaryDir() + "/" + FileName);
+  if (!In.is_open())
+    return false;
+  std::string First;
+  std::getline(In, First);
+  const std::string Id = First.rfind(SummaryIdPrefix, 0) == 0
+                             ? First.substr(SummaryIdPrefix.size())
+                             : std::string();
+  if (Id != TsanSummaryId.getValue()) {
+    errs() << "warning: ignoring " << FileName << ": written with summary id '"
+           << Id << "', this compile uses '" << TsanSummaryId << "'\n";
+    In.close();
+    return false;
+  }
+  // Skip the remaining header lines.
+  while (In.peek() == '#') {
+    std::string Skip;
+    std::getline(In, Skip);
+  }
+  return true;
+}
 
 
 
@@ -253,7 +289,8 @@ bool SingleThreadedInfo::runSTMTAnalysis() {
       // single-threaded" -- the fail-closed direction.
       const bool ExternallyReachable =
           F->hasAddressTaken() ||
-          (!ClStcAssumeWholeProgram && !F->hasLocalLinkage());
+          (!TsanWholeProgram && !F->hasLocalLinkage() &&
+           !SummaryST.contains(F));
       if (ExternallyReachable) {
         LLVM_DEBUG(dbgs() << "Function " << F->getName()
                    << " is externally reachable - marking multi-threaded\n");
@@ -285,7 +322,8 @@ bool SingleThreadedInfo::runSTMTAnalysis() {
           // Reached through a call edge; classify by the same rule as the
           // outer loop rather than defaulting to single-threaded.
           if (Callee->hasAddressTaken() ||
-              (!ClStcAssumeWholeProgram && !Callee->hasLocalLinkage()))
+              (!TsanWholeProgram && !Callee->hasLocalLinkage() &&
+               !SummaryST.contains(Callee)))
             markFuncAndAllCalleesAsMultithreaded(Callee, *CalleeNode,
                                                  FuncTypeNew);
           else
@@ -323,6 +361,8 @@ bool SingleThreadedInfo::runSTMTAnalysis() {
 SingleThreadedInfo::SingleThreadedInfo(CallGraph &CG_, Module &MM_)
     : M(MM_), CG(&CG_) {
   LLVM_DEBUG(dbgs() << "\n=== Single Threaded Analysis ===\n");
+  if (TsanUseAnalysisSummaries)
+    SummaryLoaded = loadSummary();
 
   // Find all functions which create threads
   identifyBaseThreadCreators();
@@ -337,10 +377,18 @@ SingleThreadedInfo::SingleThreadedInfo(CallGraph &CG_, Module &MM_)
 
   // Run SWMR analysis
   findSWMRGlobals();
-
-  // Only write a summary if something may read one. Writing unconditionally
-  // created a tsan-logs/ directory in whatever tree the compiler ran in.
-  if (TsanUseAnalysisSummaries)
+  // Whole-program verdicts this unit cannot reach on its own: a function the
+  // linked analysis found single-threaded and nothing here marks otherwise
+  // (a unit with no thread creator maps nothing at all), and a variable
+  // another unit defines or writes.
+  for (const Function *F : SummaryST)
+    if (!FuncType.count(F))
+      FuncType[F] = FuncContext::SingleThreaded;
+  for (const GlobalVariable *GV : SummarySWMR)
+    SWMRGlobals.insert(GV);
+  // Only write a summary if something may read one, and never over the one
+  // this compile was seeded from.
+  if (TsanUseAnalysisSummaries && !SummaryLoaded)
     writeSummary();
 }
 
@@ -364,7 +412,7 @@ void SingleThreadedInfo::findSWMRGlobals() {
     // Skip constant global variables
     if (GV.isConstant())
       continue;
-    if (!GV.hasLocalLinkage() || GV.isDeclaration())
+    if ((!TsanWholeProgram && !GV.hasLocalLinkage()) || GV.isDeclaration())
       continue;
 
     LLVM_DEBUG(dbgs() << "Checking global: " << GV.getName() << "\n");
@@ -459,11 +507,13 @@ void SingleThreadedInfo::print(raw_ostream &OS) const {
     OS << "  " << GV->getName() << "\n";
 }
 
-const std::string LogDir = "tsan-logs";
+// At call time, not static-initialisation time: the directory is a
+// command-line option.
 static void createLogDir() {
+  const std::string LogDir = tsanSummaryDir();
   std::error_code EC;
   if (!std::filesystem::exists(LogDir))
-    if (!std::filesystem::create_directory(LogDir, EC) && EC)
+    if (!std::filesystem::create_directories(LogDir, EC) && EC)
       errs() << "Error creating directory " << LogDir << ": " << EC.message()
              << "\n";
 }
@@ -472,7 +522,7 @@ void SingleThreadedInfo::writeSummary() const {
   createLogDir();
 
   const auto STSummaryPath =
-      SummaryDirName + "/" + SingleThreadedSummaryFileName;
+      tsanSummaryDir() + "/" + SingleThreadedSummaryFileName;
   std::ofstream Summary(STSummaryPath);
   if (!Summary.is_open()) {
     errs() << "Error: Could not open " << STSummaryPath << " for writing\n";
@@ -481,38 +531,38 @@ void SingleThreadedInfo::writeSummary() const {
   LLVM_DEBUG(dbgs() << "Writing analysis results to "
                     << SingleThreadedSummaryFileName << "\n");
 
-  Summary << SummaryHeaderST << "\n";
+  // Only externally visible entities: a local one is private to its unit,
+  // and llvm-link renames the clashing ones, so a name would be ambiguous.
+  // Sorted, so the file is a function of the analysis alone.
+  Summary << summaryHeader();
+  std::vector<std::string> Lines;
   for (const auto &[Func, Context] : FuncType)
     if (!Func->isDeclaration() && Func->hasName() && Func != MainFunc &&
-        Context == FuncContext::SingleThreaded)
-      Summary << Func->getName().str() << "\n";
+        !Func->hasLocalLinkage() && Context == FuncContext::SingleThreaded)
+      Lines.push_back(Func->getName().str());
+  llvm::sort(Lines);
+  Summary << SummaryHeaderST << "\n";
+  for (const auto &L : Lines)
+    Summary << L << "\n";
   Summary << "\n";
-
-  Summary << SummaryHeaderSWMR << "\n";
+  Lines.clear();
   for (const GlobalVariable *GV : SWMRGlobals)
-    Summary << GV->getName().str() << "\n";
-
+    if (GV->hasName() && !GV->hasLocalLinkage())
+      Lines.push_back(GV->getName().str());
+  llvm::sort(Lines);
+  Summary << SummaryHeaderSWMR << "\n";
+  for (const auto &L : Lines)
+    Summary << L << "\n";
   Summary.close();
 }
 
-void SingleThreadedInfo::readSummary() {
-  // Clear existing analysis results
-  FuncType.clear();
-  SWMRGlobals.clear();
-
-  std::ifstream Summary(SummaryDirName + "/" + SingleThreadedSummaryFileName);
-  if (!Summary.is_open()) {
-    errs() << "Error: Could not open file " << SingleThreadedSummaryFileName
-           << " for reading\n";
-    return;
-  }
-  LLVM_DEBUG(dbgs() << "Reading analysis results from "
-                    << SingleThreadedSummaryFileName << "\n");
-
+bool SingleThreadedInfo::loadSummary() {
+  std::ifstream Summary;
+  if (!openSummary(Summary, SingleThreadedSummaryFileName))
+    return false;
   std::string Line;
   bool ReadingST = false;
   bool ReadingSWMR = false;
-
   while (std::getline(Summary, Line)) {
     if (Line == SummaryHeaderST) {
       ReadingST = true;
@@ -529,36 +579,27 @@ void SingleThreadedInfo::readSummary() {
       ReadingSWMR = false;
       continue;
     }
-
+    // A summary speaks only for externally visible entities; a local one of
+    // the same name in this unit is a different thing.
     if (ReadingST) {
       if (Line == "main")
         continue; // classified per instruction, never wholesale
       if (const Function *F = M.getFunction(Line))
-        FuncType[F] = FuncContext::SingleThreaded;
+        if (!F->hasLocalLinkage())
+          SummaryST.insert(F);
     } else if (ReadingSWMR) {
-      // The same rule as findSWMRGlobals: a summary cannot vouch for a global
-      // another unit can write.
       if (const GlobalVariable *GV = M.getGlobalVariable(Line, true))
-        if (GV->hasLocalLinkage() && !GV->isDeclaration())
-          SWMRGlobals.insert(GV);
+        if (!GV->hasLocalLinkage())
+          SummarySWMR.insert(GV);
     }
   }
-
-  Summary.close();
+  return true;
 }
 
 AnalysisKey SingleThreaded::Key;
 
 SingleThreaded::Result SingleThreaded::run(Module &M,
                                            ModuleAnalysisManager &AM) {
-  if (std::ifstream SummaryFile(SummaryDirName + "/" +
-                                SingleThreadedSummaryFileName);
-      TsanUseAnalysisSummaries && SummaryFile.good()) {
-    LLVM_DEBUG(dbgs() << "Found existing summary file for SingleThreaded "
-                         "Analysis. Loading results.\n");
-    SummaryFile.close();
-    return SingleThreadedInfo(M);
-  }
   LLVM_DEBUG(dbgs() << "No summary file found. Running full analysis.\n");
   return SingleThreadedInfo(AM.getResult<CallGraphAnalysis>(M), M);
 }

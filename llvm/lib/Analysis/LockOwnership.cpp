@@ -345,7 +345,7 @@ static const StringSet<> MutexAuxNames = {
 /// a thread creator: that runs on the new thread, which cannot release a
 /// mutex the creating thread holds.
 static bool mayBeCalledBack(const Function &F) {
-  if (!F.hasLocalLinkage())
+  if (!TsanWholeProgram && !F.hasLocalLinkage())
     return true;
   for (const Use &U : F.uses()) {
     const auto *CB = dyn_cast<CallBase>(U.getUser());
@@ -460,7 +460,8 @@ void LockOwnershipInfo::computeReleaseSummaries() {
 
 bool LockOwnershipInfo::isPrivateMutex(const Value *Lock) const {
   const auto *GV = dyn_cast<GlobalVariable>(getUnderlyingObject(Lock));
-  if (!GV || !GV->hasLocalLinkage() || GV->isDeclaration())
+  if (!GV || (!TsanWholeProgram && !GV->hasLocalLinkage()) ||
+      GV->isDeclaration())
     return false;
   const auto [It, Inserted] = PrivateMutexCache.try_emplace(GV, false);
   if (!Inserted)
@@ -620,31 +621,20 @@ void LockOwnershipInfo::doIPALockOwnershipAnalysis(bool InstrToLockFlag) {
   }
 }
 
-void LockOwnershipInfo::readSummary() {
-  // Clear existing analysis results
-  ProtectedGVs.clear();
-
-  std::ifstream Summary(SummaryDirName + "/" + LockOwnershipSummaryFileName);
-  if (!Summary.is_open()) {
-    errs() << "Error: Could not open file " << LockOwnershipSummaryFileName
-           << " for reading\n";
-    return;
-  }
-  LLVM_DEBUG(dbgs() << "Reading analysis results from "
-                    << LockOwnershipSummaryFileName << "\n");
-
+bool LockOwnershipInfo::loadSummary() {
+  std::ifstream Summary;
+  if (!openSummary(Summary, LockOwnershipSummaryFileName))
+    return false;
   std::string Line;
-
-  while (std::getline(Summary, Line)) {
-    if (const GlobalVariable *GV = M.getGlobalVariable(Line))
-      ProtectedGVs.insert(GV);
-  }
-
-  Summary.close();
+  while (std::getline(Summary, Line))
+    if (const GlobalVariable *GV = M.getGlobalVariable(Line, true))
+      if (!GV->hasLocalLinkage())
+        ProtectedGVs.insert(GV);
+  return true;
 }
 
 void LockOwnershipInfo::writeSummary() const {
-  std::ofstream Summary(SummaryDirName + "/" + LockOwnershipSummaryFileName);
+  std::ofstream Summary(tsanSummaryDir() + "/" + LockOwnershipSummaryFileName);
   if (!Summary.is_open()) {
     errs() << "Error: Could not open file " << LockOwnershipSummaryFileName
            << " for writing\n";
@@ -653,9 +643,14 @@ void LockOwnershipInfo::writeSummary() const {
   LLVM_DEBUG(dbgs() << "Writing analysis results to "
                     << LockOwnershipSummaryFileName << "\n");
 
+  Summary << summaryHeader();
+  std::vector<std::string> Lines;
   for (const GlobalVariable *GV : ProtectedGVs)
-    Summary << GV->getName().str() << "\n";
-
+    if (GV->hasName() && !GV->hasLocalLinkage())
+      Lines.push_back(GV->getName().str());
+  llvm::sort(Lines);
+  for (const auto &L : Lines)
+    Summary << L << "\n";
   Summary.close();
 }
 
@@ -701,6 +696,9 @@ LockOwnershipInfo::LockOwnershipInfo(CallGraph &CG_, Module &MM_,
 
   findProtectedGlobalVariables(STI);
   if (TsanUseAnalysisSummaries)
+    SummaryLoaded = loadSummary();
+  // Never over the summary this compile was seeded from.
+  if (TsanUseAnalysisSummaries && !SummaryLoaded)
     writeSummary();
 }
 
@@ -839,7 +837,7 @@ void LockOwnershipInfo::findProtectedGlobalVariables(SingleThreadedInfo &STI) {
     // external one is accessed by other translation units under locks (or
     // none) that this module never sees, and a declaration has no accesses
     // here at all. Same rule as the single-writer analysis.
-    if (!GV.hasLocalLinkage() || GV.isDeclaration())
+    if ((!TsanWholeProgram && !GV.hasLocalLinkage()) || GV.isDeclaration())
       continue;
 
     LLVM_DEBUG(dbgs() << "\nChecking GV: " << GV.getName() << "\n");
@@ -1022,14 +1020,6 @@ void LockOwnershipInfo::print(raw_ostream &OS) const {
 AnalysisKey LockOwnership::Key;
 
 LockOwnership::Result LockOwnership::run(Module &M, ModuleAnalysisManager &AM) {
-  if (std::ifstream SummaryFile(SummaryDirName + "/" +
-                                LockOwnershipSummaryFileName);
-      TsanUseAnalysisSummaries && SummaryFile.good()) {
-    LLVM_DEBUG(dbgs() << "Found existing summary file for LockOwnership "
-                         "Analysis. Loading results.\n");
-    SummaryFile.close();
-    return LockOwnershipInfo(M);
-  }
   auto &CG = AM.getResult<CallGraphAnalysis>(M);
   return LockOwnershipInfo(CG, M, AM.getResult<SingleThreaded>(M));
 }

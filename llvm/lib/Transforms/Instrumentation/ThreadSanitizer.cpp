@@ -475,7 +475,7 @@ public:
 
   bool sanitizeFunction(
       Function &F, const TargetLibraryInfo &TLI,
-      const std::optional<EscapeAnalysisInfo> &EAI,
+      const EscapeAnalysisInfo *EAI,
       EscapeAnalysisGlobalInfo *EAIGlobal = nullptr,
       LockOwnershipInfo *LOI = nullptr,
       SingleThreadedInfo *STI = nullptr,
@@ -570,7 +570,7 @@ private:
   void chooseInstructionsToInstrument(
       SmallVectorImpl<Instruction *> &Local,
       SmallVectorImpl<InstructionInfo> &All, const TargetLibraryInfo &TLI,
-      const DataLayout &DL, const std::optional<EscapeAnalysisInfo> &EAI,
+      const DataLayout &DL, const EscapeAnalysisInfo *EAI,
       EscapeAnalysisGlobalInfo *EAIGlobal = nullptr,
       LockOwnershipInfo *LOI = nullptr,
       SingleThreadedInfo *STI = nullptr);
@@ -733,14 +733,12 @@ static bool tryPeelLoops(Function &F, LoopInfo *LI, ScalarEvolution *SE,
 PreservedAnalyses ThreadSanitizerPass::run(Function &F,
                                            FunctionAnalysisManager &FAM) {
   ThreadSanitizer TSan;
-
-  if (ClUseEscapeAnalysis) {
-    if (TSan.sanitizeFunction(F, FAM.getResult<TargetLibraryAnalysis>(F),
-                              FAM.getResult<EscapeAnalysis>(F), nullptr,
-                              nullptr, nullptr, nullptr, nullptr,
-                              nullptr))
-      return PreservedAnalyses::none();
-  }
+  // The per-function (local) escape analysis, when asked for, joins the
+  // module-level analyses in the one call below. A separate first call that
+  // returned early only when it instrumented something ran the function
+  // through the pass a second time otherwise.
+  const EscapeAnalysisInfo *LocalEA =
+      ClUseEscapeAnalysis ? &FAM.getResult<EscapeAnalysis>(F) : nullptr;
 
   EscapeAnalysisGlobalInfo *EAGI = nullptr;
   LockOwnershipInfo *LOI = nullptr;
@@ -779,7 +777,7 @@ PreservedAnalyses ThreadSanitizerPass::run(Function &F,
 
   const bool Instrumented =
       TSan.sanitizeFunction(F, FAM.getResult<TargetLibraryAnalysis>(F),
-                            std::nullopt, EAGI, LOI, STI, DT, PDT, AA, LI, AC,
+                            LocalEA, EAGI, LOI, STI, DT, PDT, AA, LI, AC,
                             SE, SFI);
   if (Instrumented)
     return PreservedAnalyses::none();
@@ -1334,7 +1332,7 @@ static void attributeFlowSensitiveElision(const LaterEscapes &LE) {
 void ThreadSanitizer::chooseInstructionsToInstrument(
     SmallVectorImpl<Instruction *> &Local,
     SmallVectorImpl<InstructionInfo> &All, const TargetLibraryInfo &TLI,
-    const DataLayout &DL, const std::optional<EscapeAnalysisInfo> &EAI,
+    const DataLayout &DL, const EscapeAnalysisInfo *EAI,
     EscapeAnalysisGlobalInfo *EAIGlobal,
     LockOwnershipInfo *LOI,
     SingleThreadedInfo *STI) {
@@ -1394,12 +1392,12 @@ void ThreadSanitizer::chooseInstructionsToInstrument(
     }
 
     // 2. If escape analysis is enabled
-    if (EAI.has_value()) {
+    if (EAI) {
       bool InstrOmitted = false;
       for (const UnderlObjTy &UnderlObj :
            EscapeAnalysisInfo::getUnderlyingMayEscObjs(Addr, TLI)) {
         EscReasonTy EscReason;
-        const bool IsEscaped = EAI.value().isEscapedForBB(
+        const bool IsEscaped = EAI->isEscapedForBB(
             I->getParent(), UnderlObj, &EscReason);
         if (IsEscaped) {
           InstrOmitted = false;
@@ -1966,7 +1964,7 @@ void ThreadSanitizer::InsertRuntimeIgnores(Function &F) {
 
 bool ThreadSanitizer::sanitizeFunction(
     Function &F, const TargetLibraryInfo &TLI,
-    const std::optional<EscapeAnalysisInfo> &EAI,
+    const EscapeAnalysisInfo *EAI,
     EscapeAnalysisGlobalInfo *EAIGlobal,
     LockOwnershipInfo *LOI,
     SingleThreadedInfo *STI, DominatorTree *DT,

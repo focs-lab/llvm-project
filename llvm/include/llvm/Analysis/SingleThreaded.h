@@ -15,6 +15,7 @@
 #define LLVM_ANALYSIS_SINGLETHREADED_H
 
 #include "llvm/Analysis/CallGraph.h"
+#include <fstream>
 #include "llvm/IR/PassManager.h"
 #include "llvm/Support/CommandLine.h"
 
@@ -31,10 +32,29 @@ namespace llvm {
 /// the file also made results depend on the compiler's working directory,
 /// which is how one project's summary came to be applied to another's build.
 extern cl::opt<bool> TsanUseAnalysisSummaries;
-
-/// Directory summaries are written to and read from, relative to the
-/// compiler's working directory.
-const std::string SummaryDirName = "tsan-logs";
+/// The module is the whole program: nothing outside it calls into it except
+/// through addresses it takes itself (and main). Lifts the per-unit rule
+/// that an externally visible function or variable may be used by code this
+/// module cannot see. Meant for the linked whole-program IR from which the
+/// summaries are produced; unsound for an ordinary per-unit compile.
+extern cl::opt<bool> TsanWholeProgram;
+/// Provenance stamp written into every summary and required to match when
+/// one is read; a mismatch is a warning and the summary is ignored.
+extern cl::opt<std::string> TsanSummaryId;
+/// Directory summaries are written to and read from (-tsan-summary-dir).
+std::string tsanSummaryDir();
+/// First line of every summary file: the id it was written with.
+const std::string SummaryIdPrefix = "# tsan-summary-id: ";
+/// Second line: the writer's whole-program setting, for provenance. It is
+/// not compared -- the reader is a per-unit compile by construction -- the
+/// id is the check; a linked-IR hash cannot be verified by a unit that has
+/// only itself.
+const std::string SummaryFlagsPrefix = "# tsan-summary-flags: ";
+/// The header lines every summary starts with.
+std::string summaryHeader();
+/// Open a summary for reading and check its stamp; false when the file is
+/// missing or was written under a different -tsan-summary-id.
+bool openSummary(std::ifstream &In, const std::string &FileName);
 
 const std::string SingleThreadedSummaryFileName = "st_summary.txt";
 const std::string SummaryHeaderST = "--- Single-Threaded Functions ---";
@@ -86,16 +106,11 @@ public:
 
   /// Default constructor that initializes SingleThreadedInfo by reading
   /// analysis results from a previously written summary file.
-  explicit SingleThreadedInfo(Module &MM) : M(MM), ReadFromSummary(true) {
-    readSummary();
-  }
-
   void print(raw_ostream &O) const;
 
   /// Reads analysis results from a previously written summary file. This allows
   /// reusing previously computed analysis results for single-threaded functions
   /// and read-only globals across different compilation units
-  void readSummary();
 
   /// This is needed for using with OuterAnalysisManagerProxy
   bool invalidate(Module &, const PreservedAnalyses &,
@@ -146,6 +161,14 @@ private:
   FuncTypeMap FuncType;
 
   SmallPtrSet<const GlobalVariable *, 4> SWMRGlobals;
+  /// Externally visible functions the whole-program summary marks
+  /// single-threaded; the per-unit analysis treats them like local ones.
+  SmallPtrSet<const Function *, 8> SummaryST;
+  SmallPtrSet<const GlobalVariable *, 8> SummarySWMR;
+  bool SummaryLoaded = false;
+  /// Load SummaryST/SummarySWMR from the summary file, if any and if its
+  /// stamp matches. Returns whether one was loaded.
+  bool loadSummary();
 
   // Blocks of main that are already multi-threaded on entry. Blocks outside
   // this set may still turn multi-threaded part-way through, at a thread

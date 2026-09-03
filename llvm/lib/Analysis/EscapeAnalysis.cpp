@@ -1501,7 +1501,7 @@ void EscapeAnalysisGlobalInfo::evalTopDownArgEscStatus(
   // pointer in a dispatch table's initializer, a store into a slot, or a
   // pass to a defined registrar that merely keeps it were not calls, and
   // the callers behind them pass whatever they please.
-  if (F->hasAddressTaken() || !F->hasLocalLinkage()) {
+  if (F->hasAddressTaken() || (!TsanWholeProgram && !F->hasLocalLinkage())) {
     LLVM_DEBUG(dbgs() << "Function " << F->getName()
                       << " is reachable through its address.\n");
     IPATopDownArgEscInfo->try_emplace(F, F->arg_size(), true);
@@ -1685,7 +1685,8 @@ void EscapeAnalysisGlobalInfo::traverseCGTopDown(
         Function *F = CGN->getFunction();
 
         // We consider only localy defined, static functions
-        if (!isLocalAndExactFunc(F) || !F->hasLocalLinkage() ||
+        if (!isLocalAndExactFunc(F) ||
+            (!TsanWholeProgram && !F->hasLocalLinkage()) ||
             // For now, conservatively skip all ObjC methods
             isFuncPassedToObjCSelector(F))
           continue;
@@ -1736,11 +1737,12 @@ void EscapeAnalysisGlobalInfo::readNonEscapingFuncs() {
   if (!TsanUseAnalysisSummaries)
     return;
 
-  std::ifstream WhiteListFile(SummaryDirName + "/" + FuncWhiteListFileName);
-  if (!WhiteListFile.is_open()) {
-    LLVM_DEBUG(dbgs() << "No non-escaping-argument summary found\n");
+  std::ifstream WhiteListFile;
+  if (!openSummary(WhiteListFile, FuncWhiteListFileName)) {
+    LLVM_DEBUG(dbgs() << "No usable non-escaping-argument summary\n");
     return;
   }
+  SummaryLoaded = true;
 
   std::string FuncLine;
   while (std::getline(WhiteListFile, FuncLine)) {
@@ -1758,6 +1760,9 @@ void EscapeAnalysisGlobalInfo::readNonEscapingFuncs() {
 
     // Parse argument
     std::string FuncName = FuncLine.substr(0, ColonPos);
+    // A summary speaks only for externally visible functions.
+    if (const Function *F = M.getFunction(FuncName); F && F->hasLocalLinkage())
+      continue;
     std::istringstream ArgStream(FuncLine.substr(ColonPos + 1));
     unsigned ArgInd;
     SmallSet<unsigned, 4> NonEscapingArgs;
@@ -1783,11 +1788,13 @@ static std::string getFileNameFromPath(std::string Path) {
   return Path;
 }
 
-const std::string LogDir = "tsan-logs";
+// At call time, not static-initialisation time: the directory is a
+// command-line option.
 static void createLogDir() {
+  const std::string LogDir = tsanSummaryDir();
   std::error_code EC;
   if (!std::filesystem::exists(LogDir))
-    if (!std::filesystem::create_directory(LogDir, EC) && EC)
+    if (!std::filesystem::create_directories(LogDir, EC) && EC)
       errs() << "Error creating directory " << LogDir << ": " << EC.message()
              << "\n";
 }
@@ -1796,7 +1803,7 @@ EscapeAnalysisGlobalInfo::EscapeAnalysisGlobalInfo(CallGraph &CG, Module &M_,
                                                    ModuleAnalysisManager &MAM_)
     : M(M_), MAM(MAM_) {
   DEBUG_WITH_TYPE(PRINT_ESCAPING_CALLEES,
-    const auto FileName = LogDir + "/escaping_callees_" +
+    const auto FileName = tsanSummaryDir() + "/escaping_callees_" +
                           getFileNameFromPath(M.getName().str()) + ".txt";
     EscFuncsFile.open(FileName);
     if (!EscFuncsFile.is_open())
@@ -1849,7 +1856,8 @@ EscapeAnalysisGlobalInfo::EscapeAnalysisGlobalInfo(CallGraph &CG, Module &M_,
 
   LLVM_DEBUG(printArgEscStatus(););
 
-  if (TsanUseAnalysisSummaries)
+  // Never over the summary this compile was seeded from.
+  if (TsanUseAnalysisSummaries && !SummaryLoaded)
     writeIPASummary();
 
   DEBUG_WITH_TYPE(PRINT_ESCAPING_CALLEES,
@@ -1988,61 +1996,41 @@ void EscapeAnalysisGlobalInfo::print(Module &M, raw_ostream &O) const {
 }
 
 void EscapeAnalysisGlobalInfo::writeIPASummary() {
-  //   for (const auto &Entry : *IPATopDownArgEscInfo) {
-  //     const Function *F = Entry.first;
-  //     const SmallVector<bool> &EscapedArgs = Entry.second;
-  //
-  //     // Check if all the arguments don't escape
-  //     if (std::all_of(EscapedArgs.begin(), EscapedArgs.end(),
-  //                     [](bool Escaped) { return !Escaped; }))
-  //       SummaryFile << F->getName().str() << "\n";
-  //   }
-  //   SummaryFile.close();
-  // }
-
-  // const auto SummaryFileName =
-  //     LogDir + "/func_nonescape_IPA_" +
-  //     getFileNameFromPath(getFileNameFromPath(M.getName().str())) + ".txt";
   createLogDir();
-  const auto SummaryFileName = SummaryDirName + "/" + FuncWhiteListFileName;
+  const auto SummaryFileName = tsanSummaryDir() + "/" + FuncWhiteListFileName;
   std::ofstream SummaryFile(SummaryFileName, std::ios::out);
   if (!SummaryFile.is_open()) {
     errs() << "Error opening summary file: " << SummaryFileName << "\n";
     return;
   }
-
+  // Only externally visible functions, sorted: a local one is private to its
+  // unit and llvm-link renames the clashing ones.
+  SummaryFile << summaryHeader();
+  std::vector<std::string> Lines;
   for (const auto &Entry : *IPABottomTopEscInfo) {
-    if (!Entry.first->hasName())
+    if (!Entry.first->hasName() || Entry.first->hasLocalLinkage())
       continue;
-
-    const auto &ArgEscapes = Entry.second.ArgEscapes;
-
-    // Check if all the arguments don't escape
-    // const auto *Func = Entry.first;
-    // if (std::all_of(ArgEscapes.begin(), ArgEscapes.end(),
-    //                 [](const auto &Entry) { return Entry.second.none(); })) {
-    //   SummaryFile << Func->getName().str() << "\n";
-    // }
-
-    // Iterate through ArgEscapes to collect arguments which don't escape
-    bool HasNonEscapingArgs = false;
-
-    for (const auto &ArgEscapeEntry : ArgEscapes) {
-      if (ArgEscapeEntry.second.none()) {
-        if (!HasNonEscapingArgs) {
-          SummaryFile << Entry.first->getName().str() << ": "
-                      << ArgEscapeEntry.first;
-          HasNonEscapingArgs = true;
-          continue;
-        }
-        SummaryFile << " " << ArgEscapeEntry.first;
-      }
+    std::string Line;
+    for (const auto &ArgEscapeEntry : Entry.second.ArgEscapes) {
+      // The question is whether the callee lets the pointer escape; that an
+      // argument aliases its caller's memory is what an argument is, not an
+      // escape, and every pointer argument carries that bit.
+      const auto Reason =
+          ArgEscapeEntry.second &
+          ~EscapeAnalysisInfo::EscReasonTy(
+              EscapeAnalysisInfo::EscReasonBits::PTR_ARG_ALIASING);
+      if (!Reason.none())
+        continue;
+      if (Line.empty())
+        Line = Entry.first->getName().str() + ":";
+      Line += " " + std::to_string(ArgEscapeEntry.first);
     }
-
-    // Add a newline only if there were non-escaping arguments
-    if (HasNonEscapingArgs)
-      SummaryFile << "\n";
+    if (!Line.empty())
+      Lines.push_back(Line);
   }
+  llvm::sort(Lines);
+  for (const auto &L : Lines)
+    SummaryFile << L << "\n";
   SummaryFile.close();
 }
 

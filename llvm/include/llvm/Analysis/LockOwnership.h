@@ -42,7 +42,6 @@ class LockOwnershipInfo {
 public:
   explicit LockOwnershipInfo(CallGraph &CG_, Module &M,
                              SingleThreadedInfo &STI);
-  explicit LockOwnershipInfo(Module &MM) : M(MM) { readSummary(); };
 
   void print(raw_ostream &O) const;
 
@@ -78,6 +77,10 @@ private:
 
   // List of GVs protected by at least one lock
   SmallPtrSet<const GlobalVariable *, 8> ProtectedGVs;
+  /// Whole-program verdicts for externally visible variables, overlaid on
+  /// the per-unit result. Returns whether a summary was loaded.
+  bool loadSummary();
+  bool SummaryLoaded = false;
 
   bool isLockFunc(const Function *F) const { return LockFuncs.contains(F); }
 
@@ -187,7 +190,6 @@ private:
   /// Returns the set of locks (mutexes) that are held when instruction I
   SmallPtrSet<const Value *, 4> getLocksProtecting(const Instruction *I) const;
 
-  void readSummary();
   void writeSummary() const;
 };
 

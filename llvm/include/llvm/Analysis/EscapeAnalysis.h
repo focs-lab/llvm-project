@@ -374,6 +374,8 @@ class EscapeAnalysisGlobalInfo {
 
   /// List of functions whose arguments don't escape
   static constexpr auto FuncWhiteListFileName = "ea_summary.txt";
+  /// A summary was loaded for this module; do not overwrite it.
+  bool SummaryLoaded = false;
   std::shared_ptr<EscapeAnalysisInfo::NonEscapingFuncsMap> NonEscapingFuncs =
       std::make_shared<EscapeAnalysisInfo::NonEscapingFuncsMap>();
 
