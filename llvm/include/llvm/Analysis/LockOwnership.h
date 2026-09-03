@@ -114,6 +114,38 @@ private:
   };
   SmallDenseMap<const Function *, FuncStateTy> FuncStates;
 
+  /// What a call may release. Computed syntactically over the call graph
+  /// before the dataflow runs, because the dataflow analyses each callee from
+  /// an empty state and so never sees it release a lock its caller holds.
+  struct ReleaseSummaryTy {
+    /// Locks it, or anything it calls, unlocks by identity.
+    SmallPtrSet<const Value *, 4> MayRelease;
+    /// It unlocks a mutex whose identity is unknown: may be any lock held.
+    bool MayReleaseUnknown = false;
+    /// It reaches a call whose effect on locks is unknown (indirect, or a
+    /// declaration that is not a transparent library function).
+    bool CallsOpaque = false;
+  };
+  DenseMap<const Function *, ReleaseSummaryTy> ReleaseSummaries;
+  /// Declarations a call to which cannot release anything: intrinsics, the
+  /// annotation family, and library functions that take no callback.
+  SmallPtrSet<const Function *, 16> TransparentDecls;
+  /// Locks released by some function an opaque call could call back into
+  /// (address taken or externally visible).
+  SmallPtrSet<const Value *, 8> ReleasedByCallbacks;
+  bool CallbackMayReleaseUnknown = false;
+  mutable DenseMap<const GlobalVariable *, bool> PrivateMutexCache;
+
+  void computeReleaseSummaries();
+  /// A private mutex is a local-linkage global every use of which is the
+  /// mutex operand of a lock, unlock, init, destroy or condition-wait call,
+  /// so nothing outside this module can touch it and nothing inside can
+  /// release it except through those calls.
+  bool isPrivateMutex(const Value *Lock) const;
+  void applyOpaqueCall(LockStateTy &State, const Instruction &I);
+  void applyCalleeReleases(LockStateTy &State, const Instruction &I,
+                           const ReleaseSummaryTy &RS);
+
   // Found lock/unlock pairs
   SmallDenseSet<std::pair<const Instruction *, const Instruction *>>
       LockUnlockPairs;

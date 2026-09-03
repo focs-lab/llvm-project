@@ -14,8 +14,8 @@ target datalayout = "e-p:64:64:64-i1:8:8-i8:8:8-i16:16:16-i32:32:32-i64:64:64-f3
 
 @mtx = global i64 0, align 8
 @custom = global i64 0, align 8
-@control = global i32 0, align 4
-@via_annotation = global i32 0, align 4
+@control = internal global i32 0, align 4
+@via_annotation = internal global i32 0, align 4
 
 declare i32 @pthread_mutex_lock(ptr)
 declare i32 @pthread_mutex_unlock(ptr)

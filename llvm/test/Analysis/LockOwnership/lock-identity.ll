@@ -22,13 +22,13 @@ target datalayout = "e-p:64:64:64-i1:8:8-i8:8:8-i16:16:16-i32:32:32-i64:64:64-f3
 @locks = global [2 x i64] zeroinitializer, align 8
 @mptr = global ptr @S, align 8
 
-@same_field  = global i32 0, align 4  ; both threads under S.f0 (spelled two ways)
-@two_fields  = global i32 0, align 4  ; one thread under S.f0, the other under S.f1
-@stripe_same = global i32 0, align 4  ; both under locks[0] (spelled two ways)
-@stripe_diff = global i32 0, align 4  ; locks[0] vs locks[1]
-@via_arg     = global i32 0, align 4  ; mutex arrives as a pointer argument
-@via_load    = global i32 0, align 4  ; mutex pointer is loaded
-@reacquire   = global i32 0, align 4  ; unlock-without-lock, then a proper pair
+@same_field  = internal global i32 0, align 4  ; both threads under S.f0 (spelled two ways)
+@two_fields  = internal global i32 0, align 4  ; one thread under S.f0, the other under S.f1
+@stripe_same = internal global i32 0, align 4  ; both under locks[0] (spelled two ways)
+@stripe_diff = internal global i32 0, align 4  ; locks[0] vs locks[1]
+@via_arg     = internal global i32 0, align 4  ; mutex arrives as a pointer argument
+@via_load    = internal global i32 0, align 4  ; mutex pointer is loaded
+@reacquire   = internal global i32 0, align 4  ; unlock-without-lock, then a proper pair
 
 declare i32 @pthread_mutex_lock(ptr)
 declare i32 @pthread_mutex_unlock(ptr)

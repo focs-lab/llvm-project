@@ -12,11 +12,11 @@ target datalayout = "e-p:64:64:64-i1:8:8-i8:8:8-i16:16:16-i32:32:32-i64:64:64-f3
 @mtx = global i64 0, align 8
 @rw = global i64 0, align 8
 
-@under_mutex = global i32 0, align 4   ; held by a plain mutex
-@under_wrlock = global i32 0, align 4  ; held by an rwlock writer
-@after_unlock = global i32 0, align 4  ; touched once the lock is released
-@under_rdlock = global i32 0, align 4  ; only ever under a reader lock
-@after_trylock = global i32 0, align 4 ; touched after a try-lock, which may fail
+@under_mutex = internal global i32 0, align 4   ; held by a plain mutex
+@under_wrlock = internal global i32 0, align 4  ; held by an rwlock writer
+@after_unlock = internal global i32 0, align 4  ; touched once the lock is released
+@under_rdlock = internal global i32 0, align 4  ; only ever under a reader lock
+@after_trylock = internal global i32 0, align 4 ; touched after a try-lock, which may fail
 
 declare i32 @pthread_mutex_lock(ptr)
 declare i32 @pthread_mutex_unlock(ptr)

@@ -11,11 +11,15 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/Analysis/LockOwnership.h"
+#include "llvm/ADT/StringSet.h"
 #include "llvm/IR/CFG.h"
 
 #include "llvm/ADT/PostOrderIterator.h"
 #include "llvm/ADT/SCCIterator.h"
+#include "llvm/Analysis/TargetLibraryInfo.h"
 #include "llvm/Analysis/ValueTracking.h"
+#include "llvm/IR/InstIterator.h"
+#include "llvm/TargetParser/Triple.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/DataLayout.h"
 #include "llvm/IR/Instructions.h"
@@ -263,20 +267,26 @@ bool LockOwnershipInfo::applyTransferFunc(const BasicBlock *BB,
     // 2. Process calls
     if (const auto *Call = dyn_cast<CallBase>(&I)) {
       const auto *CalledFunc = Call->getCalledFunction();
-      if (!CalledFunc || CalledFunc->isDeclaration())
+      if (CalledFunc && TransparentDecls.contains(CalledFunc))
         continue;
-
-      // Get a function state if it exists
-      const auto FuncStateIt = FuncStates.find(CalledFunc);
-      if (FuncStateIt != FuncStates.end()) {
-        // Update the current state with callee's exit state
-        for (const auto &[Lock, State] : FuncStateIt->second.ExitState) {
+      if (!CalledFunc || CalledFunc->isDeclaration()) {
+        // Indirect, or a body we cannot see: it may release any lock it can
+        // reach, which is every non-private one plus whatever a callback
+        // into this module releases.
+        applyOpaqueCall(InState, I);
+        continue;
+      }
+      // What the callee (transitively) releases takes effect before what it
+      // still holds at its exit; a callee that unlocks and re-locks the same
+      // mutex leaves it held.
+      if (const auto RSIt = ReleaseSummaries.find(CalledFunc);
+          RSIt != ReleaseSummaries.end())
+        applyCalleeReleases(InState, I, RSIt->second);
+      if (const auto FuncStateIt = FuncStates.find(CalledFunc);
+          FuncStateIt != FuncStates.end())
+        for (const auto &[Lock, State] : FuncStateIt->second.ExitState)
           if (State.IsLocked)
             handleLock(InState, I, Lock);
-          else
-            handleUnlock(InState, I, Lock);
-        }
-      }
       continue;
     }
 
@@ -290,7 +300,13 @@ bool LockOwnershipInfo::applyTransferFunc(const BasicBlock *BB,
         if (State.IsLocked)
           HeldLocks.insert(Lock);
       }
-      if (!HeldLocks.empty())
+      // Replace whatever an earlier visit recorded. A block is visited again
+      // when a predecessor's state shrinks, and its held set can shrink to
+      // nothing; skipping the empty set left the earlier, larger record in
+      // place and an unprotected access looked protected.
+      if (HeldLocks.empty())
+        InstrToLockMap.erase(&I);
+      else
         InstrToLockMap[&I] = HeldLocks;
     }
   }
@@ -301,6 +317,204 @@ bool LockOwnershipInfo::applyTransferFunc(const BasicBlock *BB,
     return true;        // State changed
   }
   return false; // State did not change
+}
+
+/// Library functions that take a callback: the callee may call back into
+/// this module and release a lock there, so they are not transparent.
+static const StringSet<> CallbackLibFuncs = {
+    "qsort",       "qsort_r",    "bsearch",       "atexit",   "__cxa_atexit",
+    "on_exit",     "signal",     "sigaction",     "bsd_signal",
+    "pthread_create", "pthread_once", "pthread_atfork", "pthread_key_create",
+    "thrd_create", "call_once",  "tsearch",       "tfind",    "tdelete",
+    "twalk",       "lfind",      "lsearch",       "ftw",      "nftw",
+    "glob",        "scandir",    "dl_iterate_phdr"};
+
+/// Mutex operations that do not acquire or release but are the only other
+/// legitimate uses of a private mutex's address.
+static const StringSet<> MutexAuxNames = {
+    "pthread_mutex_init",    "pthread_mutex_destroy",  "pthread_spin_init",
+    "pthread_spin_destroy",  "pthread_rwlock_init",    "pthread_rwlock_destroy",
+    "pthread_cond_wait",     "pthread_cond_timedwait", "mtx_init",
+    "mtx_destroy",           "cnd_wait",               "cnd_timedwait",
+    "omp_init_lock",         "omp_destroy_lock",       "omp_init_nest_lock",
+    "omp_destroy_nest_lock"};
+
+/// Whether an opaque call could invoke \p F synchronously on the calling
+/// thread. An externally visible function can be called from anywhere. A
+/// local one only if its address is taken -- except as the start routine of
+/// a thread creator: that runs on the new thread, which cannot release a
+/// mutex the creating thread holds.
+static bool mayBeCalledBack(const Function &F) {
+  if (!F.hasLocalLinkage())
+    return true;
+  for (const Use &U : F.uses()) {
+    const auto *CB = dyn_cast<CallBase>(U.getUser());
+    if (CB && CB->isCallee(&U))
+      continue;
+    if (CB && CB->isArgOperand(&U)) {
+      const Function *Callee = CB->getCalledFunction();
+      if (Callee && isKnownThreadCreator(*Callee))
+        continue;
+    }
+    return true;
+  }
+  return false;
+}
+
+void LockOwnershipInfo::computeReleaseSummaries() {
+  ReleaseSummaries.clear();
+  TransparentDecls.clear();
+  ReleasedByCallbacks.clear();
+  CallbackMayReleaseUnknown = false;
+  PrivateMutexCache.clear();
+
+  TargetLibraryInfoImpl TLII(Triple(M.getTargetTriple()));
+  TargetLibraryInfo TLI(TLII);
+  for (const Function &F : M) {
+    if (!F.isDeclaration())
+      continue;
+    // Lock and unlock calls are handled by the transfer function itself.
+    if (F.isIntrinsic() || isAnnotationFunc(&F) || isLockFunc(&F) ||
+        isUnLockFunc(&F)) {
+      TransparentDecls.insert(&F);
+      continue;
+    }
+    LibFunc LF;
+    if (TLI.getLibFunc(F, LF) && TLI.has(LF) &&
+        !CallbackLibFuncs.contains(F.getName()))
+      TransparentDecls.insert(&F);
+  }
+
+  // 1. What each body does on its own, and whom it calls.
+  DenseMap<const Function *, SmallPtrSet<const Function *, 8>> Callees;
+  for (const Function &F : M) {
+    if (F.isDeclaration())
+      continue;
+    ReleaseSummaryTy &RS = ReleaseSummaries[&F];
+    for (const Instruction &I : instructions(F)) {
+      const auto *CB = dyn_cast<CallBase>(&I);
+      if (!CB)
+        continue;
+      const auto [CallType, Lock] = getLockCallInfo(&I);
+      if (CallType == LockCallType::UNLOCK) {
+        if (Lock)
+          RS.MayRelease.insert(Lock);
+        else
+          RS.MayReleaseUnknown = true;
+        continue;
+      }
+      if (CallType == LockCallType::LOCK)
+        continue;
+      const Function *Callee = CB->getCalledFunction();
+      if (!Callee || (Callee->isDeclaration() &&
+                      !TransparentDecls.contains(Callee))) {
+        RS.CallsOpaque = true;
+        continue;
+      }
+      if (!Callee->isDeclaration())
+        Callees[&F].insert(Callee);
+    }
+  }
+
+  // 2. Close over the call graph.
+  bool Changed = true;
+  while (Changed) {
+    Changed = false;
+    for (auto &[F, RS] : ReleaseSummaries) {
+      for (const Function *C : Callees[F]) {
+        const auto CIt = ReleaseSummaries.find(C);
+        if (CIt == ReleaseSummaries.end())
+          continue;
+        const ReleaseSummaryTy &CS = CIt->second;
+        const size_t Before = RS.MayRelease.size();
+        RS.MayRelease.insert(CS.MayRelease.begin(), CS.MayRelease.end());
+        const bool Unknown = RS.MayReleaseUnknown || CS.MayReleaseUnknown;
+        const bool Opaque = RS.CallsOpaque || CS.CallsOpaque;
+        if (RS.MayRelease.size() != Before || Unknown != RS.MayReleaseUnknown ||
+            Opaque != RS.CallsOpaque) {
+          RS.MayReleaseUnknown = Unknown;
+          RS.CallsOpaque = Opaque;
+          Changed = true;
+        }
+      }
+    }
+  }
+
+  // 3. What an opaque call could release by calling back into this module.
+  for (const auto &[F, RS] : ReleaseSummaries) {
+    if (!mayBeCalledBack(*F))
+      continue;
+    ReleasedByCallbacks.insert(RS.MayRelease.begin(), RS.MayRelease.end());
+    CallbackMayReleaseUnknown |= RS.MayReleaseUnknown;
+  }
+  LLVM_DEBUG({
+    dbgs() << "Release summaries:\n";
+    for (const auto &[F, RS] : ReleaseSummaries)
+      dbgs() << "  " << F->getName() << ": " << RS.MayRelease.size()
+             << " lock(s)" << (RS.MayReleaseUnknown ? ", unknown" : "")
+             << (RS.CallsOpaque ? ", opaque" : "") << "\n";
+    dbgs() << "  released by callbacks: " << ReleasedByCallbacks.size()
+           << (CallbackMayReleaseUnknown ? " + unknown" : "") << "\n";
+  });
+}
+
+bool LockOwnershipInfo::isPrivateMutex(const Value *Lock) const {
+  const auto *GV = dyn_cast<GlobalVariable>(getUnderlyingObject(Lock));
+  if (!GV || !GV->hasLocalLinkage() || GV->isDeclaration())
+    return false;
+  const auto [It, Inserted] = PrivateMutexCache.try_emplace(GV, false);
+  if (!Inserted)
+    return It->second;
+
+  bool Private = true;
+  SmallVector<const Value *, 8> Work{GV};
+  SmallPtrSet<const Value *, 8> Seen;
+  while (Private && !Work.empty()) {
+    const Value *V = Work.pop_back_val();
+    if (!Seen.insert(V).second)
+      continue;
+    for (const User *U : V->users()) {
+      if (isa<ConstantExpr>(U) || isa<GlobalAlias>(U)) {
+        Work.push_back(U);
+        continue;
+      }
+      const auto *CB = dyn_cast<CallBase>(U);
+      const Function *Callee = CB ? CB->getCalledFunction() : nullptr;
+      if (!Callee || CB->getCalledOperand() == V ||
+          !(isLockFunc(Callee) || isUnLockFunc(Callee) ||
+            MutexAuxNames.contains(Callee->getName()))) {
+        Private = false;
+        break;
+      }
+    }
+  }
+  PrivateMutexCache[GV] = Private;
+  return Private;
+}
+
+void LockOwnershipInfo::applyOpaqueCall(LockStateTy &State,
+                                        const Instruction &I) {
+  SmallVector<const Value *, 4> Held;
+  for (const auto &[Lock, LS] : State)
+    if (LS.IsLocked)
+      Held.push_back(Lock);
+  for (const Value *Lock : Held)
+    if (CallbackMayReleaseUnknown || ReleasedByCallbacks.contains(Lock) ||
+        !isPrivateMutex(Lock))
+      handleUnlock(State, I, Lock);
+}
+
+void LockOwnershipInfo::applyCalleeReleases(LockStateTy &State,
+                                            const Instruction &I,
+                                            const ReleaseSummaryTy &RS) {
+  if (RS.MayReleaseUnknown) {
+    State.clear();
+    return;
+  }
+  for (const Value *Lock : RS.MayRelease)
+    handleUnlock(State, I, Lock);
+  if (RS.CallsOpaque)
+    applyOpaqueCall(State, I);
 }
 
 void LockOwnershipInfo::buildSummary(const Function *F, bool InstrToLockFlag) {
@@ -317,13 +531,13 @@ void LockOwnershipInfo::buildSummary(const Function *F, bool InstrToLockFlag) {
 
   std::deque<const BasicBlock *> WorkList;
 
-  if (InstrToLockFlag) {
-    // Here we must iterate through all BBs, so need to add all of them
-    for (const BasicBlock &BB : *F)
-      WorkList.push_back(&BB);
-  } else {
-    WorkList.push_back(&EntryBB);
-  }
+  // Every block once, in reverse post-order, then change-driven. Seeding
+  // with the entry alone never reached the blocks behind one whose state
+  // did not change (the common case: no lock activity), and seeding in
+  // layout order met a block before its forward predecessors and took an
+  // optimistic intermediate state as the meet.
+  for (const BasicBlock *BB : ReversePostOrderTraversal<const Function *>(F))
+    WorkList.push_back(BB);
 
   while (!WorkList.empty()) {
     const BasicBlock *BB = WorkList.front();
@@ -481,6 +695,7 @@ LockOwnershipInfo::LockOwnershipInfo(CallGraph &CG_, Module &MM_,
   // Get top-down callgraph list and traverse it
   // const auto SCCList = getTopDownSCCList(CG);
 
+  computeReleaseSummaries();
   doIPALockOwnershipAnalysis(false);
   doIPALockOwnershipAnalysis(true);
 
@@ -525,41 +740,38 @@ bool LockOwnershipInfo::isSharedLockFunc(const Function *F) {
 }
 
 bool LockOwnershipInfo::findLockUnlockFunctions() {
-  // Common lock function names and patterns
-  const SmallVector<StringRef> LockNames = {"pthread_mutex_lock",
-                                            "pthread_mutex_trylock",
-                                            "pthread_mutex_timedlock",
-                                            "pthread_spin_lock",
-                                            "pthread_spin_trylock",
-                                            "pthread_rwlock_rdlock",
-                                            "pthread_rwlock_tryrdlock",
-                                            "pthread_rwlock_timedrdlock",
-                                            "pthread_rwlock_wrlock",
-                                            "pthread_rwlock_trywrlock",
-                                            "pthread_rwlock_timedwrlock",
-                                            "mtx_lock",
-                                            "_mutex_lock",
-                                            "spinlock_lock",
-                                            "acquire_lock",
-                                            "rwlock_rdlock",
-                                            "rwlock_wrlock",
-                                            "lock"};
+  // Exact names only. A substring match ("lock") made every function whose
+  // name merely contains it -- flock, memblock_get ("block" contains "lock"),
+  // a user block_alloc -- an acquisition, and if its first argument resolved
+  // to a global it was recorded as a lock held for the rest of the function,
+  // so accesses under it looked protected when nothing was held. The set is
+  // the standard C/C++/POSIX/C11 primitives, matched by full name.
+  static const StringSet<> LockNames = {"pthread_mutex_lock",
+                                        "pthread_mutex_trylock",
+                                        "pthread_mutex_timedlock",
+                                        "pthread_spin_lock",
+                                        "pthread_spin_trylock",
+                                        "pthread_rwlock_rdlock",
+                                        "pthread_rwlock_tryrdlock",
+                                        "pthread_rwlock_timedrdlock",
+                                        "pthread_rwlock_wrlock",
+                                        "pthread_rwlock_trywrlock",
+                                        "pthread_rwlock_timedwrlock",
+                                        "mtx_lock",
+                                        "mtx_trylock",
+                                        "mtx_timedlock",
+                                        "omp_set_lock",
+                                        "omp_set_nest_lock"};
 
-  const SmallVector<StringRef> UnlockNames = {
-      "pthread_mutex_unlock",  "pthread_spin_unlock",
-      "pthread_rwlock_unlock", "mtx_unlock",
-      "_mutex_unlock",         "spinlock_unlock",
-      "release_lock",          "rwlock_unlock", "unlock"};
+  static const StringSet<> UnlockNames = {
+      "pthread_mutex_unlock", "pthread_spin_unlock", "pthread_rwlock_unlock",
+      "mtx_unlock",           "omp_unset_lock",      "omp_unset_nest_lock"};
   auto matchPatterns = [](const Function &F, StringRef CurrFuncName,
-                          const SmallVector<StringRef> &FuncNames,
+                          const StringSet<> &FuncNames,
                           SmallPtrSet<const Function *, 4> &FuncSet) {
-    for (const auto &FuncName : FuncNames) {
-      if (CurrFuncName.contains(FuncName) && F.arg_size() > 0) {
-        FuncSet.insert(&F);
-        LLVM_DEBUG(dbgs() << "Found function matching pattern '" << FuncName
-                          << "': " << F.getName() << "\n");
-        return;
-      }
+    if (F.arg_size() > 0 && FuncNames.contains(CurrFuncName)) {
+      FuncSet.insert(&F);
+      LLVM_DEBUG(dbgs() << "Found lock function: " << F.getName() << "\n");
     }
   };
 
@@ -602,11 +814,32 @@ LockOwnershipInfo::getLocksProtecting(const Instruction *I) const {
   return {};
 }
 
+/// True when \p I reads or writes \p GV through its own pointer operand
+/// (possibly via a constant expression), i.e. the access is one this scan
+/// classifies. Any other use of the address is an escape.
+static bool isDirectAccessOf(const Instruction *I, const GlobalVariable *GV) {
+  const Value *Ptr = nullptr;
+  if (const auto *LI = dyn_cast<LoadInst>(I))
+    Ptr = LI->getPointerOperand();
+  else if (const auto *SI = dyn_cast<StoreInst>(I))
+    Ptr = SI->getPointerOperand();
+  else
+    return false;
+  return Ptr->stripPointerCastsAndAliases() == GV ||
+         getUnderlyingObject(Ptr) == GV;
+}
+
 void LockOwnershipInfo::findProtectedGlobalVariables(SingleThreadedInfo &STI) {
   LLVM_DEBUG(
       dbgs() << "\n@@@@@@@@@ Finding protected global variables @@@@@@@@@\n");
   for (const GlobalVariable &GV : M.globals()) {
     if (GV.user_empty() || GV.isConstant())
+      continue;
+    // Only a variable this module owns outright can be judged protected: an
+    // external one is accessed by other translation units under locks (or
+    // none) that this module never sees, and a declaration has no accesses
+    // here at all. Same rule as the single-writer analysis.
+    if (!GV.hasLocalLinkage() || GV.isDeclaration())
       continue;
 
     LLVM_DEBUG(dbgs() << "\nChecking GV: " << GV.getName() << "\n");
@@ -629,6 +862,16 @@ void LockOwnershipInfo::findProtectedGlobalVariables(SingleThreadedInfo &STI) {
                         << " MT\n");
 
       LLVM_DEBUG(dbgs() << "\tAccess: " << *I << "\n");
+      // The address of the variable leaving through anything other than the
+      // pointer operand of a load or store -- passed to a call, stored into
+      // another object, cast to an integer, merged in a phi -- means it is
+      // read and written through paths this scan does not see, under
+      // whatever lock they please. That is an escape, not an access.
+      if (!isDirectAccessOf(I, &GV)) {
+        LLVM_DEBUG(dbgs() << "\t\tAddress escapes here\n");
+        AllAccessesProtected = false;
+        break;
+      }
       const auto LocksForCurrentAccess = getLocksProtecting(I);
 
       if (LocksForCurrentAccess.empty()) {
