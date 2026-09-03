@@ -29,7 +29,9 @@
 #include "llvm/Analysis/EscapeAnalysis.h"
 #include "llvm/Analysis/LockOwnership.h"
 #include "llvm/Analysis/LoopInfo.h"
+#include "llvm/Analysis/MemoryLocation.h"
 #include "llvm/Analysis/PostDominators.h"
+#include "llvm/IR/CFG.h"
 #include "llvm/Analysis/ScalarEvolution.h"
 #include "llvm/Analysis/SingleThreaded.h"
 #include "llvm/Analysis/TargetLibraryInfo.h"
@@ -325,7 +327,7 @@ public:
       std::optional<SingleThreadedInfo *> STI = std::nullopt,
       DominatorTree *DT = nullptr, PostDominatorTree *PDT = nullptr,
       AAResults *AA = nullptr, LoopInfo *LI = nullptr,
-      AssumptionCache *AC = nullptr);
+      AssumptionCache *AC = nullptr, ScalarEvolution *SE = nullptr);
 
   /// Checks if an instruction could potentially change ThreadSanitizer's
   /// synchronization state. This includes atomic operations, memory barriers,
@@ -334,17 +336,40 @@ public:
   /// @param TLI Target library info to identify standard library functions
   /// @return true if instruction could affect synchronization state, false if
   /// proven safe
-  enum LockOperation : unsigned {
-    NONE = 0,
-    ACQUIRE = 1,
-    RELEASE = 2,
-    BOTH = ACQUIRE | RELEASE,
+  /// Synchronization effects an instruction may have, as a bitmask. The two
+  /// lock bits are directional, and that direction is what lets us cross a
+  /// lock at all:
+  ///
+  ///   - Dominance removes the *later* access and relies on the earlier one.
+  ///     An acquire between them can only order some remote event *before* the
+  ///     later access, which cannot create a race the earlier one misses; a
+  ///     release can, so it blocks.
+  ///   - Post-dominance removes the *earlier* access and relies on the later
+  ///     one, so the two roles are exactly reversed.
+  ///
+  /// Termination is a separate axis: post-dominance additionally needs the
+  /// covering access to actually be reached.
+  enum SyncEffect : unsigned {
+    SYNC_NONE = 0,
+    SYNC_ACQUIRE = 1u << 0,
+    SYNC_RELEASE = 1u << 1,
+    SYNC_UNKNOWN = 1u << 2,
+    SYNC_MAY_NOT_RETURN = 1u << 3,
+
+    /// Bits that make a path unusable for dominance elimination ...
+    SYNC_BLOCKS_DOM = SYNC_RELEASE | SYNC_UNKNOWN,
+    /// ... and for post-dominance elimination.
+    SYNC_BLOCKS_POSTDOM = SYNC_ACQUIRE | SYNC_UNKNOWN | SYNC_MAY_NOT_RETURN,
   };
 
+  /// Classify what \p Inst may do to ThreadSanitizer's happens-before state.
+  static unsigned classifySyncEffect(const Instruction *Inst,
+                                     const TargetLibraryInfo &TLI);
+
+  /// True if \p Inst may affect synchronization state at all. Used by the
+  /// interprocedural sync-free analysis, which has no notion of direction.
   static bool isInstrDangerous(const Instruction *Inst,
-                               const TargetLibraryInfo &TLI,
-                               bool IsPostDom = false,
-                               LockOperation *LockOp = nullptr);
+                               const TargetLibraryInfo &TLI);
 
 private:
   // Internal Instruction wrapper that contains more information about the
@@ -355,6 +380,12 @@ private:
     static constexpr unsigned kCompoundRW = (1U << 0);
 
     explicit InstructionInfo(Instruction *Inst) : Inst(Inst) {}
+
+    /// A compound read-modify-write is instrumented as a write, and a write
+    /// races with both remote reads and remote writes.
+    bool isWriteOperation() const {
+      return isa<StoreInst>(Inst) || (Flags & kCompoundRW);
+    }
 
     Instruction *Inst;
     unsigned Flags = 0;
@@ -385,13 +416,27 @@ private:
   void eliminateInstrByPrePostDominance(
       SmallVectorImpl<InstructionInfo> &AllInstr,
       const DominatorTreeBase<BasicBlock, IsPostDom> *DTBase, AAResults *AA,
-      const TargetLibraryInfo &TLI, const LoopInfo *LI);
+      const TargetLibraryInfo &TLI, const LoopInfo *LI, ScalarEvolution *SE);
 
-  template <bool IsPostDom>
-  bool isPathClear(Instruction *StartInst, Instruction *EndInst,
-                   const DominatorTreeBase<BasicBlock, IsPostDom> *DTBase,
-                   const TargetLibraryInfo &TLI,
-                   LockOperation *LockOp, const LoopInfo *LI);
+  /// True if DomInst's instrumentation call covers everything CurrInst's
+  /// would: the same address, and at least as many bytes.
+  static bool locationCovers(Instruction *DomInst, Instruction *CurrInst,
+                             AAResults *AA);
+
+  /// Union of the synchronization effects over every path from \p FirstInst to
+  /// \p SecondInst in program order, plus the cycle through \p RemovedInst
+  /// when it lies on one.
+  unsigned scanPaths(Instruction *FirstInst, Instruction *SecondInst,
+                     Instruction *RemovedInst, const TargetLibraryInfo &TLI,
+                     const LoopInfo *LI, ScalarEvolution *SE,
+                     bool NeedTermination);
+
+  /// Blocks from which \p BB is reachable, memoized for the current function.
+  const SmallPtrSetImpl<const BasicBlock *> *
+  getReverseReachable(const BasicBlock *BB);
+
+  DenseMap<const BasicBlock *, SmallPtrSet<const BasicBlock *, 32>>
+      RevReachCache;
 
   bool addrPointsToConstantData(Value *Addr);
   int getMemoryAccessFuncIndex(Type *OrigTy, Value *Addr, const DataLayout &DL);
@@ -517,6 +562,7 @@ PreservedAnalyses ThreadSanitizerPass::run(Function &F,
   AAResults *AA = nullptr;
   LoopInfo *LI = nullptr;
   AssumptionCache *AC = nullptr;
+  ScalarEvolution *SE = nullptr;
   if (ClUseDominanceAnalysis || ClUseDominanceAnalysisDom ||
       ClUseDominanceAnalysisPostDom) {
     DT = &FAM.getResult<DominatorTreeAnalysis>(F);
@@ -524,11 +570,15 @@ PreservedAnalyses ThreadSanitizerPass::run(Function &F,
     AA = &FAM.getResult<AAManager>(F);
     LI = &FAM.getResult<LoopAnalysis>(F);
     AC = &FAM.getResult<AssumptionAnalysis>(F);
+    // Post-dominance needs to know whether a loop between two accesses can
+    // spin forever; a computable backedge-taken count settles it.
+    SE = &FAM.getResult<ScalarEvolutionAnalysis>(F);
   }
 
   const bool Instrumented =
       TSan.sanitizeFunction(F, FAM.getResult<TargetLibraryAnalysis>(F),
-                            std::nullopt, EAGI, LOI, STI, DT, PDT, AA, LI, AC);
+                            std::nullopt, EAGI, LOI, STI, DT, PDT, AA, LI, AC,
+                            SE);
   if (Instrumented)
     return PreservedAnalyses::none();
 
@@ -570,37 +620,36 @@ PreservedAnalyses ModuleThreadSanitizerPass::run(Module &M,
   }
   ////
 
-  if (ClUseEscapeAnalysis)
-    dbgs() << "-- Using Escape Analysis for Module " << M.getName() << " --\n";
-  else if (ClUseEscapeAnalysisGlobal)
-    dbgs() << "-- Using Global Escape Analysis for Module " << M.getName()
-           << " --\n";
-  else
-    dbgs() << "-- Using Capture Tracker for Module " << M.getName() << " --\n";
-
-  if (ClUseLockOwnershipAnalysis)
-    dbgs() << "-- Using Lock Ownership Analysis for Module " << M.getName()
-           << " --\n";
-
-  if (ClUseSingleThreadedAnalysis)
-    dbgs() << "-- Using Single / Multiple Threaded Analysis for Module "
-           << M.getName() << " --\n";
-
-  if (ClUseSWMRAnalysis)
-    dbgs() << "-- Using SWMR Analysis for Module " << M.getName() << " --\n";
+  LLVM_DEBUG({
+    dbgs() << "-- Module " << M.getName() << ": ";
+    if (ClUseEscapeAnalysis)
+      dbgs() << "escape analysis; ";
+    else if (ClUseEscapeAnalysisGlobal)
+      dbgs() << "global escape analysis; ";
+    else
+      dbgs() << "capture tracker; ";
+    if (ClUseLockOwnershipAnalysis)
+      dbgs() << "lock ownership; ";
+    if (ClUseSingleThreadedAnalysis)
+      dbgs() << "single/multi-threaded; ";
+    if (ClUseSWMRAnalysis)
+      dbgs() << "SWMR; ";
+    if (ClUseDominanceAnalysis || ClUseDominanceAnalysisDom ||
+        ClUseDominanceAnalysisPostDom)
+      dbgs() << "dominance; ";
+    dbgs() << "--\n";
+  });
 
   if (ClUseDominanceAnalysis || ClUseDominanceAnalysisDom ||
       ClUseDominanceAnalysisPostDom) {
-    dbgs() << "-- Using Dominance Analysis for Module " << M.getName()
-           << " --\n";
     SFI = std::make_unique<SyncFreeInfo>(
         M, MAM.getResult<CallGraphAnalysis>(M),
         MAM.getResult<FunctionAnalysisManagerModuleProxy>(M).getManager());
   }
 
   if (ClUseLockOwnershipAnalysis && ClUseLockOwnershipAnalysisUpperbound)
-    dbgs() << "Only one from tsan-use-lock-ownership or "
-              "tsan-use-lock-ownership-upperbound in one time";
+    errs() << "warning: -tsan-use-lock-ownership and "
+              "-tsan-use-lock-ownership-upperbound are mutually exclusive\n";
 
   if (ClUseEscapeAnalysisGlobal)
     MAM.getResult<EscapeAnalysisGlobal>(M);
@@ -614,9 +663,12 @@ PreservedAnalyses ModuleThreadSanitizerPass::run(Module &M,
   insertModuleCtor(M);
 
   // Declare an external global variable InterceptorEnabled in the module
+  // Thread-local: the runtime defines it as THREADLOCAL, and a process-wide
+  // flag would let one thread's window suppress interceptors in all others.
   InterceptorEnabled = new GlobalVariable(
       M, Type::getInt1Ty(M.getContext()), /*isConstant=*/false,
-      GlobalValue::ExternalLinkage, nullptr, "InterceptorEnabled");
+      GlobalValue::ExternalLinkage, nullptr, "InterceptorEnabled", nullptr,
+      GlobalValue::GeneralDynamicTLSModel);
 
   return PreservedAnalyses::none();
 }
@@ -968,6 +1020,16 @@ void ThreadSanitizer::chooseInstructionsToInstrument(
       }
     }
 
+    // 3b. Skip accesses that run before the program has created any thread.
+    // Whole functions are skipped earlier, in sanitizeFunction; this catches
+    // main, whose prefix is single-threaded and whose remainder usually is
+    // not, so it can only be classified one access at a time.
+    if (ClUseSingleThreadedAnalysis && STI.has_value() &&
+        STI.value()->isSingleThreaded(I)) {
+      LLVM_DEBUG(dbgs() << "Instruction omitted: single-threaded context\n");
+      continue;
+    }
+
     // 4. Skip instrumentation if SWMR (Single-Writer/Multiple-Reader) analysis is
     // enabled and indicates this global variable is read-only. This
     if (ClUseSWMRAnalysis) {
@@ -1004,279 +1066,64 @@ DenseMap<Instruction *, size_t> ThreadSanitizer::createInstrIndexMap(
   return InstToIndexInAll;
 }
 
-template<bool IsPostDom>
-void ThreadSanitizer::eliminateInstrByPrePostDominance(
-    SmallVectorImpl<InstructionInfo> &AllInstr,
-    const DominatorTreeBase<BasicBlock, IsPostDom> *DTBase, AAResults *AA,
-    const TargetLibraryInfo &TLI, const LoopInfo *LI) {
-  LLVM_DEBUG(
-      dbgs() << "===========================================\n" <<
-      "\n=== Starting "
-      << (IsPostDom ? "post-" : "") << "dominance-based analysis ===\n");
-  assert(DTBase && "(Post)DominationTree must be provided");
-  if (AllInstr.empty())
-    return;
+const SmallPtrSetImpl<const BasicBlock *> *
+ThreadSanitizer::getReverseReachable(const BasicBlock *BB) {
+  const auto It = RevReachCache.find(BB);
+  if (It != RevReachCache.end())
+    return &It->second;
 
-  DenseMap<Instruction *, size_t> InstToIndexInAll =
-      createInstrIndexMap(AllInstr);
+  SmallPtrSet<const BasicBlock *, 32> Reach;
+  SmallVector<const BasicBlock *, 32> Worklist;
+  Reach.insert(BB);
+  Worklist.push_back(BB);
+  while (!Worklist.empty())
+    for (const BasicBlock *Pred : predecessors(Worklist.pop_back_val()))
+      if (Reach.insert(Pred).second)
+        Worklist.push_back(Pred);
 
-  SmallVector<bool, 16> ToRemove(AllInstr.size(), false);
-  unsigned RemovedCount = 0;
-
-  for (size_t i = 0; i < AllInstr.size(); ++i) {
-    if (ToRemove[i])
-      continue;
-
-    const InstructionInfo &CurrII = AllInstr[i];
-    Instruction *CurrInst = CurrII.Inst;
-    const BasicBlock *CurrBB = CurrInst->getParent();
-    Value *CurrAddr = getLoadStorePointerOperand(CurrInst);
-    assert(CurrAddr && "Should not happen for load/store");
-    const Value *CurrUnderlyingObj = getUnderlyingObject(CurrAddr);
-
-    LLVM_DEBUG(dbgs() << "\nAnalyzing instruction: " << *CurrInst
-                  << "  (Underlying object: " << CurrUnderlyingObj->getName()
-                  << ")\n");
-
-    DomTreeNode *CurrDTNode = DTBase->getNode(CurrBB);
-    if (!CurrDTNode)
-      continue;
-
-    // Traverse up the dominator tree
-    DomTreeNode *IDomNode = CurrDTNode;
-    while (IDomNode && IDomNode->getBlock()) {
-      BasicBlock *DomBB = IDomNode->getBlock();
-
-      // Look for a suitable dominating instrumented instruction in DomBB
-      auto StartIt = DomBB->begin();
-      auto EndIt = DomBB->end();
-      if (CurrBB == DomBB) {
-        if (IsPostDom)
-          StartIt = CurrInst->getIterator();
-        else
-          EndIt = CurrInst->getIterator();
-      }
-
-      for (auto InstIt = StartIt; InstIt != EndIt; ++InstIt) {
-        Instruction &PotentialDomInst = *InstIt;
-        LLVM_DEBUG(dbgs() << "PotentialDomInst: " << PotentialDomInst << "\n");
-        if (&PotentialDomInst == CurrInst)
-          continue;
-
-        // Check if PotentialDomInst is dominating and instrumented
-        const auto It = InstToIndexInAll.find(&PotentialDomInst);
-        if ((It == InstToIndexInAll.end()) || ToRemove[It->second])
-          // Not found in AllInstr or already marked for removal
-          continue;
-
-        const size_t DomIndex = It->second;
-        InstructionInfo &DomII = AllInstr[DomIndex];
-        Instruction *DomInst = DomII.Inst;
-
-        const Value *DomAddr = getLoadStorePointerOperand(DomInst);
-        const Value *DomUnderlyingObj = getUnderlyingObject(DomAddr);
-        if (CurrUnderlyingObj == DomUnderlyingObj ||
-            (CurrUnderlyingObj && DomUnderlyingObj &&
-             AA->isMustAlias(CurrAddr, DomAddr))) {
-          auto isWriteOperation = [](const InstructionInfo &II) {
-            return isa<StoreInst>(II.Inst) ||
-                   (II.Flags & InstructionInfo::kCompoundRW);
-          };
-          const bool CurrIsWrite = isWriteOperation(CurrII);
-          const bool DomIsWrite = isWriteOperation(DomII);
-
-          // Check compatibility logic (DomInst covers CurrInst):
-          // 1. If DomInst is a write, it covers both read and write of
-          // CurrInst.
-          // 2. If DomInst is a read, it only covers a read of CurrInst.
-          if (DomIsWrite || !CurrIsWrite) {
-            // Check the path to/from CurrInst from/to DomInst
-            bool IsPathClear = false;
-            LockOperation LockOp = LockOperation::NONE;
-            if (IsPostDom)
-              IsPathClear =
-                  isPathClear(CurrInst, DomInst, DTBase, TLI, &LockOp, LI);
-            else
-              IsPathClear =
-                  isPathClear(DomInst, CurrInst, DTBase, TLI, &LockOp, LI);
-
-            LLVM_DEBUG(dbgs()
-                       << "Path is " << (IsPathClear ? "clear" : "not clear")
-                       << ", LockOp: "
-                       << (LockOp == LockOperation::NONE      ? "NONE"
-                           : LockOp == LockOperation::ACQUIRE ? "ACQUIRE"
-                           : LockOp == LockOperation::RELEASE ? "RELEASE"
-                                                              : "BOTH")
-                       << "\n");
-
-            bool IsRedundant = false;
-            if (IsPathClear ||
-                (IsPostDom && (LockOp == LockOperation::RELEASE)) ||
-                (!IsPostDom && (LockOp == LockOperation::ACQUIRE)))
-              IsRedundant = true;
-
-            if (IsRedundant) {
-              LLVM_DEBUG(dbgs()
-                         << "TSAN: Omitting instrumentation for: " << *CurrInst
-                         << " ((post-)dominated and covered by: " << *DomInst
-                         << ")\n");
-              ToRemove[i] = true;
-              RemovedCount++;
-              goto next_instruction_to_prune; // Found a post-dominator, move to
-                                              // next CurrInst
-            }
-          }
-        }
-      }
-      IDomNode = IDomNode->getIDom();
-    }
-    next_instruction_to_prune:;
-  }
-
-  LLVM_DEBUG(
-      dbgs() << "\n=== Final list of instructions and their status ===\n";
-      for (size_t i = 0; i < AllInstr.size(); ++i)
-      dbgs() << "[" << (ToRemove[i] ? "REMOVED" : "KEPT") << "]\t" <<
-        *AllInstr[i].Inst << "\n"
-    );
-
-  if (RemovedCount > 0) {
-    LLVM_DEBUG(dbgs() << "\n=== Updating final instruction list ===\n"
-                      << "Original size: " << AllInstr.size() << "\n"
-                      << "Instructions to remove: " << RemovedCount << "\n"
-                      << "Remaining instructions: "
-                      << (AllInstr.size() - RemovedCount) << "\n");
-    SmallVector<InstructionInfo, 8> NewAllInstr;
-    NewAllInstr.reserve(AllInstr.size() - RemovedCount);
-    for (size_t k = 0; k < AllInstr.size(); ++k)
-      if (!ToRemove[k])
-        NewAllInstr.push_back(AllInstr[k]);
-    AllInstr.swap(NewAllInstr);
-    if (IsPostDom)
-      NumOmittedByPostDominance += RemovedCount; // Statistics
-    else
-      NumOmittedByDominance += RemovedCount; // Statistics
-  }
-  LLVM_DEBUG(dbgs() << "=== Dominance analysis complete ===\n"
-                    << "===========================================\n");
+  return &RevReachCache.try_emplace(BB, std::move(Reach)).first->second;
 }
 
-/// Checks if there are any synchronization-affecting instructions on execution paths
-/// between two instructions. Used to determine if we can skip instrumenting CurrInst
-/// when it is dominated by DomInst.
+/// Condition (2) of redundancy: DomInst's instrumentation call must cover
+/// everything CurrInst's would.
 ///
-/// Walks all paths between DomInst and CurrInst in the dominator tree checking for:
-/// 1. Instructions after DomInst in its basic block
-/// 2. All instructions in intermediate basic blocks
-/// 3. Instructions before CurrInst in its basic block
-///
-/// @param StartInst The dominating instruction that handles synchronization
-/// @param EndInst The current instruction we may be able to skip
-/// @param DTBase Dominator tree for path traversal
-/// @param TLI Target library info for checking standard functions
-/// @param LI LoopInfo (needed to check soundness of postdom)
-/// @return true if no dangerous instructions exist between DomInst and CurrInst
-template <bool IsPostDom>
-bool ThreadSanitizer::isPathClear(
-    Instruction *StartInst, Instruction *EndInst,
-    const DominatorTreeBase<BasicBlock, IsPostDom> *DTBase,
-    const TargetLibraryInfo &TLI, LockOperation *LockOp, const LoopInfo *LI) {
-  LLVM_DEBUG(dbgs() << "Checking path from " << *StartInst << " to " << *EndInst
-                    << "\n");
-  const BasicBlock *StartBB = StartInst->getParent();
-  const BasicBlock *EndBB = EndInst->getParent();
+/// Both halves are needed. isMustAlias establishes that the two accesses start
+/// at the same address but says nothing about their extent -- two
+/// MemoryLocations with the same pointer and different sizes are still
+/// MustAlias -- so a dominating one-byte write would otherwise be taken to
+/// cover an eight-byte one, and races on the remaining seven bytes would go
+/// unreported.
+bool ThreadSanitizer::locationCovers(Instruction *DomInst,
+                                     Instruction *CurrInst, AAResults *AA) {
+  const MemoryLocation DomLoc = MemoryLocation::get(DomInst);
+  const MemoryLocation CurrLoc = MemoryLocation::get(CurrInst);
 
-  // Check for sound postdom
-  if (IsPostDom && !ClPostDomAggressive && LI->getLoopFor(EndBB))
+  if (!DomLoc.Size.hasValue() || !CurrLoc.Size.hasValue() ||
+      DomLoc.Size.isScalable() || CurrLoc.Size.isScalable())
+    return false;
+  if (DomLoc.Size.getValue().getFixedValue() <
+      CurrLoc.Size.getValue().getFixedValue())
     return false;
 
-  LLVM_DEBUG(dbgs() << "StartBB: " << StartBB->getName() << "\t"
-                    << "EndBB: " << EndBB->getName() << "\n");
-
-  // 1. Check instructions in DomBB after DomInst
-  for (const Instruction *I = StartInst->getNextNode();
-       I && I->getParent() == StartBB; I = I->getNextNode()) {
-    LLVM_DEBUG(dbgs() << "\tisPathClear -- Checking 1: " << *I << "\n");
-    if (I == EndInst && StartBB == EndBB)
-      return true; // Reached target instruction in the same block
-    if (isInstrDangerous(I, TLI, IsPostDom, LockOp))
-      return false;
-  }
-
-  // The path is clear within the same block
-  if (StartBB == EndBB)
+  if (AA && AA->isMustAlias(DomLoc, CurrLoc))
     return true;
 
-  // BFS/DFS over CFG successors (dom case) or predecessors
-  // (postdom case) starting from StartBB, stopping at EndBB.  Since EndBB
-  // (post-)dominates all paths, every execution path from StartBB reaches
-  // EndBB without escaping it, so the BFS is guaranteed to terminate.
-  //   StartBB
-  //    /    \
-  //  BB_A  BB_B  ← mutex_lock()
-  //    \    /
-  //    EndBB
-  //
-  // idom(EndBB) == StartBB, so the while-loop exited immediately without
-  // checking BB_A or BB_B at all.
-  //
-
-  // FwdSrc --CFG--> ... --CFG--> FwdDst
-  const BasicBlock *FwdSrc = !IsPostDom ? StartBB : EndBB;
-  const BasicBlock *FwdDst = !IsPostDom ? EndBB   : StartBB;
-
-  // Sanity-check: FwdSrc must (post-)dominate FwdDst in the tree.
-  if (!DTBase->dominates(DTBase->getNode(FwdSrc), DTBase->getNode(FwdDst))) {
-    LLVM_DEBUG(dbgs() << "TSAN: FwdSrc does not dominate FwdDst — bailing.\n");
+  // Alias analysis is conservative about some address computations that
+  // nonetheless denote the same address by construction. If both pointers
+  // reduce to the same SSA base with the same constant displacement, they are
+  // the same address whatever AA managed to prove -- and since the base is one
+  // SSA value, the two accesses see the same instance of it.
+  const DataLayout &DL = DomInst->getModule()->getDataLayout();
+  const unsigned Bits = DL.getIndexTypeSizeInBits(DomLoc.Ptr->getType());
+  if (Bits != DL.getIndexTypeSizeInBits(CurrLoc.Ptr->getType()))
     return false;
-  }
 
-  SmallVector<const BasicBlock *, 16> Worklist;
-  SmallPtrSet<const BasicBlock *, 16> Visited;
-
-  // Enqueue the CFG neighbors of BB (successors for dom, predecessors for
-  // postdom), skipping FwdDst (its instructions are handled in step 3).
-  auto enqueueNeighbors = [&](const BasicBlock *BB) {
-    if (!IsPostDom) {
-      for (const BasicBlock *Succ : successors(BB))
-        if (Succ != FwdDst && Visited.insert(Succ).second)
-          Worklist.push_back(Succ);
-    } else {
-      for (const BasicBlock *Pred : predecessors(BB))
-        if (Pred != FwdDst && Visited.insert(Pred).second)
-          Worklist.push_back(Pred);
-    }
-  };
-
-  enqueueNeighbors(FwdSrc);
-
-  while (!Worklist.empty()) {
-    const BasicBlock *BB = Worklist.pop_back_val();
-
-    // Check for sound postdom: a loop block makes postdom unsound.
-    if (IsPostDom && !ClPostDomAggressive && LI->getLoopFor(BB))
-      return false;
-
-    LLVM_DEBUG(dbgs() << "Inter CFG BB " << BB->getName() << "\n");
-    for (const Instruction &InterI : *BB) {
-      LLVM_DEBUG(dbgs() << "\tisPathClear -- Checking 2: " << InterI << "\n");
-      if (isInstrDangerous(&InterI, TLI, IsPostDom, LockOp))
-        return false;
-    }
-
-    enqueueNeighbors(BB);
-  }
-
-  // 3. Check instructions in CurrBB before CurrInst
-  for (const Instruction &I : *EndBB) {
-    LLVM_DEBUG(dbgs() << "\tisPathClear -- Checking 3: " << I << "\n");
-    if (&I == EndInst)
-      break;
-    if (isInstrDangerous(&I, TLI, IsPostDom, LockOp))
-      return false;
-  }
-
-  return true;
+  APInt DomOff(Bits, 0), CurrOff(Bits, 0);
+  const Value *DomBase = DomLoc.Ptr->stripAndAccumulateConstantOffsets(
+      DL, DomOff, /*AllowNonInbounds=*/true);
+  const Value *CurrBase = CurrLoc.Ptr->stripAndAccumulateConstantOffsets(
+      DL, CurrOff, /*AllowNonInbounds=*/true);
+  return DomBase == CurrBase && DomOff == CurrOff;
 }
 
 static bool isTsanAtomic(const Instruction *I) {
@@ -1289,72 +1136,331 @@ static bool isTsanAtomic(const Instruction *I) {
   return true;
 }
 
-/// Helper function to check for "dangerous" instructions
-/// Returns true if the instruction might change TSan's synchronization state.
-bool ThreadSanitizer::isInstrDangerous(const Instruction *Inst,
-                                       const TargetLibraryInfo &TLI,
-                                       bool IsPostDom, LockOperation *LockOp) {
-  if (LockOp)
-    *LockOp = LockOperation::NONE;
-
+unsigned ThreadSanitizer::classifySyncEffect(const Instruction *Inst,
+                                             const TargetLibraryInfo &TLI) {
   if (!Inst)
-    return false;
+    return SYNC_NONE;
 
-  // Check for atomic instructions, memory barriers or memory intrinsics
+  // An inter-thread atomic or fence can establish happens-before in either
+  // direction, so it blocks elimination both ways.
   if (isTsanAtomic(Inst))
-    return true;
+    return SYNC_UNKNOWN;
 
-  if (const CallInst *CI = dyn_cast<CallInst>(Inst)) {
-    if (const Function *Callee = CI->getCalledFunction()) {
-      // Check for known "safe" functions (without synchronization).
-      // This is a complex part, requiring analysis of function attributes or
-      // interprocedural analysis. To start, one can consider all unknown calls
-      // dangerous. TLI can help for standard library functions.
+  const auto *CB = dyn_cast<CallBase>(Inst);
+  if (!CB)
+    return SYNC_NONE;
 
-      if (LockOp && (*LockOp != LockOperation::BOTH)) {
-        if (TargetLibraryInfo::isLockAcquireFunction(*Callee)) {
-          *LockOp = static_cast<LockOperation>(*LockOp | LockOperation::ACQUIRE);
-          return true;
-        }
-        if (TargetLibraryInfo::isLockReleaseFunction(*Callee)) {
-          *LockOp = static_cast<LockOperation>(*LockOp | LockOperation::RELEASE);
-          return true;
-        }
-      }
+  const Function *Callee = CB->getCalledFunction();
 
-      LibFunc Func;
-      if (TLI.getLibFunc(*Callee, Func))
-        return !TLI.isSyncFree(Func);
+  // An indirect call could do anything, including not returning.
+  if (!Callee)
+    return SYNC_UNKNOWN | SYNC_MAY_NOT_RETURN;
 
-      // If a function is known to be sync-free (e.g., @llvm.sqrt), then false.
-      // Otherwise - true.
-      if (Callee->isIntrinsic())
-        return !Intrinsic::isIntrinsicSyncFree(Callee->getIntrinsicID());
+  // Locks are the common case on a path between two accesses, and they are
+  // directional -- see SyncEffect. Recognising them, rather than treating any
+  // lock as opaque, is what lets dominance cross an acquire and post-dominance
+  // cross a release. They are also modelled as returning: a lock that blocks
+  // forever is a deadlock, not something the instrumentation reasons about.
+  if (TargetLibraryInfo::isLockAcquireFunction(*Callee))
+    return SYNC_ACQUIRE;
+  if (TargetLibraryInfo::isLockReleaseFunction(*Callee))
+    return SYNC_RELEASE;
 
-      if (Callee->hasFnAttribute(Attribute::NoSync) ||
-          Callee->hasFnAttribute(Attribute::ReadNone))
-          // || Callee->hasFnAttribute(Attribute::ReadOnly))
-        return false;
+  // Library and intrinsic calls we recognise: their synchronization behaviour
+  // is tabulated and they return.
+  LibFunc Func;
+  if (TLI.getLibFunc(*Callee, Func))
+    return TLI.isSyncFree(Func) ? SYNC_NONE : SYNC_UNKNOWN;
 
-      // Postdom check for soundness
-      if (IsPostDom && !ClPostDomAggressive && ModuleThreadSanitizerPass::SFI &&
-        ModuleThreadSanitizerPass::SFI->isContainsLoops(Callee))
-        return false;
+  if (Callee->isIntrinsic())
+    return Intrinsic::isIntrinsicSyncFree(Callee->getIntrinsicID())
+               ? SYNC_NONE
+               : SYNC_UNKNOWN;
 
-      // Check in sync-free analysis previously done
-      if (ModuleThreadSanitizerPass::SFI)
-        return !ModuleThreadSanitizerPass::SFI->isSyncFree(Callee);
+  // What is left is a call into code of this program. Whether it synchronizes
+  // and whether it terminates are separate questions, and only the second one
+  // needs the termination bit -- a callee that may synchronize is already
+  // blocking both directions.
+  const bool MayNotReturn =
+      !CB->hasFnAttr(Attribute::WillReturn) &&
+      !Callee->hasFnAttribute(Attribute::WillReturn) &&
+      !(ModuleThreadSanitizerPass::SFI &&
+        ModuleThreadSanitizerPass::SFI->isLoopFree(Callee));
+  const unsigned Termination = MayNotReturn ? SYNC_MAY_NOT_RETURN : SYNC_NONE;
 
-      // Conservatively: any non-intrinsic and not explicitly safe call is
-      // dangerous
-      return true;
+  if (Callee->hasFnAttribute(Attribute::NoSync) ||
+      Callee->hasFnAttribute(Attribute::ReadNone))
+    return Termination;
+
+  // Interprocedural sync-freedom. This is where we go beyond what the NoSync
+  // attribute alone can prove, and it accounts for a large share of the
+  // elimination on real code. SFI answers false for anything it has no body
+  // for, so an opaque external call still lands on SYNC_UNKNOWN below.
+  if (ModuleThreadSanitizerPass::SFI &&
+      ModuleThreadSanitizerPass::SFI->isSyncFree(Callee))
+    return Termination;
+
+  return Termination | SYNC_UNKNOWN;
+}
+
+bool ThreadSanitizer::isInstrDangerous(const Instruction *Inst,
+                                       const TargetLibraryInfo &TLI) {
+  return (classifySyncEffect(Inst, TLI) &
+          (SYNC_ACQUIRE | SYNC_RELEASE | SYNC_UNKNOWN)) != SYNC_NONE;
+}
+
+/// Union of the synchronization effects over every execution path that can
+/// carry the program from FirstInst to SecondInst, plus -- when the access we
+/// intend to remove sits on a cycle -- the path from that access back to
+/// itself.
+///
+/// Accumulating rather than stopping at the first synchronizing instruction is
+/// what makes the lock refinement usable: a path holding only acquires is
+/// still eliminable under dominance, and previously the scan gave up before it
+/// could establish that.
+unsigned ThreadSanitizer::scanPaths(Instruction *FirstInst,
+                                    Instruction *SecondInst,
+                                    Instruction *RemovedInst,
+                                    const TargetLibraryInfo &TLI,
+                                    const LoopInfo *LI, ScalarEvolution *SE,
+                                    bool NeedTermination) {
+  unsigned Effect = SYNC_NONE;
+  DenseMap<const Loop *, bool> LoopTerminates;
+
+  // A loop on the path only matters when the covering access comes later: if
+  // the loop may spin forever, that access is never reached. Rather than
+  // vetoing every loop, ask scalar evolution for a trip count -- a loop with a
+  // computable backedge-taken count terminates.
+  auto noteTermination = [&](const BasicBlock *BB) {
+    if (!NeedTermination || ClPostDomAggressive || !LI)
+      return;
+    const Loop *L = LI->getLoopFor(BB);
+    if (!L)
+      return;
+    const auto [It, Inserted] = LoopTerminates.try_emplace(L, false);
+    if (Inserted)
+      It->second =
+          SE && !isa<SCEVCouldNotCompute>(SE->getBackedgeTakenCount(L));
+    if (!It->second)
+      Effect |= SYNC_MAY_NOT_RETURN;
+  };
+
+  auto scanRange = [&](BasicBlock::iterator B, BasicBlock::iterator E) {
+    for (auto It = B; It != E; ++It)
+      Effect |= classifySyncEffect(&*It, TLI);
+  };
+
+  auto scanWholeBlock = [&](const BasicBlock *BB) {
+    noteTermination(BB);
+    for (const Instruction &I : *BB)
+      Effect |= classifySyncEffect(&I, TLI);
+  };
+
+  // Walk forward from Seeds, staying inside Bound and never re-entering Stop,
+  // scanning each block in full.
+  auto scanCone = [&](const BasicBlock *From, const BasicBlock *Stop,
+                      const SmallPtrSetImpl<const BasicBlock *> *Bound) {
+    SmallPtrSet<const BasicBlock *, 32> Visited;
+    SmallVector<const BasicBlock *, 16> Worklist;
+    auto enqueue = [&](const BasicBlock *BB) {
+      if (BB != Stop && (!Bound || Bound->count(BB)) && Visited.insert(BB).second)
+        Worklist.push_back(BB);
+    };
+    for (const BasicBlock *Succ : successors(From))
+      enqueue(Succ);
+    while (!Worklist.empty()) {
+      const BasicBlock *BB = Worklist.pop_back_val();
+      scanWholeBlock(BB);
+      for (const BasicBlock *Succ : successors(BB))
+        enqueue(Succ);
     }
-    // Indirect call - always dangerous for simplicity
-    return true;
+  };
+
+  BasicBlock *FirstBB = FirstInst->getParent();
+  BasicBlock *SecondBB = SecondInst->getParent();
+
+  if (FirstBB == SecondBB) {
+    noteTermination(FirstBB);
+    scanRange(std::next(FirstInst->getIterator()), SecondInst->getIterator());
+  } else {
+    noteTermination(FirstBB);
+    noteTermination(SecondBB);
+    // The suffix of the first block and the prefix of the second execute on
+    // every path between the two accesses.
+    scanRange(std::next(FirstInst->getIterator()), FirstBB->end());
+    scanRange(SecondBB->begin(), SecondInst->getIterator());
+
+    // Everything in between. Bounding the walk by the blocks that can actually
+    // reach SecondBB keeps a diverging branch -- one that never reaches the
+    // second access at all -- from vetoing the elimination.
+    scanCone(FirstBB, SecondBB, getReverseReachable(SecondBB));
   }
 
-  // ... Other potentially dangerous instructions (architecture-specific, etc.)
-  return false;
+  // Consecutive dynamic executions of the access we are about to remove. When
+  // that access is on a cycle and its cover sits outside, the cover may run
+  // once while the removed access runs many times; iterations after the first
+  // are only covered if the path from the access back to itself is clear too.
+  // Without this, a mutex released in a loop latch went unnoticed.
+  BasicBlock *RemovedBB = RemovedInst->getParent();
+  const SmallPtrSetImpl<const BasicBlock *> *ReachesRemoved =
+      getReverseReachable(RemovedBB);
+  const bool OnCycle = llvm::any_of(successors(RemovedBB),
+                                    [&](const BasicBlock *Succ) {
+                                      return ReachesRemoved->count(Succ);
+                                    });
+  if (OnCycle) {
+    noteTermination(RemovedBB);
+    for (const Instruction &I : *RemovedBB)
+      if (&I != RemovedInst)
+        Effect |= classifySyncEffect(&I, TLI);
+    scanCone(RemovedBB, RemovedBB, ReachesRemoved);
+  }
+
+  return Effect;
+}
+
+template <bool IsPostDom>
+void ThreadSanitizer::eliminateInstrByPrePostDominance(
+    SmallVectorImpl<InstructionInfo> &AllInstr,
+    const DominatorTreeBase<BasicBlock, IsPostDom> *DTBase, AAResults *AA,
+    const TargetLibraryInfo &TLI, const LoopInfo *LI, ScalarEvolution *SE) {
+  LLVM_DEBUG(dbgs() << "\n=== Starting " << (IsPostDom ? "post-" : "")
+                    << "dominance-based analysis ===\n");
+  assert(DTBase && "(Post)DominationTree must be provided");
+  if (AllInstr.empty())
+    return;
+
+  const DenseMap<Instruction *, size_t> InstToIndexInAll =
+      createInstrIndexMap(AllInstr);
+
+  SmallVector<bool, 16> ToRemove(AllInstr.size(), false);
+
+  // Coverage composes: if A covers B and B covers C, then A covers C, because
+  // every path from A to C runs through B and both halves are clear. So an
+  // access that has itself been eliminated may still stand in for a later one,
+  // and we no longer lose eliminations to the order in which candidates happen
+  // to be visited. Tracking the surviving root of each chain is what keeps two
+  // accesses from covering each other into oblivion.
+  SmallVector<size_t, 16> CoverRoot(AllInstr.size());
+  for (size_t i = 0; i < AllInstr.size(); ++i)
+    CoverRoot[i] = i;
+  auto findRoot = [&CoverRoot](size_t I) {
+    while (CoverRoot[I] != I) {
+      CoverRoot[I] = CoverRoot[CoverRoot[I]];
+      I = CoverRoot[I];
+    }
+    return I;
+  };
+
+  auto isVolatileAccess = [](const Instruction *I) {
+    if (const auto *L = dyn_cast<LoadInst>(I))
+      return L->isVolatile();
+    if (const auto *S = dyn_cast<StoreInst>(I))
+      return S->isVolatile();
+    return false;
+  };
+
+  // Look for an instrumented access that (post-)dominates AllInstr[I] and
+  // covers it. Returns the index of that access, if there is one.
+  auto findCover = [&](size_t I) -> std::optional<size_t> {
+    const InstructionInfo &CurrII = AllInstr[I];
+    Instruction *CurrInst = CurrII.Inst;
+    const BasicBlock *CurrBB = CurrInst->getParent();
+
+    DomTreeNode *CurrDTNode = DTBase->getNode(const_cast<BasicBlock *>(CurrBB));
+    if (!CurrDTNode)
+      return std::nullopt;
+
+    for (DomTreeNode *Node = CurrDTNode; Node && Node->getBlock();
+         Node = Node->getIDom()) {
+      BasicBlock *DomBB = Node->getBlock();
+
+      // Within the access's own block, only instructions on the correct side
+      // of it are candidates.
+      auto StartIt = DomBB->begin();
+      auto EndIt = DomBB->end();
+      if (CurrBB == DomBB) {
+        if (IsPostDom)
+          StartIt = CurrInst->getIterator();
+        else
+          EndIt = CurrInst->getIterator();
+      }
+
+      for (auto InstIt = StartIt; InstIt != EndIt; ++InstIt) {
+        Instruction *DomInst = &*InstIt;
+        if (DomInst == CurrInst)
+          continue;
+
+        const auto It = InstToIndexInAll.find(DomInst);
+        if (It == InstToIndexInAll.end())
+          continue; // not an instrumented access
+        const size_t DomIndex = It->second;
+        if (findRoot(DomIndex) == I)
+          continue; // would make the access cover itself
+
+        const InstructionInfo &DomII = AllInstr[DomIndex];
+
+        // With -tsan-distinguish-volatile the two emit different runtime
+        // calls, so one cannot stand in for the other.
+        if (ClDistinguishVolatile &&
+            (isVolatileAccess(DomInst) || isVolatileAccess(CurrInst)))
+          continue;
+
+        // Condition (2): same location, and the cover is at least as wide.
+        if (!locationCovers(DomInst, CurrInst, AA))
+          continue;
+
+        // Condition (3): a write covers a later read or write; a read covers
+        // only a read, since a write may race with a remote read that the
+        // covering read would not flag.
+        if (!DomII.isWriteOperation() && CurrII.isWriteOperation())
+          continue;
+
+        // Condition (4): no synchronization on any path between them.
+        Instruction *FirstInst = IsPostDom ? CurrInst : DomInst;
+        Instruction *SecondInst = IsPostDom ? DomInst : CurrInst;
+        const unsigned Effect =
+            scanPaths(FirstInst, SecondInst, CurrInst, TLI, LI, SE,
+                      /*NeedTermination=*/IsPostDom);
+        if (Effect & (IsPostDom ? SYNC_BLOCKS_POSTDOM : SYNC_BLOCKS_DOM))
+          continue;
+
+        LLVM_DEBUG(dbgs() << "TSAN: Omitting instrumentation for " << *CurrInst
+                          << " (covered by " << *DomInst << ")\n");
+        return DomIndex;
+      }
+    }
+    return std::nullopt;
+  };
+
+  unsigned RemovedCount = 0;
+  for (size_t i = 0; i < AllInstr.size(); ++i) {
+    if (ToRemove[i])
+      continue;
+    if (const std::optional<size_t> Cover = findCover(i)) {
+      ToRemove[i] = true;
+      CoverRoot[i] = findRoot(*Cover);
+      ++RemovedCount;
+    }
+  }
+
+  if (RemovedCount == 0)
+    return;
+
+  SmallVector<InstructionInfo, 8> NewAllInstr;
+  NewAllInstr.reserve(AllInstr.size() - RemovedCount);
+  for (size_t k = 0; k < AllInstr.size(); ++k)
+    if (!ToRemove[k])
+      NewAllInstr.push_back(AllInstr[k]);
+  AllInstr.swap(NewAllInstr);
+
+  if (IsPostDom)
+    NumOmittedByPostDominance += RemovedCount;
+  else
+    NumOmittedByDominance += RemovedCount;
+
+  LLVM_DEBUG(dbgs() << "=== " << (IsPostDom ? "Post-dominance" : "Dominance")
+                    << " removed " << RemovedCount << " accesses ===\n");
 }
 
 void ThreadSanitizer::InsertRuntimeIgnores(Function &F) {
@@ -1373,13 +1479,15 @@ bool ThreadSanitizer::sanitizeFunction(
     std::optional<EscapeAnalysisGlobalInfo *> EAIGlobal,
     std::optional<LockOwnershipInfo *> LOI,
     std::optional<SingleThreadedInfo *> STI, DominatorTree *DT,
-    PostDominatorTree *PDT, AAResults *AA, LoopInfo *LI, AssumptionCache *AC) {
+    PostDominatorTree *PDT, AAResults *AA, LoopInfo *LI, AssumptionCache *AC,
+    ScalarEvolution *SE) {
   LLVM_DEBUG(dbgs() << "\n%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%"
                        "%%%%%%%%%%%%%%%%%\n"
     "%%%%%%%%%%%%%%%%%%%% Func " << F.getName() << "\t%%%%%%%%%%%%%%%%%%%%%%\n"
     "%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%\n");
   M = F.getParent();
   Func = &F;
+  RevReachCache.clear();
 
   // This is required to prevent instrumenting call to __tsan_init from within
   // the module constructor.
@@ -1496,13 +1604,13 @@ bool ThreadSanitizer::sanitizeFunction(
   }
 
   if (ClUseDominanceAnalysis) {
-    eliminateInstrByPrePostDominance(AllLoadsAndStores, DT, AA, TLI, LI);
-    eliminateInstrByPrePostDominance(AllLoadsAndStores, PDT, AA, TLI, LI);
+    eliminateInstrByPrePostDominance(AllLoadsAndStores, DT, AA, TLI, LI, SE);
+    eliminateInstrByPrePostDominance(AllLoadsAndStores, PDT, AA, TLI, LI, SE);
   } else {
     if (ClUseDominanceAnalysisDom)
-      eliminateInstrByPrePostDominance(AllLoadsAndStores, DT, AA, TLI, LI);
+      eliminateInstrByPrePostDominance(AllLoadsAndStores, DT, AA, TLI, LI, SE);
     if (ClUseDominanceAnalysisPostDom)
-      eliminateInstrByPrePostDominance(AllLoadsAndStores, PDT, AA, TLI, LI);
+      eliminateInstrByPrePostDominance(AllLoadsAndStores, PDT, AA, TLI, LI, SE);
   }
 
   //////////////////////////////////////////////////////////////////////////////
@@ -1694,11 +1802,14 @@ static ConstantInt *createOrdering(IRBuilder<> *IRB, AtomicOrdering ord) {
 
 void ThreadSanitizer::disableInterceptorForInstr(
     Instruction *I, InstrumentationIRBuilder &IRB) {
-  // Disable interceptors for this call
+  // Save and restore rather than forcing the flag back on afterwards: the
+  // guarded call may sit inside a region where interceptors were already
+  // disabled, and storing true would re-arm them early.
+  Value *Saved = IRB.CreateLoad(IRB.getInt1Ty(), InterceptorEnabled,
+                                "tsan.interceptors.saved");
   IRB.CreateStore(IRB.getInt1(false), InterceptorEnabled);
-  // After MemsetFn, set the InterceptorEnabled back to true
   IRB.SetInsertPoint(++BasicBlock::iterator(I));
-  IRB.CreateStore(IRB.getInt1(true), InterceptorEnabled);
+  IRB.CreateStore(Saved, InterceptorEnabled);
 }
 
 static bool
@@ -1774,6 +1885,12 @@ bool ThreadSanitizer::instrumentMemIntrinsic(
          Cast1,
          Cast2});
     I->eraseFromParent();
+    // The intrinsic was replaced by an intercepted call, so the function does
+    // now carry instrumentation. Reporting false here left functions whose
+    // only instrumentation was a memory intrinsic without
+    // __tsan_func_entry/__tsan_func_exit, dropping their frame from every race
+    // report raised inside the interceptor.
+    return true;
   } else if (MemTransferInst *M = dyn_cast<MemTransferInst>(I)) {
     // Not clear why, but the test signal_thread_sigctx_race.cpp fails if
     // we don't instrument memcpy. So this version works:
@@ -1817,6 +1934,7 @@ bool ThreadSanitizer::instrumentMemIntrinsic(
          M->getArgOperand(1),
          IRB.CreateIntCast(M->getArgOperand(2), IntptrTy, false)});
     I->eraseFromParent();
+    return true;
   }
   return false;
 }
@@ -1960,9 +2078,14 @@ SyncFreeInfo::SyncFreeInfo(Module &M_, CallGraph &CG_,
                     << "=== Starting sync-free analysis ===\n"
                     << "Module: " << M.getName() << "\n";);
 
-  // Initialize all functions as not dangerous
+  // A function we have a body for starts out assumed sync-free and is proven
+  // dangerous below. A declaration has no body to prove anything from: it is
+  // defined in another translation unit and may lock, unlock or spawn threads,
+  // so it stays dangerous. Initializing declarations to false made every call
+  // to an invisible external function look synchronization-free, which let
+  // dominance elimination remove instrumentation across it.
   for (const Function &F : M)
-    IsFuncDangerousGlobal[&F] = false;
+    IsFuncDangerousGlobal[&F] = F.isDeclaration();
 
   // Analyze strongly connected components (SCCs) of the call graph in reverse
   // topological order. This ensures we process callees before their callers:
@@ -2051,9 +2174,10 @@ SyncFreeInfo::SyncFreeInfo(Module &M_, CallGraph &CG_,
 }
 
 void SyncFreeInfo::findFunsContainsLoops() {
-  // Initialize all functions as not dangerous
+  // As above: without a body we cannot claim the function terminates, so treat
+  // a declaration as if it looped.
   for (const Function &F : M)
-    IsFuncContainsLoops[&F] = false;
+    IsFuncContainsLoops[&F] = F.isDeclaration();
 
   // Analyze strongly connected components (SCCs) of the call graph in reverse
   // topological order. This ensures we process callees before their callers:

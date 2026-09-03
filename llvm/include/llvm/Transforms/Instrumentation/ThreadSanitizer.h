@@ -57,11 +57,23 @@ public:
                         AnalysisManager<Function> &AM_);
   bool invalidate(Module &, const PreservedAnalyses &,
                   ModuleAnalysisManager::Invalidator &) { return false; }
+  /// True only if \p F is *known* not to synchronize. A function we have no
+  /// body for is not known to be anything, so it answers false.
   bool isSyncFree(const Function *F) const {
     const auto It = IsFuncDangerousGlobal.find(F);
     return It != IsFuncDangerousGlobal.end() && !It->second;
   }
-  bool isContainsLoops(const Function *F) const {
+
+  /// True only if \p F is *known* to terminate, in the sense of containing no
+  /// loops and calling nothing that does. Post-dominance elimination relies on
+  /// the covering access actually being reached, so an unknown answer must
+  /// read as "may not terminate".
+  ///
+  /// Note the name: the map records whether a function *contains* loops, and
+  /// this asks the opposite question. It was previously called
+  /// isContainsLoops(), which read as the negation of what it returns and was
+  /// used accordingly at its only call site.
+  bool isLoopFree(const Function *F) const {
     const auto It = IsFuncContainsLoops.find(F);
     return It != IsFuncContainsLoops.end() && !It->second;
   }

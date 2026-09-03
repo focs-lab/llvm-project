@@ -114,7 +114,11 @@ LockOwnershipInfo::getLockCallInfo(const Instruction *I) const {
         (CalledFunc->arg_size() == 0))
       return {LockCallType::NONE, nullptr};
 
-    if (isLockFunc(CalledFunc))
+    // A shared acquisition provides no exclusion, so it is not recorded as
+    // holding anything. A global reached only under reader locks therefore
+    // ends up with an empty lockset and stays instrumented.
+    if (isLockFunc(CalledFunc) && !isSharedLockFunc(CalledFunc) &&
+        !isTryLockFunc(CalledFunc))
       return {LockCallType::LOCK, getUnderlyingObject(CB->getArgOperand(0))};
     if (isUnLockFunc(CalledFunc))
       return {LockCallType::UNLOCK, getUnderlyingObject(CB->getArgOperand(0))};
@@ -333,7 +337,7 @@ void LockOwnershipInfo::readSummary() {
   // Clear existing analysis results
   ProtectedGVs.clear();
 
-  std::ifstream Summary(LockOwnershipSummaryFileName);
+  std::ifstream Summary(SummaryDirName + "/" + LockOwnershipSummaryFileName);
   if (!Summary.is_open()) {
     errs() << "Error: Could not open file " << LockOwnershipSummaryFileName
            << " for reading\n";
@@ -353,7 +357,7 @@ void LockOwnershipInfo::readSummary() {
 }
 
 void LockOwnershipInfo::writeSummary() const {
-  std::ofstream Summary(LockOwnershipSummaryFileName);
+  std::ofstream Summary(SummaryDirName + "/" + LockOwnershipSummaryFileName);
   if (!Summary.is_open()) {
     errs() << "Error: Could not open file " << LockOwnershipSummaryFileName
            << " for writing\n";
@@ -382,6 +386,27 @@ LockOwnershipInfo::LockOwnershipInfo(CallGraph &CG_, Module &MM_,
 
   findProtectedGlobalVariables(STI);
   writeSummary();
+}
+
+bool LockOwnershipInfo::isTryLockFunc(const Function *F) {
+  if (!F)
+    return false;
+  const StringRef Name = F->getName();
+  return Name.contains("trylock") || Name.contains("try_lock") ||
+         Name.contains("tryrdlock") || Name.contains("trywrlock") ||
+         Name.contains("TryLock");
+}
+
+bool LockOwnershipInfo::isSharedLockFunc(const Function *F) {
+  if (!F)
+    return false;
+  const StringRef Name = F->getName();
+  static constexpr StringRef SharedPatterns[] = {
+      "rdlock", "lock_shared", "shared_lock", "read_lock", "rlock"};
+  for (const StringRef Pattern : SharedPatterns)
+    if (Name.contains(Pattern))
+      return true;
+  return false;
 }
 
 bool LockOwnershipInfo::findLockUnlockFunctions() {
@@ -463,11 +488,11 @@ void LockOwnershipInfo::findProtectedGlobalVariables(SingleThreadedInfo &STI) {
     bool IsFirstAccess = true;
     bool AllAccessesProtected = true;
 
-    for (const User *U : GV.users()) {
-      const Instruction *I = dyn_cast<Instruction>(U);
-      if (!I)
-        continue;
+    SmallVector<const Instruction *, 8> Accesses;
+    SmallPtrSet<const Value *, 8> VisitedUsers;
+    collectAccessingInstrs(&GV, Accesses, VisitedUsers);
 
+    for (const Instruction *I : Accesses) {
       // Don't consider accesses in single-threaded functions
       if (STI.isSingleThreaded(I->getFunction())) {
         LLVM_DEBUG(dbgs() << "  Function: " << I->getFunction()->getName()
@@ -508,10 +533,12 @@ void LockOwnershipInfo::findProtectedGlobalVariables(SingleThreadedInfo &STI) {
       }
     }
 
-    if (AllAccessesProtected && (IsFirstAccess || !CommonLocksForGV.empty())) {
-      // All accesses are protected, and there is at least one common lock.
-      // GV.user_empty() was already checked at the beginning.
-      // isFirstAccess must be false if there were users.
+    // Requiring IsFirstAccess to be false is the point: without it, a global
+    // whose accesses were all skipped above -- every one in a single-threaded
+    // function, or previously every one behind a ConstantExpr -- was declared
+    // protected on the strength of having been looked at, not of any lock
+    // having been found.
+    if (AllAccessesProtected && !IsFirstAccess && !CommonLocksForGV.empty()) {
       LLVM_DEBUG(
           dbgs()
           << "\t\tAll accesses are protected, adding GV to protected list\n");
@@ -626,10 +653,11 @@ void LockOwnershipInfo::print(raw_ostream &OS) const {
 AnalysisKey LockOwnership::Key;
 
 LockOwnership::Result LockOwnership::run(Module &M, ModuleAnalysisManager &AM) {
-  if (std::ifstream SummaryFile(LockOwnershipSummaryFileName);
-      SummaryFile.good()) {
-    dbgs() << "Found existing summary file for LockOwnership Analysis. Loading "
-              "results.\n";
+  if (std::ifstream SummaryFile(SummaryDirName + "/" +
+                                LockOwnershipSummaryFileName);
+      TsanUseAnalysisSummaries && SummaryFile.good()) {
+    LLVM_DEBUG(dbgs() << "Found existing summary file for LockOwnership "
+                         "Analysis. Loading results.\n");
     SummaryFile.close();
     return LockOwnershipInfo(M);
   }

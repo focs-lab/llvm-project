@@ -113,11 +113,18 @@ public:
   void print(raw_ostream &OS) const;
 
   /// Recursively search in the instruction for the underlying objects which
-  /// may escape
+  /// may escape.
+  ///
+  /// \p IsComplete, when given, reports whether the returned list actually
+  /// accounts for everything \p V may point to. It does not when an
+  /// unidentifiable object is reached, and an empty list then means "we do not
+  /// know", not "nothing escapes" -- a distinction every caller has to make,
+  /// because getting it wrong drops instrumentation.
   static SmallVector<UnderlObjTy> getUnderlyingMayEscObjs(
       const Value *V, const TargetLibraryInfo &TLI,
       unsigned MaxLookup = MaxUnderlObjLookup,
-      std::shared_ptr<IPABottomTopMap> IPAFuncEscInfo = nullptr);
+      std::shared_ptr<IPABottomTopMap> IPAFuncEscInfo = nullptr,
+      bool *IsComplete = nullptr);
 
   /// Is Value V is escaping somewhere in the function
   bool isEscapedForFunc(const ObjAndPath &OAP,

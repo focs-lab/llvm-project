@@ -44,7 +44,7 @@
 #include "sanitizer_symbolizer.h"
 #include "sanitizer_tls_get_addr.h"
 
-extern "C" bool InterceptorEnabled;
+extern "C" THREADLOCAL bool InterceptorEnabled;
 
 #if SANITIZER_INTERCEPTOR_HOOKS
 #define CALL_WEAK_INTERCEPTOR_HOOK(f, ...) f(__VA_ARGS__);

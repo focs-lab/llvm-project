@@ -20,7 +20,12 @@
 #include "sanitizer_libc.h"
 #include "sanitizer_placement_new.h"
 
-extern "C" __attribute__((visibility("default")))
+// Instrumented code clears this around a call whose pointer arguments were
+// proven not to escape, so the interceptor can be skipped. It must be
+// per-thread: as a process-wide flag, one thread's window suppressed the
+// interceptor for every other thread running at the same time, losing races
+// on memory that had escaped as far as those threads were concerned.
+extern "C" __attribute__((visibility("default"))) THREADLOCAL
 bool InterceptorEnabled = true;
 
 namespace __sanitizer {

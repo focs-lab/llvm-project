@@ -77,6 +77,21 @@ private:
 
   bool isLockFunc(const Function *F) const { return LockFuncs.contains(F); }
 
+  /// True for an acquisition in shared mode. A reader lock serialises against
+  /// writers but not against other readers, so it does not make an access to
+  /// the object it guards safe: two threads can hold it at once and one of
+  /// them can still write. Counting it as protection lost exactly those races
+  /// -- see compiler-rt/test/tsan/write_in_reader_lock.cpp, whose whole
+  /// subject is a write performed under a reader lock.
+  static bool isSharedLockFunc(const Function *F);
+
+  /// True for a conditional acquisition. A try-lock returns whether it
+  /// succeeded, so on the failure path the lock is *not* held -- which is
+  /// exactly the path compiler-rt/test/tsan/custom_mutex1.cpp exercises.
+  /// Recording it as an acquisition made every access after a failed try-lock
+  /// look protected.
+  static bool isTryLockFunc(const Function *F);
+
   bool isUnLockFunc(const Function *F) const { return UnlockFuncs.contains(F); }
 
   enum class LockCallType { NONE, LOCK, UNLOCK };

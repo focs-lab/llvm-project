@@ -31,7 +31,7 @@
 #include "interception/interception.h"
 #include "sanitizer_platform_interceptors.h"
 
-extern "C" __attribute__((visibility("default")))
+extern "C" __attribute__((visibility("default"))) THREADLOCAL
 bool InterceptorEnabled;
 
 // Platform-specific options.

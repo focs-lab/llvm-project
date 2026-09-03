@@ -11,6 +11,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/Analysis/EscapeAnalysis.h"
+#include "llvm/Analysis/SingleThreaded.h"
 
 #include "llvm/ADT/PostOrderIterator.h"
 #include "llvm/ADT/SCCIterator.h"
@@ -1481,10 +1482,16 @@ void EscapeAnalysisGlobalInfo::traverseCGTopDown(
 }
 
 void EscapeAnalysisGlobalInfo::readNonEscapingFuncs() {
-  std::ifstream WhiteListFile(FuncWhiteListFileName);
+  // See TsanUseAnalysisSummaries: reuse across modules is opt-in, and the file
+  // is read from the same directory it is written to. Previously the write
+  // went to tsan-logs/ and the read looked in the working directory, so this
+  // path only ever fired on a file someone had put there by hand.
+  if (!TsanUseAnalysisSummaries)
+    return;
+
+  std::ifstream WhiteListFile(SummaryDirName + "/" + FuncWhiteListFileName);
   if (!WhiteListFile.is_open()) {
-    dbgs() << "Warning: cannot opening file with non-escaping arguments: "
-           << FuncWhiteListFileName << "\n";
+    LLVM_DEBUG(dbgs() << "No non-escaping-argument summary found\n");
     return;
   }
 
@@ -1605,8 +1612,24 @@ EscapeAnalysisGlobalInfo::EscapeAnalysisGlobalInfo(CallGraph &CG, Module &M_,
 bool EscapeAnalysisGlobalInfo::isEscapedUndrlObjOrPointee(
     const Value *Addr, const TargetLibraryInfo &TLI, const BasicBlock *BB,
     EscapeAnalysisInfo::EscReasonTy &EscReason) {
-  for (const UnderlObjTy &UnderlObj :
-       EscapeAnalysisInfo::getUnderlyingMayEscObjs(Addr, TLI)) {
+  bool IsComplete = true;
+  const SmallVector<UnderlObjTy> UnderlObjs =
+      EscapeAnalysisInfo::getUnderlyingMayEscObjs(Addr, TLI,
+                                                  EscapeAnalysisInfo::MaxUnderlObjLookup,
+                                                  nullptr,
+                                                  &IsComplete);
+  // The object walk gave up: we do not know what this address refers to, so we
+  // cannot claim it does not escape. Returning false here -- which an empty
+  // list used to do silently -- dropped instrumentation for every access whose
+  // base pointer the walk could not identify.
+  if (!IsComplete) {
+    LLVM_DEBUG(dbgs() << "isEscapedUndrlObjOrPointee: incomplete object list, "
+                         "assuming escaped\n");
+    EscReason = EscapeAnalysisInfo::OTHER;
+    return true;
+  }
+
+  for (const UnderlObjTy &UnderlObj : UnderlObjs) {
     LLVM_DEBUG(dbgs() << "isEscapedUndrlObjOrPointee UnderlObj: "
                       << *UnderlObj.Obj << "\n");
     if (isEscapedForBBTSan(BB->getParent(), BB, UnderlObj, EscReason))
@@ -1619,8 +1642,10 @@ bool EscapeAnalysisGlobalInfo::isEscapedForBBTSan(
     const Function *F, const BasicBlock *BB, const UnderlObjTy &UnderlObj,
     EscapeAnalysisInfo::EscReasonTy &EscReason) {
   const auto FEIIt = FuncEscapeInfo.find(F);
+  // No summary for this function means no evidence that anything stays local,
+  // which is the opposite of what returning false would say.
   if (FEIIt == FuncEscapeInfo.end())
-    return false;
+    return true;
   if (EscapeAnalysisInfo::isNonConstGV(UnderlObj.Obj))
     return true;
 
@@ -1670,7 +1695,7 @@ void EscapeAnalysisGlobalInfo::writeIPASummary() {
   //     LogDir + "/func_nonescape_IPA_" +
   //     getFileNameFromPath(getFileNameFromPath(M.getName().str())) + ".txt";
   createLogDir();
-  const auto SummaryFileName = LogDir + "/" + FuncWhiteListFileName;
+  const auto SummaryFileName = SummaryDirName + "/" + FuncWhiteListFileName;
   std::ofstream SummaryFile(SummaryFileName, std::ios::out);
   if (!SummaryFile.is_open()) {
     errs() << "Error opening summary file: " << SummaryFileName << "\n";
@@ -1972,10 +1997,12 @@ static bool getUnderlObjsForCodeGenWithoutPHIInvCheck(
 /// may escape
 SmallVector<UnderlObjTy> EscapeAnalysisInfo::getUnderlyingMayEscObjs(
     const Value *V, const TargetLibraryInfo &TLI, const unsigned MaxLookup,
-    std::shared_ptr<IPABottomTopMap> IPAFuncEscInfo) {
+    std::shared_ptr<IPABottomTopMap> IPAFuncEscInfo, bool *IsComplete) {
   SmallVector<UnderlObjTy> UnderlObjs;
-  getUnderlObjsForCodeGenWithoutPHIInvCheck(V, TLI, UnderlObjs, MaxLookup,
-                                            IPAFuncEscInfo);
+  const bool Complete = getUnderlObjsForCodeGenWithoutPHIInvCheck(
+      V, TLI, UnderlObjs, MaxLookup, IPAFuncEscInfo);
+  if (IsComplete)
+    *IsComplete = Complete;
   LLVM_DEBUG(dbgs() << "\tgetUnderlyingMayEscObjects for " << *V << "\n");
   LLVM_DEBUG(if (!UnderlObjs.empty()) {
     dbgs() << "\tgetUnderlyingMayEscObjects:";

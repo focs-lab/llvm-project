@@ -16,8 +16,25 @@
 
 #include "llvm/Analysis/CallGraph.h"
 #include "llvm/IR/PassManager.h"
+#include "llvm/Support/CommandLine.h"
 
 namespace llvm {
+
+/// Whether an analysis may seed itself from a summary written while compiling
+/// an earlier translation unit.
+///
+/// Off by default, and deliberately. Reuse is only sound in a build that
+/// analyses every module before instrumenting any of them: a global that is
+/// consistently lock-protected in the module analysed first may be touched
+/// without that lock in the next one, and a summary consulted midway through
+/// an ordinary build reports the first answer for the second module. Reading
+/// the file also made results depend on the compiler's working directory,
+/// which is how one project's summary came to be applied to another's build.
+extern cl::opt<bool> TsanUseAnalysisSummaries;
+
+/// Directory summaries are written to and read from, relative to the
+/// compiler's working directory.
+const std::string SummaryDirName = "tsan-logs";
 
 const std::string SingleThreadedSummaryFileName = "st_summary.txt";
 const std::string SummaryHeaderST = "--- Single-Threaded Functions ---";
@@ -25,7 +42,34 @@ const std::string SummaryHeaderSWMR =
     "--- Read-Only Global Variables (in Multi-Threaded Context) ---";
 
 // Add names of known thread creation functions here
-const SmallDenseSet<StringRef, 4> KnownThreadCreators = {"pthread_create"};
+const SmallDenseSet<StringRef, 8> KnownThreadCreators = {
+    "pthread_create", "__pthread_create_2_1", "thrd_create", "__kmpc_fork_call",
+    "__kmpc_fork_teams"};
+
+/// Mangled-name prefixes of functions that start a thread. C++, C11 and OpenMP
+/// thread creation only reaches pthread_create inside the runtime library, so
+/// what is visible in this translation unit is the wrapper, not the creator.
+/// Missing these made every function in a std::thread program look
+/// single-threaded.
+constexpr StringRef ThreadCreatorPrefixes[] = {
+    "_ZNSt6thread15_M_start_thread", // libstdc++ std::thread
+    "_ZNSt3__16thread6__start",      // libc++ std::thread
+};
+
+/// Whether \p F starts a thread, by exact name or mangled prefix.
+bool isKnownThreadCreator(const Function &F);
+
+/// Collect the instructions that access \p V, looking through constant
+/// expressions.
+///
+/// A getelementptr on a field or element of a global is a ConstantExpr user,
+/// not an Instruction. Enumerating only Instruction users therefore misses
+/// every access to an aggregate global -- while the instrumentation pass still
+/// resolves those accesses back to the global and acts on whatever was
+/// concluded about it.
+void collectAccessingInstrs(const Value *V,
+                            SmallVectorImpl<const Instruction *> &Out,
+                            SmallPtrSetImpl<const Value *> &Visited);
 
 /// Interface to access safety global (interprocedural) analysis results.
 class SingleThreadedInfo {
@@ -54,8 +98,17 @@ public:
   }
 
   /// Returns true if the given function is executed in a single-threaded
-  /// context and doesn't create threads
+  /// context and doesn't create threads.
+  ///
+  /// Always false for main: main necessarily starts out single-threaded and
+  /// then, in most programs, stops being so, and answering at function
+  /// granularity would have to pick one of those. Its accesses are classified
+  /// individually by the overload below.
   bool isSingleThreaded(const Function *F) const;
+
+  /// Returns true if the given instruction is executed before the program has
+  /// created any thread, and so cannot participate in a race.
+  bool isSingleThreaded(const Instruction *I) const;
 
   /// Returns true if the given function is executed in a multithreaded context
   /// or creates threads
@@ -87,6 +140,29 @@ private:
   FuncTypeMap FuncType;
 
   SmallPtrSet<const GlobalVariable *, 4> SWMRGlobals;
+
+  // Blocks of main that are already multi-threaded on entry. Blocks outside
+  // this set may still turn multi-threaded part-way through, at a thread
+  // creating call; isSingleThreaded(const Instruction *) accounts for that.
+  SmallPtrSet<const BasicBlock *, 8> MTBlocksInMain;
+
+  /// True if \p BB contains a call that may start a thread.
+  bool blockCreatesThreads(const BasicBlock &BB) const;
+
+  /// True if \p I may start a thread.
+  bool mayCreateThread(const Instruction &I) const;
+
+  /// Propagate multi-threadedness forward through main's CFG, so that the
+  /// prefix of main that runs before any thread exists can still be left
+  /// uninstrumented while the rest is not.
+  void computeMainMTBlocks();
+
+  /// Mark everything main calls once it is multi-threaded, and everything
+  /// those functions call, as multi-threaded too. Without this, a helper
+  /// invoked directly from main after a thread has started -- rather than as
+  /// the thread body, so its address is never taken -- was classified
+  /// single-threaded and left uninstrumented.
+  void propagateMTFromMain();
 
   /// Consider only defined functions
   bool needToSkipFunc(const Function *F) {

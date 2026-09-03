@@ -252,8 +252,6 @@ void ThreadFinish(ThreadState *thr) {
   SlotDetach(thr);
   ctx->thread_registry.FinishThread(thr->tid);
   thr->~ThreadState();
-
-  atomic_fetch_sub(&__tsan_active_thread_count, 1, memory_order_seq_cst);
 }
 
 void ThreadContext::OnFinished() {
@@ -299,6 +297,7 @@ struct JoinArg {
 void ThreadJoin(ThreadState *thr, uptr pc, Tid tid) {
   CHECK_GT(tid, 0);
   DPrintf("#%d: ThreadJoin tid=%d\n", thr->tid, tid);
+
   JoinArg arg = {};
   ctx->thread_registry.JoinThread(tid, &arg);
   if (!thr->ignore_sync) {
@@ -307,6 +306,18 @@ void ThreadJoin(ThreadState *thr, uptr pc, Tid tid) {
       thr->clock.Acquire(arg.sync);
   }
   Free(arg.sync);
+
+  // The counter guards instrumentation that is skipped while the program is
+  // single-threaded, so it must not drop until the joined thread's accesses
+  // can no longer race with ours -- that is, after the acquire above has
+  // ordered them. A thread that has merely finished still has its accesses in
+  // shadow memory, unordered with respect to this one, so decrementing in
+  // ThreadFinish let the count fall back to 1 while a genuine race with the
+  // finished thread was still reportable.
+  //
+  // A detached thread is never joined and so never decrements. That only
+  // leaves the count too high, which costs elimination rather than reports.
+  atomic_fetch_sub(&__tsan_active_thread_count, 1, memory_order_seq_cst);
 }
 
 void ThreadContext::OnJoined(void *ptr) {
