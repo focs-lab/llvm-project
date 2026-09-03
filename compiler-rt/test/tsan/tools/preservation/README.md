@@ -26,14 +26,16 @@ through, so the program output every RUN line would have judged is captured
 instead. Output: `reports/<cfg>/<test>.k<i>.out`.
 
 **`diffreports.py <reports> stock <cfg>...`** — buckets every test against
-stock by report keys (`tsan_reports.py` from tsan-experiments, or the copy
-pointed to by `TSAN_REPORTS_PY`): L1 identical (kind, both access sites
+stock by report keys (`tsan_reports.py` from tsan-experiments: set
+`TSAN_REPORTS_PY` to its *directory*, which is put on `sys.path`): L1 identical (kind, both access sites
 `function@file:line`, location), L2 identical (frames by function only — a
 line moved), other (lost / new keys, named). Keys are the union over runs and
 RUN lines; reporting and silent tests are shown separately.
 
 Report identity is not deterministic for every test even under stock
 (`race_on_barrier2.c` reports the same race from either side; the location
-descriptor of `fd_location_closed.cpp` varies); a test in an "other" bucket
+descriptor of `fd_location_closed.cpp` varies; `fork_atexit.cpp` reports in
+roughly one run in five under stock and every configuration alike); a test in
+an "other" bucket
 must be re-replayed at K=20 under stock and the configuration before it
 counts as a difference.
