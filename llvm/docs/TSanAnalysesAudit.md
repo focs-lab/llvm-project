@@ -35,6 +35,7 @@ commit and a positive control that still elides. Reach is measured per commit
 | 11 | dominance across `write(2)` | `TLI::isSyncFree` defaults true | DE-5 — fixed 450fc39a8545 |
 | 12 | post-dominance across `read(2)` | same | DE-5 — fixed 450fc39a8545 |
 | 13 | a store reached from a lock-free path counted as protected (held-lock record from an intermediate visit; found during the audit, reproduced on 297881ddc1c5) | worklist seeded with the entry only; empty held set never recorded | LO-3/5 — fixed c8debe12f363 |
+| 14 | an access after `pthread_mutex_timedlock` (or a timed/clock rwlock, `mtx_timedlock`) counted as protected on the timeout path, which the runtime treats as no lock (found in the second read of the consolidated tree, reproduced on 7d856d641027) | timed acquisitions were unconditional in the lock table; only try-locks were conditional | LO-6 — fixed in the last commit on tsan-dev (static counts unchanged: no timed locks in memcached, sqlite3.c, shell.c) |
 
 ## Design versus paper
 
@@ -239,6 +240,34 @@ optimised builds neither increase nor decrease eviction: the bounded-shadow
 effect on these races is a property of the workload and the runtime, not of
 the instrumentation.
 
+### Second read of the consolidated tree (2026-09-03, tsan-dev 7d856d641027)
+
+Re-read after the history consolidation with the same question: where does a
+fail-open answer survive. Verified sound by reading and probing: the
+per-instruction single-threaded test in `main` (a creator earlier in the
+block ends the single-threaded prefix; indirect calls count as creation);
+SWMR's address-escape rule; `collectLaterEscapes` uses CFG reachability
+(back edges included); the intrinsic table falls to "not sync-free" for any
+intrinsic without nosync/no-memory attributes (x86 fences probed: three
+stores kept); every fd-synchronising interceptor that is a library function
+(`read/pread/write/pwrite/open/open64`) is listed as not sync-free, and
+`fstatvfs` is an FD_ACCESS, not a sync. Found and fixed: shape 14, timed
+acquisitions (LO-6, the last commit on tsan-dev; gate on it 12 × 292/0 and check-tsan 371/0;
+the gate on 7d856d641027 before it the same). Recorded assumptions, not holes: a plain
+`pthread_mutex_lock` returning an error is assumed not to happen (the
+runtime records the lock only on success; a program that proceeds after a
+failed plain lock is outside the model, unlike the timed variants whose
+timeout is a normal path); thread creation through `clone()` or a
+`timer_create` SIGEV_THREAD notification is not on the creator list — the
+unknown-external question (STC-3) covers it.
+
+Branches: the audit branch was merged linearly into `tsan-dev` (main
+branch); merged and superseded TSan branches were moved under `archive/`,
+the two tools not present on `tsan-dev` kept as `tools/tsan-interceptor-trace`
+(interceptor file/line tracing, PRs #44/#45) and
+`tools/tsan-access-trace-oracle` (the MemoryAccess trace, PR #52); other
+groups' remote branches were not touched.
+
 ## Function ledger
 
 Each row's last cell carries the measured coverage of that function (`lines`, `branches`) from the run described under *Coverage*; rows for several functions carry the first one's.
@@ -362,7 +391,7 @@ Lines as of b4bf8b8f4613.
 | `loadSummary`, `writeSummary` | whole-program summaries: external entities only, sorted, id-stamped; overlay on the per-unit result | whole-program mode | fixed:S (fafbebedb41e) | summary-whole-program.ll · lines 100.00%, branches 75.00% |
 | `moduleIgnoresSync` (456) | give up under ignore-sync annotations | — | sound | ignore-sync.ll · lines 100.00%, branches 75.00% |
 | ctor (469) | driver | — | sound | — |
-| `isAnnotationFunc`, `isTryLockFunc`, `isSharedLockFunc` | name predicates | — | sound: operate only on the exact-name sets (LO-1) | annotations.ll, locks.ll · lines 100.00%, branches 75.00% |
+| `isAnnotationFunc`, `isTryLockFunc`, `isSharedLockFunc` | name predicates | — | fixed:LO-6: a conditional acquisition (try, timed, clock variants) holds nothing on the failure path the runtime does not record | annotations.ll, locks.ll · lines 100.00%, branches 75.00% |
 | `findLockUnlockFunctions` | recognise lock/unlock functions | — | fixed:LO-1 (12399f969130; exact names) | exact-names · lines 100.00%, branches 78.57% |
 | `getLocksProtecting` (592) | held set at an instruction | — | sound | — · lines 100.00%, branches 50.00% |
 | `findProtectedGlobalVariables`, `isDirectAccessOf` | intersection over MT accesses of a private, unescaped global | Prop. protection | fixed:LO-4/4b (12399f969130) | linkage-and-escape · lines 100.00%, branches 58.57% |
@@ -472,30 +501,30 @@ named in its row.
 ## Commit map after the history consolidation (2026-09-03)
 
 The hashes cited above are those of the working history, preserved as
-`backup/tsan-audit-2026-09-03` (and `backup/tsan-dev-2026-09-03` for the
-branch it builds on); the frozen build copies under `/extra/alexey/builds`
-carry them in `TSAN_AUDIT_HASH` and in `clang --version`, and a
-`CONSOLIDATED_HASH` file beside it. The consolidated history that replaces
-it has eight steps over `tsan-dev` (whose own unpushed part is six review
-steps on top of three of Alexey's commits):
+`backup/tsan-audit-2026-09-03` and `backup/tsan-dev-2026-09-03`; the frozen
+build copies under `/extra/alexey/builds` carry them in `TSAN_AUDIT_HASH` and in
+`clang --version`, with a `CONSOLIDATED_HASH` file beside them naming the
+consolidated commit. `tsan-dev` now holds, over the pushed base
+`9f5d402cb36b`: Alexey's three March commits, six review steps (tip `8f6899f5c5ff`),
+eight audit steps and the LO-6 fix with this ledger.
 
-| frozen copy (old hash) | consolidated step containing its code |
+| frozen copy (old hash) | consolidated commit containing its code |
 |---|---|
-| `b4bf8b8f4613` tsan-dev-b4bf8b8f4613 (rebuttal tree) | `63f45dee92ef` (tsan-dev tip) |
-| `def2cf34faeb` tsan-audit-def2cf34faeb (SWMR-1) | `4bb688790f44` |
-| `297881ddc1c5` tsan-audit-297881ddc1c5 (twelve shapes) | `4d631b5e4563` |
-| `a08292850aee` tsan-audit-a08292850aee (+eviction counters) | `17f24744af64` |
-| `ad0623610ef6` tsan-audit-ad0623610ef6 (thirteen shapes, EA-7/8, RT-2) | `17f24744af64` |
-| `43111f84d936` tsan-audit-43111f84d936 (summaries mode, evict_watch) | `6a2aed2d00e7` |
-| `f80e80b1dbe6` tsan-audit-f80e80b1dbe6 (final code) | `6a2aed2d00e7` |
+| `b4bf8b8f4613` tsan-dev-b4bf8b8f4613 (rebuttal tree) | `8f6899f5c5ff` |
+| `def2cf34faeb` tsan-audit-def2cf34faeb (SWMR-1) | `ccde44118fce` |
+| `297881ddc1c5` tsan-audit-297881ddc1c5 (twelve shapes) | `53ff2c8868c8` |
+| `a08292850aee`, `ad0623610ef6` (eviction counters; thirteen shapes, EA-7/8, RT-2) | `fe1e4f609675` |
+| `43111f84d936`, `f80e80b1dbe6` (summaries mode, evict_watch; final code before LO-6) | `48aebcf67c5d` |
+| `8e271eab146d` (LO-6, before the message rewrite) | the last commit on tsan-dev (this one) |
 
 | fixes (old hashes) | consolidated step |
 |---|---|
-| 1a59e61cc82d tooling, f3fcc325e521, 145b058805c1 STATS-1, ad0623610ef6 stock controls | `f2ecf2b51e4f` |
-| def2cf34faeb SWMR-1, a633cc3f0e77 STC-1/2 | `4bb688790f44` |
-| 667343f20eaf EA-1, 7c35430b549d / dbde56f2e3f7 capture, 58c8ace31c52 PASS-2, d06851ec7a6d EA-2, cbeb570ed61c EA-3, 92c681a2642f EA-4, 7be7dc568f45, 957f8e506697 EA-5, 09b9a74d17b7 EA-6, 67e9532aa926, feb4f802b35b, fe9c96cfd10f EA-9, c402aec8dec3 UAF, bfaa2b859100 EA-7/8 | `9c040aef640a` |
-| 12399f969130 LO-1/4, 20c178992bfd LO-2, c8debe12f363 LO-3/5 | `4d631b5e4563` |
-| 450fc39a8545 DE-5, 2aa46b60cb86 DE-2, 3b23aa757035 DE-3, 223406c284b6 RT-1, dc7d9e0a8a20 DE-4, 4df6138b85ca PASS-3 | `bca50773de9a` |
-| 5eca63015f63 P3, 0d63553b3e43 RT-2, 248f45c260ef evict_watch | `17f24744af64` |
-| fafbebedb41e S, 9ef1fce44e2d PASS-1 | `6a2aed2d00e7` |
-| 44da093b1b45, babd3b0a01df, d6ea6277e35c tests; every ledger commit | `4ca57ec9c3a4` |
+| 1a59e61cc82d tooling, f3fcc325e521, 145b058805c1 STATS-1, ad0623610ef6 stock controls | `f85db29cf7cf` |
+| def2cf34faeb SWMR-1, a633cc3f0e77 STC-1/2 | `ccde44118fce` |
+| 667343f20eaf EA-1, 7c35430b549d / dbde56f2e3f7 capture, 58c8ace31c52 PASS-2, d06851ec7a6d EA-2, cbeb570ed61c EA-3, 92c681a2642f EA-4, 7be7dc568f45, 957f8e506697 EA-5, 09b9a74d17b7 EA-6, 67e9532aa926, feb4f802b35b, fe9c96cfd10f EA-9, c402aec8dec3 UAF, bfaa2b859100 EA-7/8 | `c669989b3986` |
+| 12399f969130 LO-1/4, 20c178992bfd LO-2, c8debe12f363 LO-3/5 | `53ff2c8868c8` |
+| 450fc39a8545 DE-5, 2aa46b60cb86 DE-2, 3b23aa757035 DE-3, 223406c284b6 RT-1, dc7d9e0a8a20 DE-4, 4df6138b85ca PASS-3 | `288f5bc7bff0` |
+| 5eca63015f63 P3, 0d63553b3e43 RT-2, 248f45c260ef evict_watch | `fe1e4f609675` |
+| fafbebedb41e S, 9ef1fce44e2d PASS-1 | `48aebcf67c5d` |
+| 44da093b1b45, babd3b0a01df, d6ea6277e35c tests; every ledger commit | `0f9437de0f82` |
+| 4b39e6bde9db LO-6 | the last commit on tsan-dev (this one) |

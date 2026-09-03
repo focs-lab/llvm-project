@@ -717,9 +717,18 @@ bool LockOwnershipInfo::isTryLockFunc(const Function *F) {
   if (!F)
     return false;
   const StringRef Name = F->getName();
+  // A conditional acquisition: the call returns without the lock on some
+  // path that the program is expected to take. Try-locks fail whenever the
+  // mutex is held; timed and clock variants fail with ETIMEDOUT as part of
+  // their contract. The runtime records the lock only when the call
+  // succeeds, so counting these as held made every access on the failure
+  // path look protected.
   return Name.contains("trylock") || Name.contains("try_lock") ||
          Name.contains("tryrdlock") || Name.contains("trywrlock") ||
-         Name.contains("TryLock");
+         Name.contains("TryLock") || Name.contains("timedlock") ||
+         Name.contains("timedrdlock") || Name.contains("timedwrlock") ||
+         Name.contains("clocklock") || Name.contains("clockrdlock") ||
+         Name.contains("clockwrlock");
 }
 
 bool LockOwnershipInfo::isSharedLockFunc(const Function *F) {
