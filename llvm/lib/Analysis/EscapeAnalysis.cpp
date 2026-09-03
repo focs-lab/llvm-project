@@ -11,6 +11,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/Analysis/EscapeAnalysis.h"
+#include "llvm/ADT/Statistic.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Analysis/SingleThreaded.h"
 
@@ -47,6 +48,16 @@ using namespace llvm;
 // stated per object -- an access is exempt only if no location it touches is
 // marked escaping -- which is the flow-insensitive notion this flag selects:
 // an object that escapes anywhere in the function is escaped everywhere in it.
+// Measurement switches for two fail-closed rules, so their cost can be
+// attributed. Both default on; turning either off is unsound.
+static cl::opt<bool> ClEAUnknownTop(
+    "tsan-ea-unknown-operand-is-top", cl::init(true), cl::Hidden,
+    cl::desc("An operand the object walk cannot resolve, once stored, passed "
+             "or returned, makes every object escaped (UNSOUND if off)"));
+static cl::opt<bool> ClEAUnseenPointeeEscapes(
+    "tsan-ea-unseen-pointee-escapes", cl::init(true), cl::Hidden,
+    cl::desc("A pointer loaded from a slot with no recorded pointee is "
+             "escaped (UNSOUND if off)"));
 static cl::opt<bool> ClEAFlowInsensitive(
     "tsan-ea-flow-insensitive", cl::init(false), cl::Hidden,
     cl::desc("Treat an object that escapes anywhere in a function as escaped "
@@ -54,6 +65,23 @@ static cl::opt<bool> ClEAFlowInsensitive(
              "from the point of escape on"));
 
 #define DEBUG_TYPE "ea"
+
+STATISTIC(NumEAUnknownOperands,
+          "Escape analysis: operands the object walk could not resolve");
+STATISTIC(NumEAUnresolvedIntToPtr, "  unresolved: inttoptr");
+STATISTIC(NumEAUnresolvedNull, "  unresolved: null");
+STATISTIC(NumEAUnresolvedUndef, "  unresolved: undef/poison");
+STATISTIC(NumEAUnresolvedConstExpr, "  unresolved: constant expression");
+STATISTIC(NumEAUnresolvedPHI, "  unresolved: phi");
+STATISTIC(NumEAUnresolvedSelect, "  unresolved: select");
+STATISTIC(NumEAUnresolvedLoad, "  unresolved: load");
+STATISTIC(NumEAUnresolvedExtractValue, "  unresolved: extractvalue");
+STATISTIC(NumEAUnresolvedGEP, "  unresolved: gep (lookup limit)");
+STATISTIC(NumEAUnresolvedOther, "  unresolved: other");
+STATISTIC(NumEAUnseenPointeeLoads,
+          "Escape analysis: queries answered escaped because the loaded "
+          "pointer's slot had no recorded pointee");
+
 #define PRINT_ESCAPING_CALLEES "ea-escaping-callees"
 
 //===----------------------------------------------------------------------===//
@@ -68,6 +96,7 @@ void EscapeAnalysisInfo::printEscReason(EscReasonTy EscReason) {
   if (EscReason[4]) dbgs() << "VOLATILE ";
   if (EscReason[5]) dbgs() << "ESCAPED_CALL ";
   if (EscReason[6]) dbgs() << "OTHER ";
+  if (EscReason[7]) dbgs() << "INVALID ";
   dbgs() << "\n";
 }
 
@@ -177,15 +206,21 @@ void EscapeAnalysisInfo::EscapeState::checkAndUpdEscStatus(
     const EscapeAnalysisInfo *EAI, const Instruction *I) {
   LLVM_DEBUG(dbgs() << "\tcheckAndUpdEscStatus: " << *Pointer.Obj << " --> "
                     << *Pointee.Obj << "\n");
-  if (const auto EscReason = EAI->getExtObjStatusIPA(Pointer.Obj);
-      EscReason.any())
-    addEscObjOrReason(Pointee, EscReason, I);
+  // The pointer's memory may be shared for two reasons: it is external -- a
+  // global, an argument, a call result -- or the analysis has already found
+  // it escaped (published earlier in this function). Only the first was
+  // consulted, so `store ptr %s, @sink; store ptr %x, ptr %s` left x local.
+  // Either way the pointee escapes, and so does everything it points to.
+  EscReasonTy PointerReason = EAI->getExtObjStatusIPA(Pointer.Obj);
+  PointerReason |= getEscReason(Pointer);
+  if (PointerReason.any())
+    addEscObj(Pointee, PointerReason, I);
 
   // Assigning to structures
   if (const auto *Alloca = dyn_cast<AllocaInst>(Pointer.Obj);
       Alloca && Alloca->getAllocatedType()->isStructTy()) {
-    if (const auto It = EscapedObjs.find(Pointee); It != EscapedObjs.end())
-      addEscObjOrReason(Pointer, It->second, I);
+    if (const auto Reason = getEscReason(Pointee); Reason.any())
+      addEscObjOrReason(Pointer, Reason, I);
 
     if (const auto EscReason = EAI->getExtObjStatusIPA(Pointee.Obj);
         EscReason.any())
@@ -284,6 +319,18 @@ bool EscapeAnalysisInfo::PointsToRelTy::containsPointsToPair(
 }
 
 /// Get list of pointees for the object
+/// Whether one field path covers the other: A is a prefix of B or B of A. The
+/// empty path is the whole object and covers every field; an escaped field
+/// covers the whole object, since an access to the whole touches that field.
+/// Only incomparable paths -- two different fields -- are independent, and that
+/// is the field-sensitivity the analysis claims.
+static bool pathsOverlap(const FieldPathTy &A,
+                         const FieldPathTy &B) {
+  const size_t N = std::min(A.size(), B.size());
+  return std::equal(A.begin(), A.begin() + N, B.begin());
+}
+
+
 std::optional<EscapeAnalysisInfo::PointsToRelTy::PointeeListTy>
 EscapeAnalysisInfo::PointsToRelTy::getPointees(
     const ObjAndPath &Pointer) const {
@@ -300,22 +347,17 @@ EscapeAnalysisInfo::PointsToRelTy::getPointees(
     return AllPointees.empty() ? std::nullopt : std::make_optional(AllPointees);
   };
 
-  // If pointer has no path, it can point by all paths
+  // Pointees recorded under every path that overlaps the query's: the whole
+  // object's pointees cover every field, a field's cover the whole object,
+  // and two different fields are independent -- the same lattice the escaped
+  // set uses.
   const auto &PathToPointee = It->second;
-  if (Pointer.Path == EmptyFieldPath)
-    return collectAllPointees(PathToPointee);
-
-  auto It2 = PathToPointee.find(EmptyFieldPath);
-  if (It2 != PathToPointee.end())
-    return collectAllPointees(PathToPointee);
-
-  if (Pointer.Path == EmptyFieldPath)
-    return std::nullopt;
-
-  It2 = PathToPointee.find(Pointer.Path);
-
-  return It2 == PathToPointee.end() ? std::nullopt
-                                    : std::make_optional(It2->second);
+  PointeeListTy Result;
+  for (const auto &[Path, Pointees] : PathToPointee)
+    if (pathsOverlap(Path, Pointer.Path))
+      Result.insert(Pointees.begin(), Pointees.end());
+  (void)collectAllPointees;
+  return Result.empty() ? std::nullopt : std::make_optional(Result);
 }
 
 /// We need it to check if something changed in the data-flow analysis
@@ -345,10 +387,16 @@ void EscapeAnalysisInfo::PointsToRelTy::print(raw_ostream &OS) const {
 
 EscapeAnalysisInfo::EscReasonTy
 EscapeAnalysisInfo::EscapeState::getEscReason(const ObjAndPath &OAP) const {
-  const auto EscObjsIt = EscapedObjs.find(OAP);
-  if (EscObjsIt != EscapedObjs.end())
-    return EscObjsIt->second;
-  return 0;
+  // Every recorded escape of this object whose path overlaps the query. The
+  // lookup used to be an exact match on (object, path): an object escaped as
+  // a whole -- {s,[]}, e.g. passed to a call -- did not cover a later access
+  // to one of its fields, {s,[1]}, and the field write was elided.
+  EscReasonTy Reason;
+  for (auto It = EscapedObjs.lower_bound({OAP.Obj, EmptyFieldPath});
+       It != EscapedObjs.end() && It->first.Obj == OAP.Obj; ++It)
+    if (pathsOverlap(It->first.Path, OAP.Path))
+      Reason |= It->second;
+  return Reason;
 }
 
 bool EscapeAnalysisInfo::EscapeState::operator==(const EscapeState &ES) const {
@@ -471,7 +519,7 @@ bool EscapeAnalysisInfo::isNonConstGV(const Value *V) {
 
 EscapeAnalysisInfo::EscReasonTy
 EscapeAnalysisInfo::getExtObjStatus(const Value *V) {
-  if (const auto *CI = dyn_cast<CallInst>(V);
+  if (const auto *CI = dyn_cast<CallBase>(V);
       CI && CI->getFunctionType()->getReturnType()->isPointerTy()) {
     return EscReasonBits::ESCAPED_CALL;
   }
@@ -497,39 +545,36 @@ static bool getIPAFuncRetEscStatus(
   return false;
 }
 
-static bool isCallNotReturnEscaped(
-    StringRef FuncName, const TargetLibraryInfo &TLI,
-    std::shared_ptr<EscapeAnalysisInfo::NonEscapingFuncsMap> NonEscapingFuncs =
-        nullptr) {
+/// True when \p F is a library function TargetLibraryInfo knows, by
+/// prototype and as available on the target, whose return value is fresh
+/// memory. A name alone proves nothing: a program's own "malloc" with a
+/// different signature is not the allocator.
+static bool isCallNotReturnEscaped(const Function &F,
+                                   const TargetLibraryInfo &TLI) {
   LibFunc Func;
-  if (TLI.getLibFunc(FuncName, Func))
-    return !TLI.isReturnValueEscaping(Func);
-
-  return (FuncName == "malloc" || FuncName == "calloc" ||
-          FuncName == "realloc" || FuncName == "strlen" ||
-          FuncName == "strcmp" || FuncName == "memchr");
+  return TLI.getLibFunc(F, Func) && TLI.has(Func) &&
+         !TLI.isReturnValueEscaping(Func);
 }
 
 static bool isSafeExternalCall(
     StringRef FuncName, const TargetLibraryInfo &TLI, unsigned ArgIndex,
     std::shared_ptr<EscapeAnalysisInfo::NonEscapingFuncsMap> NonEscapingFuncs =
         nullptr) {
-  // TODO Demangle the function name before comparison
+  // Without a summary nothing external is known to be safe; the question
+  // is about an argument, and a return-value predicate is no answer to it.
   if (!NonEscapingFuncs)
-    return isCallNotReturnEscaped(FuncName, TLI, NonEscapingFuncs);
+    return false;
 
   const auto FuncIt = NonEscapingFuncs->find(std::string(FuncName));
   if (FuncIt == NonEscapingFuncs->end())
     return false;
 
   const auto &ArgEscStatus = FuncIt->second;
+  // A summary line with no argument list says nothing about any argument.
   if (ArgEscStatus.empty())
-    return true; // All arguments are escaped if the status is empty
+    return false;
 
-  if (ArgEscStatus.contains(ArgIndex))
-    return true; // Argument is marked as non-escaped
-
-  return false;  // Specific argument is not escaped
+  return ArgEscStatus.contains(ArgIndex); // listed = known not to escape
 }
 
 /// Check if it's a function call which can escape
@@ -549,7 +594,7 @@ static bool isCallMayEscape(
   // Check if the call is to a known memory allocation function.
   if (const Function *F = CB->getCalledFunction()) {
     if (F->isDeclaration()) {
-      if (isCallNotReturnEscaped(F->getName(), TLI, NonEscapingFuncs))
+      if (isCallNotReturnEscaped(*F, TLI))
         return false; // Memory allocation functions do not escape.
       return true;    // Unknown external function.
     }
@@ -593,6 +638,7 @@ EscapeAnalysisInfo::EscapeAnalysisInfo(
     : AnalyzedFunc(Fn), IPABottomTopInfo(IPABottomTopInfo_),
       IPATopDownInfo(IPAArgEscFromCallers_),
       NonEscapingFuncs(NonEscapingFuncs_), TLI(TLI_) {
+  UnknownObj = UndefValue::get(PointerType::getUnqual(Fn.getContext()));
   LLVM_DEBUG(dbgs() << "\n|||||||||||||||||||||||||||||||||||||||||||||||||||||"
                        "|||||||||||||||||\n|||||||||||||||||||| Func "
                     << Fn.getName() << "\t||||||||||||||||||||||\n"
@@ -659,10 +705,14 @@ void EscapeAnalysisInfo::updRetEscStatus(
   for (const auto &UO : UnderlObjs) {
     if (UO.Loaded) {
       LLVM_DEBUG(dbgs() << "\t\tupdRetEscStatus " << *UO.Obj << " Loaded\n");
+      unsigned NumPointees = 0;
       ES.forEachPointeeDo(UO, [&](const ObjAndPath &Pointee) {
+        ++NumPointees;
         if (isEscapedForBBIPA(BB, Pointee))
           IsRetEscape = true;
       });
+      if (NumPointees == 0) // returned a pointer the analysis never saw stored
+        IsRetEscape = true;
       if (IsRetEscape)
         return;
     }
@@ -695,6 +745,14 @@ void EscapeAnalysisInfo::compBBEscapeState(const BasicBlock *BB,
   for (const Instruction &I : *BB) {
     LLVM_DEBUG(dbgs() << "\n\nINSTR " << I << "\n");
     for (const Use &Opnd : I.operands()) {
+      // A value that carries no pointer names no object. Every operand used
+      // to be classified and walked -- doubles, integers, the value of a
+      // volatile store or an atomic RMW -- and a walk that could not resolve
+      // one was silently dropped; once such an operand meant "anything",
+      // 26,000 of them per sqlite3.c meant everything. Integer laundering of
+      // a pointer is handled where the pointer becomes an integer.
+      if (!typeContainsPointerType(Opnd->getType()))
+        continue;
       const auto [EscKind, EscDetails] = getEscInfoForOpnd(Opnd);
 
       if (EscKind == EscKindTy::NO_ESCAPE)
@@ -703,11 +761,31 @@ void EscapeAnalysisInfo::compBBEscapeState(const BasicBlock *BB,
       LLVM_DEBUG(dbgs() << "\nOPND: " << dbgObjToStr(Opnd););
       assert(EscDetails.has_value() && "EscDetails must be set");
 
+      bool IsComplete = true;
       auto UnderlObjs = getUnderlyingMayEscObjs(
-          Opnd.get(), TLI, MaxUnderlObjLookup, IPABottomTopInfo);
+          Opnd.get(), TLI, MaxUnderlObjLookup, IPABottomTopInfo, &IsComplete);
 
-      if (UnderlObjs.empty())
+      if (!IsComplete)
+        ++NumEAUnknownOperands;
+      if (!IsComplete && ClEAUnknownTop) {
+        // The operand may point to anything the walk could not name. Stored,
+        // passed or returned, it may hand any local to another thread; as an
+        // alias target, anything may be read through it. UnknownObj stands
+        // for that; the queries treat a state holding it as "everything
+        // escaped". (This used to `continue`, dropping the verdict.)
+        UnderlObjs.clear();
+        UnderlObjs.push_back({{UnknownObj, EmptyFieldPath}, false});
+        if (I.getOpcode() == Instruction::Ret)
+          IsRetEscape = true;
+      } else if (UnderlObjs.empty()) {
         continue;
+      }
+      // Returning an aggregate that carries a pointer returns that pointer;
+      // the insertvalue that built it already escaped the object, this sets
+      // the summary bit the callers read.
+      if (I.getOpcode() == Instruction::Ret && !I.getOperand(0)->getType()->isPointerTy() &&
+          typeContainsPointerType(I.getOperand(0)->getType()))
+        IsRetEscape = true;
 
       if (EscKind == EscKindTy::MAY_ESCAPE) {
         LLVM_DEBUG(dbgs() << "\t-- MAY_ESCAPE --\n");
@@ -730,7 +808,7 @@ void EscapeAnalysisInfo::compBBEscapeState(const BasicBlock *BB,
           if (UO.Loaded) {
             LLVM_DEBUG(dbgs() << "\t\tLoaded\n");
             ES.forEachPointeeDo(UO, [&](const ObjAndPath &Pointee) {
-              ES.addEscObjOrReason(Pointee, EscReason, &I);
+              ES.addEscObj(Pointee, EscReason, &I);
             });
             continue;
           }
@@ -859,7 +937,8 @@ EscapeAnalysisInfo::getEscInfoCall(const Use &U, const Instruction *I) const {
     const unsigned ArgIndex = Call->getArgOperandNo(&U);
     // Some functions can be taken as safe external calls
     LibFunc Func;
-    if (TLI.getLibFunc(*CalledFunc, Func) && !TLI.doesArgEscape(Func, ArgIndex))
+    if (TLI.getLibFunc(*CalledFunc, Func) && TLI.has(Func) &&
+        !TLI.doesArgEscape(Func, ArgIndex))
       return {EscKindTy::NO_ESCAPE, std::nullopt};
 
     if (isSafeExternalCall(CalledFunc->getName(), TLI, ArgIndex,
@@ -919,9 +998,13 @@ EscapeAnalysisInfo::getEscInfoStore(const Use &U, const Instruction *I) const {
 
   // dbgs() << *cast<StoreInst>(I)->getPointerOperandType() << "\n";
 
-  const auto DstObjs = getUnderlyingMayEscObjs(I->getOperand(1), TLI);
-  if (DstObjs.empty())
-    return {EscKindTy::NO_ESCAPE, std::nullopt};
+  bool DstComplete = true;
+  const auto DstObjs = getUnderlyingMayEscObjs(
+      I->getOperand(1), TLI, MaxUnderlObjLookup, nullptr, &DstComplete);
+  // A destination the walk cannot name may be shared memory: the stored
+  // pointer escapes. (An empty list used to mean "no escape".)
+  if (!DstComplete || DstObjs.empty())
+    return {EscKindTy::MAY_ESCAPE, EscReasonBits::OTHER};
 
   return {EscKindTy::MAY_ALIASING, DstObjs};
 }
@@ -1009,6 +1092,46 @@ EscapeAnalysisInfo::getEscInfoRet(const Use &U) const {
   return {EscKindTy::MAY_ESCAPE, EscReasonBits::RET_PTR};
 }
 
+/// Where does the integer made from a pointer go? Arithmetic, comparisons
+/// and a conversion back to a pointer keep it in sight: the pointer the
+/// inttoptr yields is followed by the object walk from wherever it is used,
+/// or fails closed if the arithmetic is beyond the walk. Anything else -- a
+/// store of the integer, a call, a return, a truncation -- takes the address
+/// out of sight and is an escape. Bounded, so a long chain is an escape too.
+static bool ptrIntEscapes(const Value *Int, unsigned Depth = 0) {
+  if (Depth > 8)
+    return true;
+  for (const User *U : Int->users()) {
+    const auto *UI = dyn_cast<Instruction>(U);
+    if (!UI)
+      return true;
+    switch (UI->getOpcode()) {
+    case Instruction::IntToPtr:
+    case Instruction::ICmp:
+      continue;
+    case Instruction::Add:
+    case Instruction::Sub:
+    case Instruction::Mul:
+    case Instruction::And:
+    case Instruction::Or:
+    case Instruction::Xor:
+    case Instruction::Shl:
+    case Instruction::LShr:
+    case Instruction::AShr:
+    case Instruction::ZExt:
+    case Instruction::SExt:
+    case Instruction::PHI:
+    case Instruction::Select:
+      if (ptrIntEscapes(UI, Depth + 1))
+        return true;
+      continue;
+    default:
+      return true;
+    }
+  }
+  return false;
+}
+
 /// Determine what kind of escape behaviour V may exhibit, return
 /// escape reason and list of aliases if applicable.
 EscapeAnalysisInfo::EscInfoTy
@@ -1035,11 +1158,38 @@ EscapeAnalysisInfo::getEscInfoForOpnd(const Use &U) const {
     return getEscInfoICmp(U, I);
   case Instruction::Ret:
     return getEscInfoRet(U);
-  default:
-    // LLVM_DEBUG(dbgs() << " -- Default\n");
+  case Instruction::CallBr:
+    return getEscInfoCall(U, I);
+  // Transparent: the pointer flows on as a value the object walk follows
+  // from the access side; the use itself hands it to nobody.
+  case Instruction::BitCast:
+  case Instruction::AddrSpaceCast:
+  case Instruction::PHI:
+  case Instruction::Select:
+  case Instruction::Freeze:
+  case Instruction::Br:
+  case Instruction::Switch:
     return {EscKindTy::NO_ESCAPE, std::nullopt};
-    // Need to recheck, maybe we behave too aggressive, because previous logic
-    // was return {EscapeKind::MAY_ESCAPE, std::nullopt};
+  // The pointer leaves the walk's sight: as an integer, inside an aggregate
+  // or vector, in an exception object, through varargs or an indirect branch.
+  case Instruction::PtrToInt:
+    if (ptrIntEscapes(I))
+      return {EscKindTy::MAY_ESCAPE, EscReasonBits::OTHER};
+    return {EscKindTy::NO_ESCAPE, std::nullopt};
+  case Instruction::InsertValue:
+  case Instruction::InsertElement:
+  case Instruction::ShuffleVector:
+  case Instruction::Resume:
+  case Instruction::VAArg:
+  case Instruction::IndirectBr:
+    return {EscKindTy::MAY_ESCAPE, EscReasonBits::OTHER};
+  default:
+    // Anything not listed that carries a pointer is an escape. The old
+    // default was "no escape", with a comment wondering whether that was
+    // too aggressive; it was.
+    if (typeContainsPointerType(U->getType()))
+      return {EscKindTy::MAY_ESCAPE, EscReasonBits::OTHER};
+    return {EscKindTy::NO_ESCAPE, std::nullopt};
   }
 }
 
@@ -1098,9 +1248,15 @@ bool EscapeAnalysisInfo::isEscapedForBBImpl(const BasicBlock *BB,
     return true;
   }
 
-  const auto FoundStatus = ClEAFlowInsensitive
-                               ? findObjInFuncEscState(BB->getParent(), OAP)
-                               : findObjInBBEscState(BB, OAP);
+  // A state holding UnknownObj escaped is "everything escaped".
+  const ObjAndPath Top{UnknownObj, EmptyFieldPath};
+  auto FoundStatus = ClEAFlowInsensitive
+                         ? findObjInFuncEscState(BB->getParent(), Top)
+                         : findObjInBBEscState(BB, Top);
+  if (!FoundStatus.any())
+    FoundStatus = ClEAFlowInsensitive
+                      ? findObjInFuncEscState(BB->getParent(), OAP)
+                      : findObjInBBEscState(BB, OAP);
   if (FoundStatus.any()) {
     if (EscReason)
       *EscReason = FoundStatus;
@@ -1135,7 +1291,9 @@ bool EscapeAnalysisInfo::isEscapedInFuncIPA(const Function *F,
       *EscReason = ExtStatus;
     return true;
   }
-  const auto FoundStatus = findObjInFuncEscState(F, OAP);
+  auto FoundStatus = findObjInFuncEscState(F, {UnknownObj, EmptyFieldPath});
+  if (!FoundStatus.any())
+    FoundStatus = findObjInFuncEscState(F, OAP);
   if (FoundStatus.any()) {
     if (EscReason)
       *EscReason = FoundStatus;
@@ -1338,6 +1496,17 @@ void EscapeAnalysisGlobalInfo::evalTopDownArgEscStatus(
     IPATopDownArgEscInfo->try_emplace(F, F->arg_size(), true);
     return;
   }
+  // The direct call sites are the whole story only for a function nobody
+  // else can reach: local linkage, and no use of its address at all -- a
+  // pointer in a dispatch table's initializer, a store into a slot, or a
+  // pass to a defined registrar that merely keeps it were not calls, and
+  // the callers behind them pass whatever they please.
+  if (F->hasAddressTaken() || !F->hasLocalLinkage()) {
+    LLVM_DEBUG(dbgs() << "Function " << F->getName()
+                      << " is reachable through its address.\n");
+    IPATopDownArgEscInfo->try_emplace(F, F->arg_size(), true);
+    return;
+  }
 
   const auto It = IPATopDownArgEscInfo->try_emplace(F, F->arg_size(), false);
   auto &IsArgEscaped = It.first->second;
@@ -1404,10 +1573,17 @@ void EscapeAnalysisGlobalInfo::evalTopDownArgEscStatus(
           return IsArgEscaped[ArgIdx];
         };
 
-        if (UnderlObj.Loaded)
-          CallEAI.forEachPointeeDo(UnderlObj, BB, checkEscapeStatus);
-        else
+        if (UnderlObj.Loaded) {
+          unsigned NumPointees = 0;
+          CallEAI.forEachPointeeDo(UnderlObj, BB, [&](const ObjAndPath &OAP) {
+            ++NumPointees;
+            return checkEscapeStatus(OAP);
+          });
+          if (NumPointees == 0) // a pointer the caller never saw stored
+            IsArgEscaped[ArgIdx] = true;
+        } else {
           checkEscapeStatus(UnderlObj);
+        }
 
         if (IsArgEscaped[ArgIdx])
           break;
@@ -1721,18 +1897,34 @@ bool EscapeAnalysisGlobalInfo::isEscapedForBBTSan(
   if (EscapeAnalysisInfo::isNonConstGV(UnderlObj.Obj))
     return true;
 
-  FEIIt->second.isEscapedForBBIPA(BB, UnderlObj, &EscReason);
+  // Reasons accumulate over the object and each of its pointees. The
+  // out-parameter used to be overwritten by every query, so an escaped slot
+  // whose last visited pointee was local answered "not escaped".
+  EscapeAnalysisInfo::EscReasonTy R;
+  FEIIt->second.isEscapedForBBIPA(BB, UnderlObj, &R);
+  EscReason |= R;
 
   // If object escapes by passing to a function, it doesn't matter whether
   // it's a pointer or not, because even pointer may escape through this
   // (but not only pointee object)
-  if (EscReason == EscapeAnalysisInfo::PASSING_TO_CALL)
+  if ((EscReason & EscapeAnalysisInfo::EscReasonTy(EscapeAnalysisInfo::PASSING_TO_CALL)).any())
     return true;
 
   if (UnderlObj.Loaded) {
+    // A slot with no recorded pointee holds a pointer the analysis never saw
+    // stored -- filled by memcpy, by a callee, by anything -- so what it
+    // points to may be anywhere. Zero pointees is "escaped", not "local".
+    unsigned NumPointees = 0;
     FEIIt->second.forEachPointeeDo(UnderlObj, BB, [&](const ObjAndPath &OAP) {
-      FEIIt->second.isEscapedForBBIPA(BB, OAP, &EscReason);
+      ++NumPointees;
+      EscapeAnalysisInfo::EscReasonTy RP;
+      FEIIt->second.isEscapedForBBIPA(BB, OAP, &RP);
+      EscReason |= RP;
     });
+    if (NumPointees == 0 && ClEAUnseenPointeeEscapes) {
+      ++NumEAUnseenPointeeLoads;
+      EscReason |= EscapeAnalysisInfo::EscReasonTy(EscapeAnalysisInfo::OTHER);
+    }
   }
   return EscReason.any();
 }
@@ -1755,16 +1947,26 @@ bool EscapeAnalysisGlobalInfo::isEscapedUndrlObjOrPointeeAnywhere(
   for (const UnderlObjTy &UnderlObj : UnderlObjs) {
     if (EscapeAnalysisInfo::isNonConstGV(UnderlObj.Obj))
       return true;
-    FEIIt->second.isEscapedInFuncIPA(F, UnderlObj, &EscReason);
-    if (EscReason == EscapeAnalysisInfo::PASSING_TO_CALL)
+    EscapeAnalysisInfo::EscReasonTy R;
+    FEIIt->second.isEscapedInFuncIPA(F, UnderlObj, &R);
+    EscReason |= R;
+    if ((EscReason & EscapeAnalysisInfo::EscReasonTy(EscapeAnalysisInfo::PASSING_TO_CALL)).any())
       return true;
     if (UnderlObj.Loaded) {
-      // Pointees are per block; take every block's.
+      // Pointees are per block; take every block's. None anywhere: the
+      // pointer came from somewhere the analysis never saw -- escaped.
+      unsigned NumPointees = 0;
       for (const BasicBlock &BB : *F)
         FEIIt->second.forEachPointeeDo(
             UnderlObj, &BB, [&](const ObjAndPath &OAP) {
-              FEIIt->second.isEscapedInFuncIPA(F, OAP, &EscReason);
+              ++NumPointees;
+              EscapeAnalysisInfo::EscReasonTy RP;
+              FEIIt->second.isEscapedInFuncIPA(F, OAP, &RP);
+              EscReason |= RP;
             });
+      if (NumPointees == 0 && ClEAUnseenPointeeEscapes)
+        EscReason |=
+            EscapeAnalysisInfo::EscReasonTy(EscapeAnalysisInfo::OTHER);
     }
     if (EscReason.any())
       return true;
@@ -1929,7 +2131,8 @@ static const Value *getUnderlyingObjectWithPath(const Value *V,
         }
       }
     } else if (Operator::getOpcode(V) == Instruction::BitCast ||
-               Operator::getOpcode(V) == Instruction::AddrSpaceCast) {
+               Operator::getOpcode(V) == Instruction::AddrSpaceCast ||
+               Operator::getOpcode(V) == Instruction::Freeze) {
       V = cast<Operator>(V)->getOperand(0);
       if (!V->getType()->isPointerTy())
         return V;
@@ -2086,11 +2289,33 @@ static bool getUnderlObjsForCodeGenWithoutPHIInvCheck(
 
       // If getUnderlyingObjects fails to find an identifiable object,
       // getUnderlyingObjectsForCodeGen also fails for safety.
-      if (!isIdentifiedObject(UO.Obj) &&
-          // Function arguments may escape or be aliases */
-          !isa<Argument>(UO.Obj) &&
-          // Results of function calls (e.g. returning pointer) may escape
-          !isCallMayEscape(UO.Obj, TLI, IPAFuncEscInfo)) { // do we need it?
+      // An object the walk cannot vouch for: not an identified object, not an
+      // argument, not a call result. A pointer-returning call is always an
+      // object -- fresh memory if its callee returns nothing escaped (then it
+      // is tracked like an alloca), an escaped call otherwise (getExtObjStatus
+      // says so). It used to count as unresolvable whenever the callee
+      // returned fresh memory, which dropped the publication of such memory
+      // in the transfer function and, once an unresolvable operand meant
+      // "anything", poisoned whole functions.
+      // Null and undef are not objects: nothing is reached through them, so
+      // a store, call or return of one publishes nothing. They used to count
+      // as unresolvable (34,030 of the 59,028 unresolved operands on
+      // sqlite3.c were null), and an unresolvable operand means "anything".
+      if (isa<ConstantPointerNull>(UO.Obj) || isa<UndefValue>(UO.Obj))
+        continue;
+      if (!isIdentifiedObject(UO.Obj) && !isa<Argument>(UO.Obj) &&
+          !isa<CallBase>(UO.Obj)) {
+        LLVM_DEBUG(dbgs() << "UNRESOLVED-OBJ " << *UO.Obj << "\n");
+        if (isa<IntToPtrInst>(UO.Obj)) ++NumEAUnresolvedIntToPtr;
+        else if (isa<ConstantPointerNull>(UO.Obj)) ++NumEAUnresolvedNull;
+        else if (isa<UndefValue>(UO.Obj)) ++NumEAUnresolvedUndef;
+        else if (isa<ConstantExpr>(UO.Obj)) ++NumEAUnresolvedConstExpr;
+        else if (isa<PHINode>(UO.Obj)) ++NumEAUnresolvedPHI;
+        else if (isa<SelectInst>(UO.Obj)) ++NumEAUnresolvedSelect;
+        else if (isa<LoadInst>(UO.Obj)) ++NumEAUnresolvedLoad;
+        else if (isa<ExtractValueInst>(UO.Obj)) ++NumEAUnresolvedExtractValue;
+        else if (isa<GetElementPtrInst>(UO.Obj)) ++NumEAUnresolvedGEP;
+        else ++NumEAUnresolvedOther;
         Objects.clear();
         return false;
       }

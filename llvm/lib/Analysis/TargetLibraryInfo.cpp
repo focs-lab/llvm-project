@@ -1424,6 +1424,10 @@ bool TargetLibraryInfo::doesArgEscape(LibFunc F, unsigned ArgNo) {
   // list to be called at program exit. This is a classic example of an escape.
   case LibFunc_atexit:           // void (*f)(void)
     return ArgNo == 0;
+  // setbuf/setvbuf install the caller's buffer as the stream's buffer: every
+  // later read or write on the stream, from any thread, goes through it.
+  case LibFunc_setbuf: case LibFunc_setvbuf:
+    return ArgNo == 1;
   case LibFunc_cxa_atexit:       // void (*f)(void *), void *p, void *d
     return ArgNo == 0 || ArgNo == 1; // The function pointer and data pointer escape.
 
@@ -1595,7 +1599,7 @@ bool TargetLibraryInfo::doesArgEscape(LibFunc F, unsigned ArgNo) {
   case LibFunc_ferror: case LibFunc_fileno:
   case LibFunc_flockfile: case LibFunc_ftrylockfile: case LibFunc_funlockfile:
   case LibFunc_gets: case LibFunc_puts: case LibFunc_ungetc:
-  case LibFunc_setbuf: case LibFunc_setvbuf: case LibFunc_perror:
+  case LibFunc_perror:
     return false; // Pointers to FILE*, buffers, paths do not escape.
 
   // --- POSIX System Calls ---
@@ -1635,7 +1639,7 @@ bool TargetLibraryInfo::doesArgEscape(LibFunc F, unsigned ArgNo) {
   case LibFunc_free: case LibFunc_vec_free:
     return ArgNo != 0; // arg 0 (ptr) does not escape.
   case LibFunc_realloc: case LibFunc_reallocf: case LibFunc_vec_realloc:
-    return ArgNo != 0; // arg 0 (ptr) does not escape.
+    return true; // The old block may be the returned block: one object.
   case LibFunc_strdup: case LibFunc_strndup:
   case LibFunc_dunder_strdup: case LibFunc_dunder_strndup:
     return false; // The source pointer argument does not escape.
@@ -1730,8 +1734,6 @@ bool TargetLibraryInfo::isReturnValueEscaping(LibFunc F) {
   // These are the canonical examples of functions returning fresh, non-aliased memory.
   case LibFunc_malloc:
   case LibFunc_calloc:
-  case LibFunc_realloc:
-  case LibFunc_reallocf:
   case LibFunc_valloc:
   case LibFunc_aligned_alloc:
   case LibFunc_memalign:
@@ -1760,7 +1762,7 @@ bool TargetLibraryInfo::isReturnValueEscaping(LibFunc F) {
   // OpenMP allocators
   case LibFunc___kmpc_alloc_shared:
   // AIX vector allocators
-  case LibFunc_vec_malloc: case LibFunc_vec_calloc: case LibFunc_vec_realloc:
+  case LibFunc_vec_malloc: case LibFunc_vec_calloc:
     return false;
 
   // --- File I/O ---
@@ -1774,6 +1776,10 @@ bool TargetLibraryInfo::isReturnValueEscaping(LibFunc F) {
   // This includes pointers into arguments, global, or static memory.
   // ===================================================================
 
+  // realloc may return the very block it was given, so the result aliases
+  // whatever aliased the argument; treating it as fresh let an access
+  // through the new pointer look local while the old one was published.
+  case LibFunc_realloc: case LibFunc_reallocf: case LibFunc_vec_realloc:
   // These return a pointer into one of the string arguments.
   case LibFunc_memchr: case LibFunc_memrchr:
   case LibFunc_strchr: case LibFunc_strrchr:

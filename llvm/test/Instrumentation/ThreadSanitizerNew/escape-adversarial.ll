@@ -138,18 +138,24 @@ exit:
 ; ---------------------------------------------------------------------------
 
 ;--- Field-sensitive: publishing a pointer to field 1 escapes field 1, not the
-;--- unrelated field 0. A remote thread can only reach field 0 by computing
-;--- out of bounds from &s.f1, which is undefined. So the write to field 0 is
-;--- elided; the publication store to the global is kept.
+;--- unrelated field 2 (a remote thread can only reach field 2 by computing
+;--- out of bounds from &s.f1, which is undefined): the write to field 2 is
+;--- elided. A write through the struct's base pointer has no field path -- the
+;--- analysis cannot tell a write of field 0 from a write of the whole object
+;--- -- so it is covered by the escaped field and kept. The publication store
+;--- to the global is kept.
 define void @field_sensitive_other_field() nounwind uwtable sanitize_thread {
 ; CHECK-LABEL: @field_sensitive_other_field
 ; CHECK:       call void @__tsan_write8(ptr @sink)
-; CHECK-NOT:   call void @__tsan_write4(ptr %s)
+; CHECK-NOT:   call void @__tsan_write4(ptr %f2)
+; CHECK:       call void @__tsan_write4(ptr %s)
 ; CHECK:       ret void
 entry:
-  %s = alloca { i32, i32 }, align 8
-  %f1 = getelementptr inbounds { i32, i32 }, ptr %s, i64 0, i32 1
+  %s = alloca { i32, i32, i32 }, align 8
+  %f1 = getelementptr inbounds { i32, i32, i32 }, ptr %s, i64 0, i32 1
   store ptr %f1, ptr @sink, align 8
+  %f2 = getelementptr inbounds { i32, i32, i32 }, ptr %s, i64 0, i32 2
+  store i32 2, ptr %f2, align 4
   store i32 1, ptr %s, align 8
   ret void
 }

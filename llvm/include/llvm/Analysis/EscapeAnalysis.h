@@ -17,6 +17,7 @@
 
 #include "llvm/ADT/SmallSet.h"
 #include "llvm/Analysis/CallGraph.h"
+#include "llvm/Analysis/TargetLibraryInfo.h"
 
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/PassManager.h"
@@ -84,7 +85,12 @@ public:
     OTHER            = 1 << 6,
     INVALID          = 1 << 7
   };
-  using EscReasonTy = std::bitset<6>;
+  // Wide enough for every EscReasonBits value. It was bitset<6> with the enum
+  // reaching 1 << 7, so OTHER and INVALID truncated to no bits at all: an
+  // object recorded as escaped for those reasons read back as not escaped.
+  using EscReasonTy = std::bitset<8>;
+  static_assert(EscReasonBits::INVALID < (1u << 8),
+                "EscReasonTy must hold every EscReasonBits value");
 
   struct IPABottomTopInfoEntry {
     SmallDenseMap<unsigned, EscReasonTy> ArgEscapes; // for each argument
@@ -167,6 +173,13 @@ public:
   bool isEscapedInFuncIPA(const Function *F, const ObjAndPath &OAP,
                           EscReasonTy *EscReason = nullptr) const;
 
+  /// The object that stands for "anything": recorded when an operand the
+  /// object walk cannot resolve is stored, passed or returned. A state that
+  /// holds it escaped answers escaped for every object; a slot that points to
+  /// it yields an escaped pointer. A uniqued undef of pointer type, so it is
+  /// a real Value for the maps and a Constant for every dyn_cast.
+  const Value *UnknownObj = nullptr;
+
   /// Make action for each pointee, if given object points to something
   void
   forEachPointeeDo(const ObjAndPath &OAP, const BasicBlock *BB,
@@ -202,7 +215,11 @@ private:
   /// List of functions whose arguments don't escape
   std::shared_ptr<NonEscapingFuncsMap> NonEscapingFuncs;
 
-  const TargetLibraryInfo &TLI;
+  /// By value: the function-analysis result this was copied from is freed
+  /// when a pass returns PreservedAnalyses::none(), while this object, held
+  /// by the module-level result whose invalidate() returns false, lives on.
+  /// A reference here was a use-after-free on every later query.
+  TargetLibraryInfo TLI;
 
   class PointsToRelTy {
     using PointeeListTy = SmallSet<ObjAndPath, 4>;

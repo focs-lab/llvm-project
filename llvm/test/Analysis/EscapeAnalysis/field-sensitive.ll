@@ -22,9 +22,15 @@ entry:
   ret void
 }
 
+; A field pointer obtained through two loads (&(**SPtrPtr).z) publishes S. The
+; field offset is applied to a pointer that came out of memory, and the walk
+; does not compose it onto the pointee's path, so the whole object is
+; recorded -- conservative, and the only sound answer without that
+; composition. (The offset is still attached to the holder it was read
+; through, which is where it landed before as well.)
 ; CHECK: Printing analysis 'Escape Analysis' for function 'escape_through_escaped_pointer':
 ; CHECK-NEXT: Escaping objects for BB entry:
-; CHECK-DAG:   %S = alloca %struct.SimpleStructTy, align 4 | Path: 2
+; CHECK-DAG:   %S = alloca %struct.SimpleStructTy, align 4
 ; CHECK-DAG:   %SPtr = alloca ptr, align 8 | Path: 2
 define dso_local void @escape_through_escaped_pointer() {
 entry:

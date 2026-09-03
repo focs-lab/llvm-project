@@ -26,6 +26,7 @@
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/Analysis/AssumptionCache.h"
 #include "llvm/Analysis/CaptureTracking.h"
+#include "llvm/Analysis/AliasAnalysis.h"
 #include "llvm/Analysis/EscapeAnalysis.h"
 #include "llvm/Analysis/LockOwnership.h"
 #include "llvm/Analysis/LoopInfo.h"
@@ -141,6 +142,12 @@ static cl::opt<bool> ClUseEscapeAnalysis(
 // store, a call, a return, or a use the walk does not follow keeps the access.
 // Off selects the bare per-point elision, which loses the report on the object
 // when it is published by a plain store after the access.
+// Upstream's name for the switch on the capture-tracking elision.
+static cl::opt<bool> ClOmitNonCaptured(
+    "tsan-omit-by-pointer-capturing", cl::init(true), cl::Hidden,
+    cl::desc("Omit accesses to a local variable whose address is never "
+             "captured"));
+
 static cl::opt<bool> ClEASoundFlowSensitive(
     "tsan-ea-sound-flow-sensitive", cl::init(true), cl::Hidden,
     cl::desc("Elide an access to a not-yet-escaped object only if every escape "
@@ -469,9 +476,9 @@ public:
   bool sanitizeFunction(
       Function &F, const TargetLibraryInfo &TLI,
       const std::optional<EscapeAnalysisInfo> &EAI,
-      std::optional<EscapeAnalysisGlobalInfo *> EAIGlobal = std::nullopt,
-      std::optional<LockOwnershipInfo *> LOI = std::nullopt,
-      std::optional<SingleThreadedInfo *> STI = std::nullopt,
+      EscapeAnalysisGlobalInfo *EAIGlobal = nullptr,
+      LockOwnershipInfo *LOI = nullptr,
+      SingleThreadedInfo *STI = nullptr,
       DominatorTree *DT = nullptr, PostDominatorTree *PDT = nullptr,
       AAResults *AA = nullptr, LoopInfo *LI = nullptr,
       AssumptionCache *AC = nullptr, ScalarEvolution *SE = nullptr);
@@ -545,17 +552,17 @@ private:
   void disableInterceptorForInstr(Instruction *I, InstrumentationIRBuilder &IRB);
   bool instrumentInterceptedCalls(
       CallInst *CI, const TargetLibraryInfo &TLI,
-      std::optional<EscapeAnalysisGlobalInfo *> EAIGlobal);
+      EscapeAnalysisGlobalInfo *EAIGlobal);
   bool
   instrumentMemIntrinsic(Instruction *I, const TargetLibraryInfo &TLI,
-                         std::optional<EscapeAnalysisGlobalInfo *> EAIGlobal);
+                         EscapeAnalysisGlobalInfo *EAIGlobal);
   void chooseInstructionsToInstrument(
       SmallVectorImpl<Instruction *> &Local,
       SmallVectorImpl<InstructionInfo> &All, const TargetLibraryInfo &TLI,
       const DataLayout &DL, const std::optional<EscapeAnalysisInfo> &EAI,
-      std::optional<EscapeAnalysisGlobalInfo *> EAIGlobal = std::nullopt,
-      std::optional<LockOwnershipInfo *> LOI = std::nullopt,
-      std::optional<SingleThreadedInfo *> STI = std::nullopt);
+      EscapeAnalysisGlobalInfo *EAIGlobal = nullptr,
+      LockOwnershipInfo *LOI = nullptr,
+      SingleThreadedInfo *STI = nullptr);
 
   DenseMap<Instruction *, size_t> createInstrIndexMap(
       SmallVectorImpl<InstructionInfo> &AllInstr);
@@ -718,15 +725,15 @@ PreservedAnalyses ThreadSanitizerPass::run(Function &F,
 
   if (ClUseEscapeAnalysis) {
     if (TSan.sanitizeFunction(F, FAM.getResult<TargetLibraryAnalysis>(F),
-                              FAM.getResult<EscapeAnalysis>(F), std::nullopt,
-                              std::nullopt, std::nullopt, nullptr, nullptr,
+                              FAM.getResult<EscapeAnalysis>(F), nullptr,
+                              nullptr, nullptr, nullptr, nullptr,
                               nullptr))
       return PreservedAnalyses::none();
   }
 
-  std::optional<EscapeAnalysisGlobalInfo *> EAGI = std::nullopt;
-  std::optional<LockOwnershipInfo *> LOI = std::nullopt;
-  std::optional<SingleThreadedInfo *> STI = std::nullopt;
+  EscapeAnalysisGlobalInfo *EAGI = nullptr;
+  LockOwnershipInfo *LOI = nullptr;
+  SingleThreadedInfo *STI = nullptr;
 
   const auto &MAMProxy = FAM.getResult<ModuleAnalysisManagerFunctionProxy>(F);
 
@@ -1095,11 +1102,6 @@ static void updateEscapeStatistics(EscReasonTy Reason) {
 //
 // 'Local' is a vector of insns within the same BB (no calls between).
 // 'All' is a vector of insns that will be instrumented.
-static bool isThreadCreatorName(StringRef N) {
-  return N == "pthread_create" || N == "__pthread_create_2_1" ||
-         N == "thrd_create" || N == "__kmpc_fork_call" ||
-         N == "__tsan_create_fiber" || N.starts_with("_ZNSt6thread");
-}
 
 // Every load of \p G is an atomic acquire or stronger and G's address goes
 // nowhere else. A pointer published into G by a release store is then
@@ -1158,14 +1160,41 @@ struct LaterEscapes {
 
 static LaterEscapes
 collectLaterEscapes(Instruction *Access, Value *Addr,
-                    std::optional<LockOwnershipInfo *> LOI) {
+                    const TargetLibraryInfo &TLI, LockOwnershipInfo *LOI) {
   LaterEscapes LE;
-  const Value *Obj = getUnderlyingObject(Addr);
-  if (isa<Argument>(Obj)) {
-    LE.ArgObject = true;
+  auto &Seen = LE.Seen;
+  // Reason about the objects the escape analysis reasoned about, not the SSA
+  // value the address happens to be. When the address is a pointer loaded
+  // from memory, getUnderlyingObject stops at the load and its uses are just
+  // this access, so no later escape is ever seen and the access is elided
+  // although the object is published elsewhere. getUnderlyingMayEscObjs looks
+  // through the load to the object; if it cannot -- an incomplete walk, a
+  // pointer that came out of memory (Loaded), an argument, or anything that
+  // is not a local whose uses we can enumerate -- we cannot vouch for what
+  // happens to it later, so the access is kept.
+  bool IsComplete = true;
+  const auto Objs = EscapeAnalysisInfo::getUnderlyingMayEscObjs(
+      Addr, TLI, /*MaxLookup default*/ 20, nullptr, &IsComplete);
+  if (!IsComplete || Objs.empty()) {
+    Seen.set(OtherUse);
     return LE;
   }
-  auto &Seen = LE.Seen;
+  SmallVector<const Value *, 16> Roots;
+  for (const auto &UO : Objs) {
+    if (UO.Loaded) {
+      Seen.set(OtherUse);
+      return LE;
+    }
+    if (isa<Argument>(UO.Obj)) {
+      LE.ArgObject = true;
+      return LE;
+    }
+    if (!isa<AllocaInst>(UO.Obj) && !isNoAliasCall(UO.Obj)) {
+      Seen.set(OtherUse);
+      return LE;
+    }
+    Roots.push_back(UO.Obj);
+  }
   const auto Reachable = [&](const Instruction *Site) {
     return Site->getFunction() == Access->getFunction() &&
            isPotentiallyReachable(Access, Site);
@@ -1185,14 +1214,14 @@ collectLaterEscapes(Instruction *Access, Value *Addr,
                                        : AtomicReleaseOther);
       return;
     }
-    if (LOI && *LOI && (*LOI)->isUnderAnyLock(Site)) {
-      Seen.set(G && (*LOI)->isProtectedGV(G) ? StoreToProtectedGlobal
+    if (LOI && LOI->isUnderAnyLock(Site)) {
+      Seen.set(G && LOI->isProtectedGV(G) ? StoreToProtectedGlobal
                                               : StoreUnderLockOther);
       return;
     }
     Seen.set(PlainStore);
   };
-  SmallVector<const Value *, 16> Work{Obj};
+  SmallVector<const Value *, 16> Work(Roots.begin(), Roots.end());
   SmallPtrSet<const Value *, 32> Visited;
   while (!Work.empty()) {
     const Value *V = Work.pop_back_val();
@@ -1227,7 +1256,7 @@ collectLaterEscapes(Instruction *Access, Value *Addr,
         if (CB->doesNotCapture(ArgNo) || !Reachable(CB))
           continue;
         const Function *Callee = CB->getCalledFunction();
-        if (Callee && isThreadCreatorName(Callee->getName()))
+        if (Callee && isKnownThreadCreator(*Callee))
           Seen.set(ThreadCreate);
         else if (!Callee || Callee->isDeclaration())
           Seen.set(UnknownCall);
@@ -1287,9 +1316,9 @@ void ThreadSanitizer::chooseInstructionsToInstrument(
     SmallVectorImpl<Instruction *> &Local,
     SmallVectorImpl<InstructionInfo> &All, const TargetLibraryInfo &TLI,
     const DataLayout &DL, const std::optional<EscapeAnalysisInfo> &EAI,
-    std::optional<EscapeAnalysisGlobalInfo *> EAIGlobal,
-    std::optional<LockOwnershipInfo *> LOI,
-    std::optional<SingleThreadedInfo *> STI) {
+    EscapeAnalysisGlobalInfo *EAIGlobal,
+    LockOwnershipInfo *LOI,
+    SingleThreadedInfo *STI) {
   DenseMap<Value *, size_t> WriteTargets; // Map of addresses to index in All
   // Iterate from the end.
   for (Instruction *I : reverse(Local)) {
@@ -1326,13 +1355,23 @@ void ThreadSanitizer::chooseInstructionsToInstrument(
       }
     }
 
-    // 1. Default (capture tracking)
-    if (isa<AllocaInst>(getUnderlyingObject(Addr))) {
-      if (!PointerMayBeCaptured(Addr, true, true)) {
-        LLVM_DEBUG(dbgs() << "PointerMayBeCaptured -- Instruction omitted\n");
-        NumOmittedNonCaptured++;
-        continue;
-      }
+    // 1. Default (capture tracking). The question is whether the VARIABLE --
+    // the alloca -- may be captured, not whether this particular address
+    // value may be. Upstream asks about Addr, which for a field or element of
+    // a local aggregate is a GEP whose only use is the access itself: never
+    // captured, however thoroughly the object was published by foo(&s) or by
+    // storing &s to a global. Every field write after such a publication was
+    // elided, in stock TSan as much as here. Asking about the object is what
+    // the comment always meant.
+    // Upstream fixed the same defect in bf6986f9f09f (April 2025) with
+    // findAllocaForValue, which also resolves an address built through phis
+    // and selects to its single alloca; this baseline predates that commit,
+    // so the form is taken from there.
+    const AllocaInst *AI = findAllocaForValue(Addr);
+    if (AI && ClOmitNonCaptured && !PointerMayBeCaptured(AI, true, true)) {
+      LLVM_DEBUG(dbgs() << "PointerMayBeCaptured -- Instruction omitted\n");
+      NumOmittedNonCaptured++;
+      continue;
     }
 
     // 2. If escape analysis is enabled
@@ -1354,22 +1393,22 @@ void ThreadSanitizer::chooseInstructionsToInstrument(
         NumOmittedNonEscaped++;
         continue;
       }
-    } else if (EAIGlobal.has_value()) {
+    } else if ((EAIGlobal != nullptr)) {
       EscReasonTy EscReason;
       // Flow-sensitive: "escaped on some path from entry to this block". An
       // access before the object's address is published is elided even if the
       // object escapes later; see the note on ClUseEscapeAnalysisGlobal for
       // what that does and does not preserve.
-      if (!EAIGlobal.value()->isEscapedUndrlObjOrPointee(
+      if (!EAIGlobal->isEscapedUndrlObjOrPointee(
               Addr, TLI, I->getParent(), EscReason)) {
         // Not escaped on any path to here. Whether that is enough depends on
         // what happens after; see ClEASoundFlowSensitive.
         bool Elide = true;
         if (ClEASoundFlowSensitive || ClAttributeFlowSensitivity) {
           EscReasonTy AnywhereReason;
-          if (EAIGlobal.value()->isEscapedUndrlObjOrPointeeAnywhere(
+          if (EAIGlobal->isEscapedUndrlObjOrPointeeAnywhere(
                   Addr, TLI, I->getFunction(), AnywhereReason)) {
-            const LaterEscapes LE = collectLaterEscapes(I, Addr, LOI);
+            const LaterEscapes LE = collectLaterEscapes(I, Addr, TLI, LOI);
             if (ClAttributeFlowSensitivity)
               attributeFlowSensitiveElision(LE);
             if (ClEASoundFlowSensitive) {
@@ -1398,10 +1437,10 @@ void ThreadSanitizer::chooseInstructionsToInstrument(
     }
 
     // 3. If lock ownership analysis is available
-    if (LOI.has_value()) {
+    if ((LOI != nullptr)) {
       if (ClUseLockOwnershipAnalysisUpperbound) {
         LLVM_DEBUG(dbgs() << "Lock ownership analysis -- upper bound\n");
-        if (LOI.value()->isInsideCriticalSection(I)) {
+        if (LOI->isInsideCriticalSection(I)) {
           if (const Value *V = getUnderlyingObject(Addr);
               isa<GlobalVariable>(V)) {
             LLVM_DEBUG(dbgs() << "Instruction omitted due to lock ownership\n");
@@ -1413,7 +1452,7 @@ void ThreadSanitizer::chooseInstructionsToInstrument(
         LLVM_DEBUG(dbgs() << "Lock ownership analysis\n");
         if (const Value *V = getUnderlyingObject(Addr))
           if (const auto *GV = dyn_cast<GlobalVariable>(V))
-            if (LOI.value()->isProtectedGV(GV)) {
+            if (LOI->isProtectedGV(GV)) {
               LLVM_DEBUG(dbgs()
                          << "Instruction omitted due to lock ownership\n");
               NumOmittedByLockOwnership++;
@@ -1426,8 +1465,8 @@ void ThreadSanitizer::chooseInstructionsToInstrument(
     // Whole functions are skipped earlier, in sanitizeFunction; this catches
     // main, whose prefix is single-threaded and whose remainder usually is
     // not, so it can only be classified one access at a time.
-    if (ClUseSingleThreadedAnalysis && STI.has_value() &&
-        STI.value()->isSingleThreaded(I)) {
+    if (ClUseSingleThreadedAnalysis && (STI != nullptr) &&
+        STI->isSingleThreaded(I)) {
       // An access can be dropped here on the strength of no thread existing.
       // That is a statement about races; TSan's use-after-free reporting also
       // rides on this instrumentation and does not need a second thread, so
@@ -1446,11 +1485,10 @@ void ThreadSanitizer::chooseInstructionsToInstrument(
 
     // 4. Skip instrumentation if SWMR (Single-Writer/Multiple-Reader) analysis is
     // enabled and indicates this global variable is read-only. This
-    if (ClUseSWMRAnalysis) {
-      assert(STI.has_value());
+    if (ClUseSWMRAnalysis && STI) {
       if (const Value *V = getUnderlyingObject(Addr))
         if (const auto *GV = dyn_cast<GlobalVariable>(V)) {
-          if (STI.value()->isSWMRGlobal(GV)) {
+          if (STI->isSWMRGlobal(GV)) {
             LLVM_DEBUG(dbgs() << "Global variable " << GV->getName()
                               << " is read-only\n");
             NumOmittedBySWMR++;
@@ -1891,9 +1929,9 @@ void ThreadSanitizer::InsertRuntimeIgnores(Function &F) {
 bool ThreadSanitizer::sanitizeFunction(
     Function &F, const TargetLibraryInfo &TLI,
     const std::optional<EscapeAnalysisInfo> &EAI,
-    std::optional<EscapeAnalysisGlobalInfo *> EAIGlobal,
-    std::optional<LockOwnershipInfo *> LOI,
-    std::optional<SingleThreadedInfo *> STI, DominatorTree *DT,
+    EscapeAnalysisGlobalInfo *EAIGlobal,
+    LockOwnershipInfo *LOI,
+    SingleThreadedInfo *STI, DominatorTree *DT,
     PostDominatorTree *PDT, AAResults *AA, LoopInfo *LI, AssumptionCache *AC,
     ScalarEvolution *SE) {
   LLVM_DEBUG(dbgs() << "\n%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%"
@@ -2113,7 +2151,7 @@ bool ThreadSanitizer::sanitizeFunction(
   // Instrument function entry/exit points if there were instrumented accesses.
   const bool SkipEntryExit =
       ClStcSkipFuncEntryExit && ClUseSingleThreadedAnalysis &&
-      STI.has_value() && STI.value()->isSingleThreaded(&F);
+      (STI != nullptr) && STI->isSingleThreaded(&F);
   if ((Res || HasCalls) && ClInstrumentFuncEntryExit && !SkipEntryExit) {
     InstrumentationIRBuilder IRB(F.getEntryBlock().getFirstNonPHI());
     Value *ReturnAddress = IRB.CreateCall(
@@ -2288,10 +2326,10 @@ void ThreadSanitizer::disableInterceptorForInstr(
 
 static bool
 isPointerEscaped(Value *Ptr, Instruction *I, const TargetLibraryInfo &TLI,
-                 std::optional<EscapeAnalysisGlobalInfo *> EAIGlobal) {
-  if (EAIGlobal.has_value()) {
+                 EscapeAnalysisGlobalInfo *EAIGlobal) {
+  if ((EAIGlobal != nullptr)) {
     EscReasonTy EscReason;
-    return EAIGlobal.value()->isEscapedUndrlObjOrPointee(
+    return EAIGlobal->isEscapedUndrlObjOrPointee(
         Ptr, TLI, I->getParent(), EscReason);
   }
   return true;
@@ -2299,7 +2337,7 @@ isPointerEscaped(Value *Ptr, Instruction *I, const TargetLibraryInfo &TLI,
 
 bool ThreadSanitizer::instrumentInterceptedCalls(
     CallInst *CI, const TargetLibraryInfo &TLI,
-    std::optional<EscapeAnalysisGlobalInfo *> EAIGlobal) {
+    EscapeAnalysisGlobalInfo *EAIGlobal) {
   // Check which intercepted function is being called
   // LLVM_DEBUG(dbgs() << "Check " << *CI << "\n");
 
@@ -2337,7 +2375,7 @@ bool ThreadSanitizer::instrumentInterceptedCalls(
 // we will need to call e.g. __tsan_memset to avoid the intrinsics.
 bool ThreadSanitizer::instrumentMemIntrinsic(
     Instruction *I, const TargetLibraryInfo &TLI,
-    std::optional<EscapeAnalysisGlobalInfo *> EAIGlobal) {
+    EscapeAnalysisGlobalInfo *EAIGlobal) {
   InstrumentationIRBuilder IRB(I);
   LLVM_DEBUG(dbgs() << "Instrumenting MemIntrinsic: " << *I << "\n");
 
