@@ -49,8 +49,8 @@
 #include "tsan_trace.h"
 #include "tsan_vector_clock.h"
 
-// Needed for DenseMap
-#include "sanitizer_common/sanitizer_placement_new.h"
+// DenseMap, for the ReX filter's per-thread lockset below.
+#include "sanitizer_common/sanitizer_dense_map.h"
 
 // Variable to track ST/MT context in runtime
 extern "C" SANITIZER_INTERFACE_ATTRIBUTE volatile __sanitizer::atomic_uint32_t
@@ -163,20 +163,20 @@ struct TidSlot {
   TidSlot();
 } ALIGNED(SANITIZER_CACHE_LINE_SIZE);
 
-// ReX redundancy filter implementation - lockset optimization
+// ReX redundancy filter implementation - lockset optimization.
+//
+// The methods are deliberately out of line. Defining them here instantiated
+// DenseMap's internals in every translation unit that includes this header,
+// which in turn needed sanitizer_placement_new.h here -- and that header says,
+// in as many words, not to include it from a header. Doing so redeclared
+// operator new without noexcept and broke every build that also sees
+// libstdc++'s <new>, the TSan unit tests among them.
 struct LocksetContext {
-  void process_lock(uptr addr) {
-    ++internal_ctx[addr];
-  }
+  LocksetContext();
+  ~LocksetContext();
 
-  void process_unlock(uptr addr) {
-    auto *bucket = internal_ctx.find(addr);
-    if (bucket) {
-      bucket->second--;
-      if (bucket->second == 0)
-        internal_ctx.erase(bucket);
-    }
-  }
+  void process_lock(uptr addr);
+  void process_unlock(uptr addr);
 
   DenseMap<uptr, int> internal_ctx;
 };

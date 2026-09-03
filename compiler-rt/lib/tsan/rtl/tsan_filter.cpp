@@ -18,6 +18,22 @@
 
 namespace __tsan {
 
+// Out of line so that DenseMap's internals -- and the placement new they need
+// -- are instantiated here rather than in every includer of tsan_rtl.h.
+LocksetContext::LocksetContext() = default;
+LocksetContext::~LocksetContext() = default;
+
+void LocksetContext::process_lock(uptr addr) { ++internal_ctx[addr]; }
+
+void LocksetContext::process_unlock(uptr addr) {
+  auto *bucket = internal_ctx.find(addr);
+  if (bucket) {
+    bucket->second--;
+    if (bucket->second == 0)
+      internal_ctx.erase(bucket);
+  }
+}
+
 //=============================== Statistics =================================//
 
 // Total number of memory accesses processed by the filter.
@@ -421,9 +437,13 @@ void FilterHistory::PrintStats(ThreadState *thr) {
   // Print top 10 or less if there are fewer entries
   for (usize i = 0; i < sorted_stats.size() && i < 10; i++) {
     Printf("-------------------------------------------------\n");
+#if !SANITIZER_GO
+    // The Go runtime is built without the symbolizer, so it has no
+    // StackTrace::Print to link against.
     VarSizeStackTrace stack;
     ObtainCurrentStack(thr, sorted_stats[i].first, &stack);
     stack.Print();
+#endif
     // Printf("  #%lu: PC=%p\t", i + 1, (void*)sorted_stats[i].first);
     Printf("Filtered %llu times\n", sorted_stats[i].second);
     Printf("-------------------------------------------------\n");

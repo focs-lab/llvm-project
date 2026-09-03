@@ -47,9 +47,20 @@ if config.compiler_id == "GNU":
 else:
     extra_cflags = []
 
-# Enable new Escape Analysis instead of default Capture Tracking
-#escape_analysis_flag = ["-mllvm -tsan-use-escape-analysis"]
-escape_analysis_flag = ["-mllvm -tsan-use-escape-analysis-global"]
+# Instrumentation-pass options this fork's analyses are gated behind. The suite
+# is the preservation corpus for those analyses, so which ones are enabled must
+# be selectable rather than hard-coded: it is the difference between validating
+# one analysis and validating a configuration.
+#
+#   TSAN_MLLVM_FLAGS="-tsan-use-single-threaded -tsan-use-swmr" ninja check-tsan
+#   TSAN_MLLVM_FLAGS="" ninja check-tsan            # stock TSan, no analyses
+#
+# Defaults to the global escape analysis, preserving the previous behaviour.
+tsan_analysis_flags = []
+for _flag in os.environ.get(
+    "TSAN_MLLVM_FLAGS", "-tsan-use-escape-analysis-global"
+).split():
+    tsan_analysis_flags.append("-mllvm %s" % _flag)
 
 tsan_incdir = config.test_source_root + "/../"
 # Setup default compiler flags used with -fsanitize=thread option.
@@ -59,11 +70,10 @@ clang_tsan_cflags = (
     + config.debug_info_flags
     + extra_cflags
     + ["-I%s" % tsan_incdir]
-    + escape_analysis_flag
+    + tsan_analysis_flags
 )
 clang_tsan_cxxflags = (
     config.cxx_mode_flags + clang_tsan_cflags + ["-std=c++11"] + ["-I%s" % tsan_incdir]
-    + escape_analysis_flag
 )
 # Add additional flags if we're using instrumented libc++.
 # Instrumented libcxx currently not supported on Darwin.
