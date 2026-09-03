@@ -30,6 +30,19 @@ cl::opt<bool> llvm::TsanUseAnalysisSummaries(
              "earlier modules. Only sound in a build that analyses every "
              "module before instrumenting any of them."));
 
+// Reproduction switch, unsound. With it, a function this unit never calls and
+// never takes the address of is assumed unreachable from any other unit's
+// threads and may be single-threaded on linkage grounds -- the whole-program
+// assumption the paper's figures were measured under. Off (the default) a
+// function another unit can name runs multi-threaded.
+static cl::opt<bool> ClStcAssumeWholeProgram(
+    "tsan-stc-assume-whole-program", cl::init(false), cl::Hidden,
+    cl::desc("Assume the whole program is visible in this module: external "
+             "linkage does not by itself make a function multi-threaded "
+             "(UNSOUND for per-translation-unit compilation)"));
+
+
+
 const char *SingleThreadedInfo::toString(FuncContext FC) {
   switch (FC) {
   case FuncContext::ThreadCreator:
@@ -172,6 +185,16 @@ void SingleThreadedInfo::identifyBaseThreadCreators() {
   }
 }
 
+void SingleThreadedInfo::markCalleesMT(const CallGraphNode &CGN,
+                                       FuncTypeMap &FuncTypeNew) {
+  for (const auto &[CallSite, CalleeCGN] : CGN) {
+    const Function *CalleeFunc = CalleeCGN->getFunction();
+    if (needToSkipFunc(CalleeFunc))
+      continue;
+    markFuncAndAllCalleesAsMultithreaded(CalleeFunc, *CalleeCGN, FuncTypeNew);
+  }
+}
+
 void SingleThreadedInfo::markFuncAndAllCalleesAsMultithreaded(
     const Function *CallerFunc, const CallGraphNode &CGN,
     FuncTypeMap &FuncTypeNew) {
@@ -221,14 +244,22 @@ bool SingleThreadedInfo::runSTMTAnalysis() {
 
       // Check if the function is used in indirect calls
       // Find and mark functions whose addresses are taken as multi-threaded
-      if (F->hasAddressTaken()) { // && FuncTypeNew[F] == "ST"
+      // Per translation unit: a function whose address is taken (reachable
+      // from an indirect call, or another thread) or that another unit can
+      // name by linkage may run multi-threaded, and so may everything it
+      // calls. Only a local, address-not-taken function is a candidate for
+      // single-threaded, and only if nothing marks it otherwise below; an
+      // unmapped function stays unmapped, which the query reads as "not known
+      // single-threaded" -- the fail-closed direction.
+      const bool ExternallyReachable =
+          F->hasAddressTaken() ||
+          (!ClStcAssumeWholeProgram && !F->hasLocalLinkage());
+      if (ExternallyReachable) {
         LLVM_DEBUG(dbgs() << "Function " << F->getName()
-                   << " has its address taken - marking as multi-threaded\n");
+                   << " is externally reachable - marking multi-threaded\n");
         markFuncAndAllCalleesAsMultithreaded(F, *CGN, FuncTypeNew);
-      } else {
-        const auto FuncTypeIt = FuncTypeNew.find(F);
-        if (FuncTypeIt == FuncTypeNew.end())
-          FuncTypeNew[F] = FuncContext::SingleThreaded;
+      } else if (FuncTypeNew.find(F) == FuncTypeNew.end()) {
+        FuncTypeNew[F] = FuncContext::SingleThreaded;
       }
 
       LLVM_DEBUG(if (F->hasName()) {
@@ -251,8 +282,14 @@ bool SingleThreadedInfo::runSTMTAnalysis() {
 
         const auto FuncTypeIt = FuncTypeNew.find(Callee);
         if (FuncTypeIt == FuncTypeNew.end()) {
-          // We reached this function, mark as single-threaded
-          FuncTypeNew[Callee] = FuncContext::SingleThreaded;
+          // Reached through a call edge; classify by the same rule as the
+          // outer loop rather than defaulting to single-threaded.
+          if (Callee->hasAddressTaken() ||
+              (!ClStcAssumeWholeProgram && !Callee->hasLocalLinkage()))
+            markFuncAndAllCalleesAsMultithreaded(Callee, *CalleeNode,
+                                                 FuncTypeNew);
+          else
+            FuncTypeNew[Callee] = FuncContext::SingleThreaded;
           continue;
         }
 
@@ -261,8 +298,8 @@ bool SingleThreadedInfo::runSTMTAnalysis() {
                             << " as thread creator\n");
           FuncTypeNew[F] = FuncContext::ThreadCreator;
 
-          // Mark all callees of F as multithreaded
-          markFuncAndAllCalleesAsMultithreaded(F, *CGN, FuncTypeNew);
+          // Mark all callees of F as multithreaded (F stays the creator).
+          markCalleesMT(*CGN, FuncTypeNew);
           break;
         }
       }
@@ -314,10 +351,20 @@ SingleThreadedInfo::SingleThreadedInfo(CallGraph &CG_, Module &MM_)
 void SingleThreadedInfo::findSWMRGlobals() {
   LLVM_DEBUG(dbgs() << "\n=== SWMR Analysis ===\n");
 
-  // For each global, check if it's only read in multithreaded functions
+  // For each global, check if it's only read in multithreaded functions.
+  //
+  // Only a global no other translation unit can name qualifies. Each unit is
+  // compiled alone, so a global with external linkage -- or a declaration
+  // whose definition lives elsewhere -- may be written in a unit this
+  // analysis never sees; classifying it read-only here elided every access
+  // to it in this unit (memcached's current_time: written by the main
+  // thread's clock callback in memcached.c, read unsynchronised by workers in
+  // items.c and proto_text.c, where it is only an extern declaration).
   for (const auto &GV : M.globals()) {
     // Skip constant global variables
     if (GV.isConstant())
+      continue;
+    if (!GV.hasLocalLinkage() || GV.isDeclaration())
       continue;
 
     LLVM_DEBUG(dbgs() << "Checking global: " << GV.getName() << "\n");
@@ -489,8 +536,11 @@ void SingleThreadedInfo::readSummary() {
       if (const Function *F = M.getFunction(Line))
         FuncType[F] = FuncContext::SingleThreaded;
     } else if (ReadingSWMR) {
+      // The same rule as findSWMRGlobals: a summary cannot vouch for a global
+      // another unit can write.
       if (const GlobalVariable *GV = M.getGlobalVariable(Line, true))
-        SWMRGlobals.insert(GV);
+        if (GV->hasLocalLinkage() && !GV->isDeclaration())
+          SWMRGlobals.insert(GV);
     }
   }
 

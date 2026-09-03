@@ -200,6 +200,10 @@ private:
   void markFuncAndAllCalleesAsMultithreaded(const Function *CallerFunc,
                                             const CallGraphNode &CGN,
                                             FuncTypeMap &FuncTypeNew);
+  /// Mark every callee of CGN multi-threaded (and their callees), without
+  /// touching the node itself -- used at a thread creator, which stays a
+  /// creator while everything it calls runs concurrently.
+  void markCalleesMT(const CallGraphNode &CGN, FuncTypeMap &FuncTypeNew);
 
   /// Identifies global variables that are only read (not written to) in
   /// multithreaded functions This analysis helps identify global variables that
