@@ -23,6 +23,15 @@ TSAN_FLAG(bool, enable_annotations, true,
 TSAN_FLAG(bool, suppress_equal_stacks, true,
           "Suppress a race report if we've already output another race report "
           "with the same stack.")
+TSAN_FLAG(bool, print_evictions, false,
+          "Print shadow-cell eviction counters at exit.")
+TSAN_FLAG(const char *, evict_watch, "",
+          "Application addresses joined by '+'; evictions on their 8-byte "
+          "granules are counted separately (total/uncovered/plain) and "
+          "printed with print_evictions.")
+TSAN_FLAG(bool, trace_evictions, false,
+          "Print every eviction of a concurrent access of another thread "
+          "(address, evicting tid, evicted sid/epoch).")
 TSAN_FLAG(bool, report_bugs, true,
           "Turns off bug reporting entirely (useful for benchmarking).")
 TSAN_FLAG(bool, report_thread_leaks, true, "Report thread leaks at exit?")
@@ -80,5 +89,7 @@ TSAN_FLAG(bool, shared_ptr_interceptor, true,
 TSAN_FLAG(bool, print_full_thread_history, false,
           "If set, prints thread creation stacks for the threads involved in "
           "the report and their ancestors up to the main thread.")
+#if TSAN_REX_FILTER
 TSAN_FLAG(bool, enable_filter, false,
           "If set, we use 'ReX' filter to filter out redundancy.")
+#endif

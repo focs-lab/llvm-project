@@ -9,6 +9,14 @@ append_list_if(COMPILER_RT_HAS_WGLOBAL_CONSTRUCTORS_FLAG -Wglobal-constructors
 append_list_if(COMPILER_RT_INTERCEPT_LIBDISPATCH ${COMPILER_RT_LIBDISPATCH_CFLAGS}
                TSAN_RTL_CFLAGS)
 
+# The ReX redundancy filter is research code; by default it is not compiled
+# in at all, so the shipped runtime is upstream's plus the counters.
+option(COMPILER_RT_TSAN_REX_FILTER
+  "Compile the ReX redundancy filter into the TSan runtime" OFF)
+if(COMPILER_RT_TSAN_REX_FILTER)
+  list(APPEND TSAN_RTL_CFLAGS -DTSAN_REX_FILTER=1)
+endif()
+
 set(TSAN_RTL_DYNAMIC_CFLAGS ${TSAN_RTL_CFLAGS})
 list(REMOVE_ITEM TSAN_RTL_DYNAMIC_CFLAGS -fPIE)
 
@@ -25,7 +33,6 @@ set(TSAN_SOURCES
   tsan_debugging.cpp
   tsan_external.cpp
   tsan_fd.cpp
-  tsan_filter.cpp
   tsan_flags.cpp
   tsan_ignoreset.cpp
   tsan_interceptors_memintrinsics.cpp
@@ -51,6 +58,9 @@ set(TSAN_SOURCES
   tsan_sync.cpp
   tsan_vector_clock.cpp
   )
+if(COMPILER_RT_TSAN_REX_FILTER)
+  list(APPEND TSAN_SOURCES tsan_filter.cpp)
+endif()
 
 set(TSAN_CXX_SOURCES
   tsan_new_delete.cpp
@@ -85,7 +95,6 @@ set(TSAN_HEADERS
   tsan_defs.h
   tsan_dense_alloc.h
   tsan_fd.h
-  tsan_filter.h
   tsan_flags.h
   tsan_flags.inc
   tsan_ignoreset.h

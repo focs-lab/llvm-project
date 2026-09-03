@@ -193,6 +193,7 @@ void __tsan_write_range_pc(void *addr, uptr size, void *pc) {
 
 ///////////////////////////////////////////////////////////////////////////////
 // This is for disabling/enabling TSan instrumentation
-int GV;
-SANITIZER_INTERFACE_ATTRIBUTE void __tsan_disable() { GV++; }
-SANITIZER_INTERFACE_ATTRIBUTE void __tsan_enable() { GV++; }
+// The instrumentation pass erases the calls it sees; these exist for code
+// that names them directly and do nothing.
+SANITIZER_INTERFACE_ATTRIBUTE void __tsan_disable() {}
+SANITIZER_INTERFACE_ATTRIBUTE void __tsan_enable() {}

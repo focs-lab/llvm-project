@@ -49,8 +49,10 @@
 #include "tsan_trace.h"
 #include "tsan_vector_clock.h"
 
+#if TSAN_REX_FILTER
 // DenseMap, for the ReX filter's per-thread lockset below.
 #include "sanitizer_common/sanitizer_dense_map.h"
+#endif
 
 // Variable to track ST/MT context in runtime
 extern "C" SANITIZER_INTERFACE_ATTRIBUTE volatile __sanitizer::atomic_uint32_t
@@ -163,6 +165,7 @@ struct TidSlot {
   TidSlot();
 } ALIGNED(SANITIZER_CACHE_LINE_SIZE);
 
+#if TSAN_REX_FILTER
 // ReX redundancy filter implementation - lockset optimization.
 //
 // The methods are deliberately out of line. Defining them here instantiated
@@ -180,6 +183,7 @@ struct LocksetContext {
 
   DenseMap<uptr, int> internal_ctx;
 };
+#endif
 
 // This struct is stored in TLS.
 struct ThreadState {
@@ -261,8 +265,9 @@ struct ThreadState {
 
   explicit ThreadState(Tid tid);
 
-  // ReX filter implementation
+#if TSAN_REX_FILTER
   LocksetContext filter_ctx;
+#endif
 } ALIGNED(SANITIZER_CACHE_LINE_SIZE);
 
 #if !SANITIZER_GO
@@ -339,6 +344,20 @@ struct Context {
   Mutex report_mtx;
   int nreported;
   atomic_uint64_t last_symbolize_time_ns;
+  // Shadow-cell evictions: every time CheckRaces found no empty or
+  // rewritable slot and overwrote a random one, and the subset where the
+  // overwritten access belonged to another thread and was not ordered
+  // before the current one -- the case that can hide a later race.
+  atomic_uint64_t evict_total;
+  atomic_uint64_t evict_concurrent_foreign;
+  atomic_uint64_t evict_concurrent_foreign_plain;
+  // Per-granule counters for the addresses named in evict_watch.
+  static const int kEvictWatchMax = 8;
+  uptr evict_watch_addr[kEvictWatchMax];
+  int evict_watch_n;
+  atomic_uint64_t evict_watch_total[kEvictWatchMax];
+  atomic_uint64_t evict_watch_foreign[kEvictWatchMax];
+  atomic_uint64_t evict_watch_plain[kEvictWatchMax];
 
   void *background_thread;
   atomic_uint32_t stop_background_thread;

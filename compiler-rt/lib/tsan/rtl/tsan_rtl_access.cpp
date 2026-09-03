@@ -12,7 +12,9 @@
 //===----------------------------------------------------------------------===//
 
 #include "tsan_rtl.h"
+#if TSAN_REX_FILTER
 #include "tsan_filter.h"
+#endif
 
 namespace __tsan {
 
@@ -169,6 +171,51 @@ NOINLINE void DoReportRace(ThreadState* thr, RawShadow* shadow_mem, Shadow cur,
     SlotLock(thr);
 }
 
+// Called only on the slow path where no slot was empty or rewritable.
+// "Concurrent foreign": the overwritten access belongs to another thread and
+// the current thread's clock does not cover it, so it could still have raced
+// with a later conflicting access. The atomic reads the mutex interceptors
+// issue on the mutex word are the bulk of these in lock-heavy code and can
+// only race with a plain access to the mutex itself; the "plain" subset
+// excludes them.
+static NOINLINE void NoteEviction(ThreadState* thr, RawShadow* shadow_mem,
+                                  Shadow old, Shadow cur) {
+  atomic_fetch_add(&ctx->evict_total, 1, memory_order_relaxed);
+  // Watched granules: the application address of this shadow cell.
+  int w = -1;
+  if (UNLIKELY(ctx->evict_watch_n)) {
+    const uptr app = ShadowToMem(shadow_mem) & ~(uptr)7;
+    for (int i = 0; i < ctx->evict_watch_n; i++)
+      if (ctx->evict_watch_addr[i] == app) {
+        w = i;
+        atomic_fetch_add(&ctx->evict_watch_total[i], 1, memory_order_relaxed);
+        break;
+      }
+  }
+  if (old.sid() == cur.sid() || thr->clock.Get(old.sid()) >= old.epoch())
+    return;
+  atomic_fetch_add(&ctx->evict_concurrent_foreign, 1, memory_order_relaxed);
+  if (w >= 0)
+    atomic_fetch_add(&ctx->evict_watch_foreign[w], 1, memory_order_relaxed);
+  const bool atomic = old.IsAtomic();
+  const bool plain = !atomic;
+  if (plain) {
+    atomic_fetch_add(&ctx->evict_concurrent_foreign_plain, 1,
+                     memory_order_relaxed);
+    if (w >= 0)
+      atomic_fetch_add(&ctx->evict_watch_plain[w], 1, memory_order_relaxed);
+  }
+  if (UNLIKELY(flags()->trace_evictions))
+    Printf("ThreadSanitizer: evicted concurrent %s %s at %p "
+           "(tid=%d clock[%d]=%d; evicted sid=%d epoch=%d)\n",
+           atomic ? "atomic" : "plain",
+           old.IsRead() ? "read" : "write",
+           (void*)ShadowToMem(shadow_mem), thr->tid,
+           static_cast<int>(old.sid()),
+           static_cast<int>(thr->clock.Get(old.sid())),
+           static_cast<int>(old.sid()), static_cast<int>(old.epoch()));
+}
+
 #if !TSAN_VECTORIZE
 ALWAYS_INLINE
 bool ContainsSameAccess(RawShadow* s, Shadow cur, int unused0, int unused1,
@@ -196,74 +243,39 @@ ALWAYS_INLINE
 bool CheckRaces(ThreadState* thr, RawShadow* shadow_mem, Shadow cur,
                 int unused0, int unused1, AccessType typ) {
   bool stored = false;
-  DPrintf2("#%d: CheckRaces: state=%d tid=%d\n", thr->tid,
-           static_cast<int>(cur.sid()), static_cast<int>(cur.epoch()));
-
   for (uptr idx = 0; idx < kShadowCnt; idx++) {
     RawShadow* sp = &shadow_mem[idx];
     Shadow old(LoadShadow(sp));
-    DPrintf2("  slot %zu: old={sid=%d epoch=%d access=0x%x}\n", idx,
-             static_cast<int>(old.sid()), static_cast<int>(old.epoch()),
-             old.access());
-
     if (LIKELY(old.raw() == Shadow::kEmpty)) {
-      DPrintf2("  slot %zu: empty slot, storing new access\n", idx);
       if (!(typ & kAccessCheckOnly) && !stored)
         StoreShadow(sp, cur.raw());
       return false;
     }
-
-    if (LIKELY(!(cur.access() & old.access()))) {
-      DPrintf2("  slot %zu: non-intersecting accesses, continuing\n", idx);
+    if (LIKELY(!(cur.access() & old.access())))
       continue;
-    }
-
     if (LIKELY(cur.sid() == old.sid())) {
-      DPrintf2("  slot %zu: same thread access\n", idx);
       if (!(typ & kAccessCheckOnly) &&
           LIKELY(cur.access() == old.access() && old.IsRWWeakerOrEqual(typ))) {
-        DPrintf2("  slot %zu: updating access info\n", idx);
         StoreShadow(sp, cur.raw());
         stored = true;
       }
       continue;
     }
-
-    if (LIKELY(old.IsBothReadsOrAtomic(typ))) {
-      DPrintf2("  slot %zu: both reads or atomic, continuing\n", idx);
+    if (LIKELY(old.IsBothReadsOrAtomic(typ)))
       continue;
-    }
-
-    if (LIKELY(thr->clock.Get(old.sid()) >= old.epoch())) {
-      DPrintf2(
-          "  slot %zu: happens-before satisfied: thr clock[%d]=%d >= "
-          "old.epoch=%d, continuing\n",
-          idx, static_cast<int>(old.sid()),
-          static_cast<int>(thr->clock.Get(old.sid())),
-          static_cast<int>(old.epoch()));
+    if (LIKELY(thr->clock.Get(old.sid()) >= old.epoch()))
       continue;
-    }
-    DPrintf2(
-        "  slot %zu: happens-before NOT satisfied: thr clock[%d]=%d >= "
-        "old.epoch=%d, continuing\n",
-        idx, static_cast<int>(old.sid()),
-        static_cast<int>(thr->clock.Get(old.sid())),
-        static_cast<int>(old.epoch()));
-
-    DPrintf2("  slot %zu: RACE DETECTED\n", idx);
     DoReportRace(thr, shadow_mem, cur, old, typ);
     return true;
   }
-
-  if (LIKELY(stored)) {
-    DPrintf2("  access already stored, done\n");
+  // We did not find any races and had already stored
+  // the current access info, so we are done.
+  if (LIKELY(stored))
     return false;
-  }
-
   // Choose a random candidate slot and replace it.
   uptr index =
       atomic_load_relaxed(&thr->trace_pos) / sizeof(Event) % kShadowCnt;
-  DPrintf2("  no empty slots, replacing random slot %zu\n", index);
+  NoteEviction(thr, shadow_mem, Shadow(LoadShadow(&shadow_mem[index])), cur);
   StoreShadow(&shadow_mem[index], cur.raw());
   return false;
 }
@@ -382,8 +394,11 @@ STORE : {
     const m128 empty = _mm_cmpeq_epi32(shadow, zero);
     const int empty_mask = _mm_movemask_epi8(empty);
     index = __builtin_ffs(empty_mask);
-    if (UNLIKELY(index == 0))
+    if (UNLIKELY(index == 0)) {
       index = (atomic_load_relaxed(&thr->trace_pos) / 2) % 16;
+      NoteEviction(thr, shadow_mem,
+                   Shadow(LoadShadow(&shadow_mem[index / 4])), cur);
+    }
   }
   StoreShadow(&shadow_mem[index / 4], cur.raw());
   // We could zero other slots determined by rewrite_mask.
@@ -456,7 +471,7 @@ NOINLINE void TraceRestartMemoryAccess(ThreadState* thr, uptr pc, uptr addr,
 
 ALWAYS_INLINE USED void MemoryAccess(ThreadState* thr, uptr pc, uptr addr,
                                      uptr size, AccessType typ) {
-#ifdef _REX_FILTER_ENABLED
+#if TSAN_REX_FILTER
   // First, try to filter-out the memory access
   if (g_filter && ((typ == kAccessRead) || (typ == kAccessWrite)) &&
       g_filter->CheckRedundancy(pc, addr, typ == kAccessWrite, thr))
@@ -631,9 +646,7 @@ void MemoryResetRange(ThreadState* thr, uptr pc, uptr addr, uptr size) {
 }
 
 void MemoryRangeFreed(ThreadState* thr, uptr pc, uptr addr, uptr size) {
-  VPrintf(1, "#%d: MEM_FREE at addr=%p size=%zu\n", thr->tid, (void*)addr,
-          size);
-#ifdef _REX_FILTER_ENABLED
+#if TSAN_REX_FILTER
   // Remove all address entries from the filter to consider memory reuse
   if (g_filter)
     g_filter->OnMemoryFreed(addr, size);

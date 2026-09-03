@@ -46,7 +46,6 @@ SUFFIX="${GOOS}_${GOARCH}"
 SRCS="
 	tsan_go.cpp
 	../rtl/tsan_external.cpp
-	../rtl/tsan_filter.cpp
 	../rtl/tsan_flags.cpp
 	../rtl/tsan_interface_atomic.cpp
 	../rtl/tsan_md5.cpp

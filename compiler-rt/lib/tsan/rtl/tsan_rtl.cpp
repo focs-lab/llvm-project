@@ -22,7 +22,9 @@
 #include "sanitizer_common/sanitizer_stackdepot.h"
 #include "sanitizer_common/sanitizer_symbolizer.h"
 #include "tsan_defs.h"
+#if TSAN_REX_FILTER
 #include "tsan_filter.h"
+#endif
 #include "tsan_interface.h"
 #include "tsan_mman.h"
 #include "tsan_platform.h"
@@ -754,10 +756,42 @@ void Initialize(ThreadState *thr) {
     while (__tsan_resumed == 0) {}
   }
 
+  // Parse evict_watch: hex or decimal addresses joined by '+' (the flag
+  // parser reserves ',' and ':').
+  ctx->evict_watch_n = 0;
+  for (const char* p = flags()->evict_watch;
+       p && *p && ctx->evict_watch_n < Context::kEvictWatchMax;) {
+    // Hex (0x...) or decimal; internal_simple_strtoll is base 10 only.
+    const char* q = p;
+    uptr a = 0;
+    bool hex = false;
+    if (q[0] == '0' && (q[1] == 'x' || q[1] == 'X')) {
+      hex = true;
+      q += 2;
+    }
+    const char* start = q;
+    for (; *q; q++) {
+      const char c = *q;
+      int d;
+      if (c >= '0' && c <= '9')
+        d = c - '0';
+      else if (hex && c >= 'a' && c <= 'f')
+        d = c - 'a' + 10;
+      else if (hex && c >= 'A' && c <= 'F')
+        d = c - 'A' + 10;
+      else
+        break;
+      a = a * (hex ? 16 : 10) + d;
+    }
+    if (q == start)
+      break;
+    ctx->evict_watch_addr[ctx->evict_watch_n++] = a & ~(uptr)7;
+    p = (*q == '+') ? q + 1 : q;
+  }
   OnInitialize();
-
-  // Initialize 'ReX' dynamic filter
+#if TSAN_REX_FILTER
   InitializeFilter();
+#endif
 }
 
 void MaybeSpawnBackgroundThread() {
@@ -805,12 +839,33 @@ int Finalize(ThreadState *thr) {
 #endif
   }
 
+  if (flags()->print_evictions) {
+    Printf("ThreadSanitizer: shadow evictions total=%llu "
+           "concurrent_foreign=%llu concurrent_foreign_plain=%llu\n",
+           (unsigned long long)atomic_load_relaxed(&ctx->evict_total),
+           (unsigned long long)atomic_load_relaxed(
+               &ctx->evict_concurrent_foreign),
+           (unsigned long long)atomic_load_relaxed(
+               &ctx->evict_concurrent_foreign_plain));
+    for (int i = 0; i < ctx->evict_watch_n; i++)
+      Printf("ThreadSanitizer: evictions at %p: total=%llu "
+             "concurrent_foreign=%llu concurrent_foreign_plain=%llu\n",
+             (void*)ctx->evict_watch_addr[i],
+             (unsigned long long)atomic_load_relaxed(&ctx->evict_watch_total[i]),
+             (unsigned long long)atomic_load_relaxed(
+                 &ctx->evict_watch_foreign[i]),
+             (unsigned long long)atomic_load_relaxed(
+                 &ctx->evict_watch_plain[i]));
+  }
+
   if (common_flags()->print_suppressions)
     PrintMatchedSuppressions();
 
   failed = OnFinalize(failed);
 
+#if TSAN_REX_FILTER
   PrintFilterStats(thr);
+#endif
 
   return failed ? common_flags()->exitcode : 0;
 }

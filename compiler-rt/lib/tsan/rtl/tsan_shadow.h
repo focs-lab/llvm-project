@@ -80,6 +80,8 @@ class Shadow {
   Sid sid() const { return part_.sid_; }
   Epoch epoch() const { return static_cast<Epoch>(part_.epoch_); }
   u8 access() const { return part_.access_; }
+  bool IsRead() const { return part_.is_read_; }
+  bool IsAtomic() const { return part_.is_atomic_; }
 
   void GetAccess(uptr *addr, uptr *size, AccessType *typ) const {
     DCHECK(part_.access_ != 0 || raw_ == static_cast<u32>(Shadow::kRodata));
